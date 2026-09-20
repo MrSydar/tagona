@@ -16,7 +16,7 @@ A storage system for collections of objects with sparse boolean tags evaluated o
                                       │
                          ┌────────────┼────────────┐
                          │            │            │
-                    ┌────▼────┐ ┌─────▼─────┐ ┌───▼────┐
+                    ┌────▼────┐ ┌─────▼─────┐ ┌────▼───┐
                     │ Postgres│ │  Tagging  │ │   S3   │
                     │ metadata│ │  Engine   │ │payloads│
                     └─────────┘ └───────────┘ └────────┘
