@@ -15,17 +15,26 @@ services:
       timeout: 5s
       retries: 5
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
+  garage:
+    image: dxflrs/garage:v2.3.0
+    command: /garage server --single-node --default-bucket
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      GARAGE_DEFAULT_ACCESS_KEY: tagbasedev
+      GARAGE_DEFAULT_SECRET_KEY: tagbase-dev-secret
+      GARAGE_DEFAULT_BUCKET: tagbase
     volumes:
-      - minio_data:/data
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - garage_meta:/var/lib/garage/meta
+      - garage_data:/var/lib/garage/data
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "3900:3900"
+      - "3903:3903"
+    healthcheck:
+      test: ["CMD", "/garage", "json-api", "GetClusterHealth"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
 
   tagger:
     build:
@@ -53,11 +62,11 @@ services:
     environment:
       TAGBASE_HTTP_ADDR: ":8080"
       TAGBASE_PG_DSN: "postgres://tagbase:tagbase@postgres:5432/tagbase?sslmode=disable"
-      TAGBASE_S3_ENDPOINT: "http://minio:9000"
+      TAGBASE_S3_ENDPOINT: "http://garage:3900"
       TAGBASE_S3_REGION: "us-east-1"
       TAGBASE_S3_BUCKET: "tagbase"
-      TAGBASE_S3_ACCESS_KEY: "minioadmin"
-      TAGBASE_S3_SECRET_KEY: "minioadmin"
+      TAGBASE_S3_ACCESS_KEY: "tagbasedev"
+      TAGBASE_S3_SECRET_KEY: "tagbase-dev-secret"
       TAGBASE_S3_FORCE_PATH_STYLE: "true"
       TAGBASE_TAG_ENGINE_URL: "http://tagger:8081"
       TAGBASE_DEFAULT_LIMIT: "5"
@@ -73,8 +82,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      minio:
-        condition: service_started
+      garage:
+        condition: service_healthy
       tagger:
         condition: service_healthy
     healthcheck:
@@ -114,6 +123,7 @@ services:
 
 volumes:
   postgres_data:
-  minio_data:
+  garage_meta:
+  garage_data:
   prometheus_data:
   grafana_data:

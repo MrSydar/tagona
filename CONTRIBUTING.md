@@ -21,7 +21,7 @@ make all                 # builds bin/storage, bin/tagger, bin/tagbase-client
 ### Running the Stack
 
 ```bash
-make docker-up           # starts Postgres, MinIO, storage, tagger
+make docker-up           # starts Postgres, Garage, storage, tagger
 # wait ~15s for healthchecks
 make e2e                 # runs end-to-end tests
 make docker-down         # tears everything down

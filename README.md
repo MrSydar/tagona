@@ -34,7 +34,7 @@ A storage system for collections of objects with sparse boolean tags evaluated o
 | Service | Image | Port | Role |
 |---------|-------|------|------|
 | postgres | `postgres:15` | `:5432` | Collections, object metadata, tag values |
-| minio | `minio/minio` | `:9000` / `:9001` | S3-compatible object storage |
+| garage | `dxflrs/garage` | `:3900` / `:3903` | S3-compatible object storage |
 
 ---
 
@@ -146,7 +146,7 @@ See each service's README for full env var documentation.
 
 ---
 
-> **Security Note:** `compose.yaml` contains default development credentials (e.g. `minioadmin`, `tagbase`). These are intended for local development only. Do not use them in production.
+> **Security Note:** `compose.yaml` contains default development credentials (e.g. `tagbasedev`, `tagbase`). These are intended for local development only. Do not use them in production.
 
 ## License
 

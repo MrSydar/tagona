@@ -36,7 +36,7 @@ func NewS3Store(endpoint, region, bucket, accessKey, secretKey string, forcePath
 		if endpoint != "" {
 			// Use custom endpoint for local/S3-compatible storage
 			o.BaseEndpoint = aws.String(endpoint)
-			// For local MinIO, we need path style
+			// For local Garage, we need path style
 			o.UsePathStyle = forcePathStyle
 		}
 	})
