@@ -14,13 +14,13 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"mrsydar/tagbase/storage/internal/config"
-	"mrsydar/tagbase/storage/internal/db"
-	"mrsydar/tagbase/storage/internal/retention"
-	"mrsydar/tagbase/storage/internal/server"
-	"mrsydar/tagbase/storage/internal/storage"
-	"mrsydar/tagbase/storage/pkg/client"
-	taggerclient "mrsydar/tagbase/tagger/pkg/client"
+	"mrsydar/tagona/storage/internal/config"
+	"mrsydar/tagona/storage/internal/db"
+	"mrsydar/tagona/storage/internal/retention"
+	"mrsydar/tagona/storage/internal/server"
+	"mrsydar/tagona/storage/internal/storage"
+	"mrsydar/tagona/storage/pkg/client"
+	taggerclient "mrsydar/tagona/tagger/pkg/client"
 )
 
 func main() {
@@ -29,13 +29,13 @@ func main() {
 	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: programLevel})
 	slog.SetDefault(slog.New(h))
 
-	cfg, err := config.Load("TAGBASE_")
+	cfg, err := config.Load("TAGONA_")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(1)
 	}
 
-	slog.Debug("starting tagbase storage service")
+	slog.Debug("starting tagona storage service")
 
 	// Postgres.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -78,7 +78,7 @@ func main() {
 	// Tag engine client.
 	slog.Debug("initializing tag engine client", "url", cfg.TagEngineURL)
 	if cfg.TagEngineURL == "" {
-		slog.Error("TAGBASE_TAG_ENGINE_URL is required")
+		slog.Error("TAGONA_TAG_ENGINE_URL is required")
 		os.Exit(1)
 	}
 	tagClient := taggerclient.New(cfg.TagEngineURL, cfg.TagEngineTimeout)
@@ -125,7 +125,7 @@ func main() {
 	}
 
 	go func() {
-		slog.Info("starting tagbase server", "addr", httpAddr)
+		slog.Info("starting tagona server", "addr", httpAddr)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("http server error", "error", err)
 			os.Exit(1)

@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"mrsydar/tagbase/storage/internal/models"
+	"mrsydar/tagona/storage/internal/models"
 )
 
 var collectionNameRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)

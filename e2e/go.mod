@@ -1,4 +1,4 @@
-module mrsydar/tagbase/e2e
+module mrsydar/tagona/e2e
 
 go 1.26.4
 

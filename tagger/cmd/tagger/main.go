@@ -11,9 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	storageclient "mrsydar/tagbase/storage/pkg/client"
-	"mrsydar/tagbase/tagger/internal/server"
-	"mrsydar/tagbase/tagger/pkg/evaluator"
+	storageclient "mrsydar/tagona/storage/pkg/client"
+	"mrsydar/tagona/tagger/internal/server"
+	"mrsydar/tagona/tagger/pkg/evaluator"
 )
 
 func main() {

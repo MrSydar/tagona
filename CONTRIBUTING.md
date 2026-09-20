@@ -1,4 +1,4 @@
-# Contributing to Tagbase
+# Contributing to Tagona
 
 Thank you for your interest in contributing! This document explains the workflow and conventions we use.
 
@@ -13,9 +13,9 @@ Thank you for your interest in contributing! This document explains the workflow
 ### Clone & Build
 
 ```bash
-git clone git@github.com:MrSydar/tagbase.git
-cd tagbase
-make all                 # builds bin/storage, bin/tagger, bin/tagbase-client
+git clone git@github.com:MrSydar/tagona.git
+cd tagona
+make all                 # builds bin/storage, bin/tagger, bin/tagona-client
 ```
 
 ### Running the Stack
@@ -33,11 +33,11 @@ This is a **Go workspace monorepo** (`go.work` at the root).
 
 | Directory | Module | Description |
 |-----------|--------|-------------|
-| `storage/` | `mrsydar/tagbase/storage` | HTTP API service, DB migrations, S3 client |
-| `tagger/` | `mrsydar/tagbase/tagger` | Tag-evaluation engine |
+| `storage/` | `mrsydar/tagona/storage` | HTTP API service, DB migrations, S3 client |
+| `tagger/` | `mrsydar/tagona/tagger` | Tag-evaluation engine |
 | `e2e/` | standalone module | End-to-end tests (run with `GOWORK=off`) |
 
-> **Important:** `tagger` imports `mrsydar/tagbase/storage/pkg/client`. This is resolved by the Go workspace, **not** by listing `storage` in `tagger/go.mod`. Building from a module directory works because Go automatically resolves sibling workspace modules.
+> **Important:** `tagger` imports `mrsydar/tagona/storage/pkg/client`. This is resolved by the Go workspace, **not** by listing `storage` in `tagger/go.mod`. Building from a module directory works because Go automatically resolves sibling workspace modules.
 
 ## Workflow
 
@@ -78,7 +78,7 @@ This is a **Go workspace monorepo** (`go.work` at the root).
 
 ## Reporting Bugs
 
-Use the [GitHub issue tracker](https://github.com/MrSydar/tagbase/issues) and choose the "Bug report" template.
+Use the [GitHub issue tracker](https://github.com/MrSydar/tagona/issues) and choose the "Bug report" template.
 
 ## Questions?
 

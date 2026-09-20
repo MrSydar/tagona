@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"mrsydar/tagbase/storage/pkg/client"
+	"mrsydar/tagona/storage/pkg/client"
 )
 
 // Client is an HTTP client for the tagging engine that satisfies storage/client.Tagger.

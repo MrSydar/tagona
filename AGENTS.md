@@ -1,12 +1,12 @@
 # AGENTS.md
 
-Tagbase is a Go monorepo with two workspace modules. The key mental model: both modules exist, and `tagger` imports `storage/pkg/client` resolved by the workspace, not by `go.mod`.
+Tagona is a Go monorepo with two workspace modules. The key mental model: both modules exist, and `tagger` imports `storage/pkg/client` resolved by the workspace, not by `go.mod`.
 
 ## Monorepo layout
 
 - Root uses `go.work` with Go 1.26.4.
-- Modules: `storage/` (`mrsydar/tagbase/storage`) and `tagger/` (`mrsydar/tagbase/tagger`).
-- Cross-module dependency: `tagger` imports `mrsydar/tagbase/storage/pkg/client`.
+- Modules: `storage/` (`mrsydar/tagona/storage`) and `tagger/` (`mrsydar/tagona/tagger`).
+- Cross-module dependency: `tagger` imports `mrsydar/tagona/storage/pkg/client`.
   - `tagger/go.mod` **does not** list `storage` as a dependency; the Go workspace resolves the sibling module locally.
   - Docker builds always copy both modules so the workspace is functional inside the builder.
   - Building locally from a module directory works because Go workspace resolves the sibling module automatically.
@@ -48,7 +48,7 @@ go run ./cmd/tagger
 **Build binaries:**
 
 ```bash
-make all              # builds bin/storage, bin/tagger, bin/tagbase-client
+make all              # builds bin/storage, bin/tagger, bin/tagona-client
 cd storage && go build -o /tmp/storage ./cmd/storage
 cd tagger && go build -o /tmp/tagger ./cmd/tagger
 ```
@@ -58,7 +58,7 @@ cd tagger && go build -o /tmp/tagger ./cmd/tagger
 A reference CLI client exists in the storage module:
 
 ```bash
-make build-client     # builds bin/tagbase-client
+make build-client     # builds bin/tagona-client
 cd storage
 go run ./cmd/client --url http://localhost:8080 <command>
 ```

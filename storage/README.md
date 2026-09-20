@@ -1,8 +1,8 @@
 # Storage Service
 
-Go module: `mrsydar/tagbase/storage`
+Go module: `mrsydar/tagona/storage`
 
-The main HTTP API and storage layer for Tagbase. Handles collections, object upload/download, metadata, tag queries, and on-demand tag evaluation via the tagging engine.
+The main HTTP API and storage layer for Tagona. Handles collections, object upload/download, metadata, tag queries, and on-demand tag evaluation via the tagging engine.
 
 ---
 
@@ -137,22 +137,22 @@ If any requested tag is missing, the storage service invokes the tagging engine 
 
 | Env Var | Required | Default | Description |
 |---------|----------|---------|-------------|
-| `TAGBASE_HTTP_ADDR` | No | `:8080` | HTTP listen address |
-| `TAGBASE_PG_DSN` | Yes | — | Postgres DSN |
-| `TAGBASE_S3_ENDPOINT` | Yes | — | S3 endpoint URL |
-| `TAGBASE_S3_REGION` | No | `us-east-1` | S3 region |
-| `TAGBASE_S3_BUCKET` | Yes | — | S3 bucket name |
-| `TAGBASE_S3_ACCESS_KEY` | Yes | — | S3 access key |
-| `TAGBASE_S3_SECRET_KEY` | Yes | — | S3 secret key |
-| `TAGBASE_S3_FORCE_PATH_STYLE` | No | `true` | Use path-style S3 URLs |
-| `TAGBASE_TAG_ENGINE_URL` | Yes | — | Tagging engine base URL |
-| `TAGBASE_TAG_ENGINE_TIMEOUT` | No | `30s` | Tagging engine HTTP request timeout |
-| `TAGBASE_DEFAULT_LIMIT` | No | `5` | Default query limit |
-| `TAGBASE_MAX_LIMIT` | No | `100` | Hard cap on query limit |
-| `TAGBASE_DEFAULT_TTL` | No | `0` | Default TTL in seconds or duration string (`0` = none) |
-| `TAGBASE_MAX_TAGS_PER_QUERY` | No | `100` | Max tags in a query |
-| `TAGBASE_MAX_OBJECT_SIZE_BYTES` | No | `10485760` | Max payload size (`10 MB`) |
-| `TAGBASE_RETENTION_SWEEP_INTERVAL` | No | `60s` | Interval for retention sweeper |
+| `TAGONA_HTTP_ADDR` | No | `:8080` | HTTP listen address |
+| `TAGONA_PG_DSN` | Yes | — | Postgres DSN |
+| `TAGONA_S3_ENDPOINT` | Yes | — | S3 endpoint URL |
+| `TAGONA_S3_REGION` | No | `us-east-1` | S3 region |
+| `TAGONA_S3_BUCKET` | Yes | — | S3 bucket name |
+| `TAGONA_S3_ACCESS_KEY` | Yes | — | S3 access key |
+| `TAGONA_S3_SECRET_KEY` | Yes | — | S3 secret key |
+| `TAGONA_S3_FORCE_PATH_STYLE` | No | `true` | Use path-style S3 URLs |
+| `TAGONA_TAG_ENGINE_URL` | Yes | — | Tagging engine base URL |
+| `TAGONA_TAG_ENGINE_TIMEOUT` | No | `30s` | Tagging engine HTTP request timeout |
+| `TAGONA_DEFAULT_LIMIT` | No | `5` | Default query limit |
+| `TAGONA_MAX_LIMIT` | No | `100` | Hard cap on query limit |
+| `TAGONA_DEFAULT_TTL` | No | `0` | Default TTL in seconds or duration string (`0` = none) |
+| `TAGONA_MAX_TAGS_PER_QUERY` | No | `100` | Max tags in a query |
+| `TAGONA_MAX_OBJECT_SIZE_BYTES` | No | `10485760` | Max payload size (`10 MB`) |
+| `TAGONA_RETENTION_SWEEP_INTERVAL` | No | `60s` | Interval for retention sweeper |
 
 ---
 

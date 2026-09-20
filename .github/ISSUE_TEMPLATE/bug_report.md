@@ -27,7 +27,7 @@ A clear and concise description of what you expected to happen.
 - OS: [e.g. Ubuntu 22.04, macOS 14]
 - Go version: [e.g. 1.26.4]
 - Docker version: [e.g. 27.0]
-- Tagbase commit: [e.g. abc1234]
+- Tagona commit: [e.g. abc1234]
 
 ## Logs / Screenshots
 

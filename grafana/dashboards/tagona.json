@@ -1,7 +1,7 @@
 {
-  "title": "Tagbase",
-  "uid": "tagbase-v1",
-  "tags": ["tagbase", "storage", "tagger"],
+  "title": "Tagona",
+  "uid": "tagona-v1",
+  "tags": ["tagona", "storage", "tagger"],
   "time": { "from": "now-1h", "to": "now" },
   "refresh": "10s",
   "timezone": "browser",

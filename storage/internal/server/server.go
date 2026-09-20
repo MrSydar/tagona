@@ -18,14 +18,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"mrsydar/tagbase/storage/internal/config"
-	"mrsydar/tagbase/storage/internal/db"
-	"mrsydar/tagbase/storage/internal/metrics"
-	"mrsydar/tagbase/storage/internal/models"
-	"mrsydar/tagbase/storage/internal/query"
-	"mrsydar/tagbase/storage/internal/storage"
-	"mrsydar/tagbase/storage/internal/validate"
-	"mrsydar/tagbase/storage/pkg/client"
+	"mrsydar/tagona/storage/internal/config"
+	"mrsydar/tagona/storage/internal/db"
+	"mrsydar/tagona/storage/internal/metrics"
+	"mrsydar/tagona/storage/internal/models"
+	"mrsydar/tagona/storage/internal/query"
+	"mrsydar/tagona/storage/internal/storage"
+	"mrsydar/tagona/storage/internal/validate"
+	"mrsydar/tagona/storage/pkg/client"
 )
 
 // Server holds dependencies for the HTTP server.
@@ -253,7 +253,7 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Debug("putObject buffering upload to temp file")
-	tmpFile, err := os.CreateTemp("", "tagbase-upload-*")
+	tmpFile, err := os.CreateTemp("", "tagona-upload-*")
 	if err != nil {
 		slog.Error("create temp file failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to buffer upload")

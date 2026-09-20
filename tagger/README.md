@@ -1,8 +1,8 @@
 # Tagging Engine
 
-Go module: `mrsydar/tagbase/tagger`
+Go module: `mrsydar/tagona/tagger`
 
-A standalone HTTP service that evaluates boolean tags for objects stored in the Tagbase storage service. It is a pure evaluator: it fetches object metadata and payload from the storage service via its public HTTP API, then runs the tagging logic.
+A standalone HTTP service that evaluates boolean tags for objects stored in the Tagona storage service. It is a pure evaluator: it fetches object metadata and payload from the storage service via its public HTTP API, then runs the tagging logic.
 
 ---
 
