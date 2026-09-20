@@ -8,7 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"mrsydar/tagbase/storage/internal/models"
+	"mrsydar/tagona/storage/internal/models"
 )
 
 // DB wraps pgxpool and provides typed queries.

@@ -1,4 +1,4 @@
-# Tagbase
+# Tagona
 
 A storage system for collections of objects with sparse boolean tags evaluated on demand during queries. Tags are stored only when known; absence means unknown until evaluated by the tagging engine.
 
@@ -26,8 +26,8 @@ A storage system for collections of objects with sparse boolean tags evaluated o
 
 | Service | Module | Port | Role |
 |---------|--------|------|------|
-| [storage](storage/) | `mrsydar/tagbase/storage` | `:8080` | HTTP API for collections, objects, tag queries, Prometheus metrics at `/metrics` |
-| [tagger](tagger/) | `mrsydar/tagbase/tagger` | `:8081` | Evaluates tags by fetching object data from storage, Prometheus metrics at `/metrics` |
+| [storage](storage/) | `mrsydar/tagona/storage` | `:8080` | HTTP API for collections, objects, tag queries, Prometheus metrics at `/metrics` |
+| [tagger](tagger/) | `mrsydar/tagona/tagger` | `:8081` | Evaluates tags by fetching object data from storage, Prometheus metrics at `/metrics` |
 
 **Infra**
 
@@ -108,7 +108,7 @@ The test suite covers: collections CRUD, object upload/retrieval/deletion, idemp
 ## Project Structure
 
 ```
-tagbase/
+tagona/
 ├── e2e/               # End-to-end tests (storage API only)
 ├── storage/           # Storage service
 │   ├── cmd/storage/     # main entry point
@@ -136,17 +136,17 @@ See each service's README for full env var documentation.
 
 | Env Var | Default | Description |
 |---------|---------|-------------|
-| `TAGBASE_HTTP_ADDR` | `:8080` | Storage service listen address |
-| `TAGBASE_PG_DSN` | — | Postgres connection string |
-| `TAGBASE_S3_ENDPOINT` | — | S3-compatible endpoint |
-| `TAGBASE_TAG_ENGINE_URL` | — | URL of the tagging engine |
+| `TAGONA_HTTP_ADDR` | `:8080` | Storage service listen address |
+| `TAGONA_PG_DSN` | — | Postgres connection string |
+| `TAGONA_S3_ENDPOINT` | — | S3-compatible endpoint |
+| `TAGONA_TAG_ENGINE_URL` | — | URL of the tagging engine |
 | `TAGGER_HTTP_ADDR` | `:8081` | Tagger listen address |
 | `TAGGER_STORAGE_BASE_URL` | `http://localhost:8080` | Storage service URL the tagger calls |
 | `TAGGER_EVALUATOR_IMPL` | `false` | Evaluator to use: `grep` (substring match for `txt`) or `false` (all tags `false`) |
 
 ---
 
-> **Security Note:** `compose.yaml` contains default development credentials (e.g. `tagbasedev`, `tagbase`). These are intended for local development only. Do not use them in production.
+> **Security Note:** `compose.yaml` contains default development credentials (e.g. `tagonadev`, `tagona`). These are intended for local development only. Do not use them in production.
 
 ## License
 

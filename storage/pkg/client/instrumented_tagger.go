@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"mrsydar/tagbase/storage/internal/metrics"
+	"mrsydar/tagona/storage/internal/metrics"
 )
 
 // InstrumentedTagger wraps a Tagger and records Prometheus metrics.

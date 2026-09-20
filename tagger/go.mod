@@ -1,4 +1,4 @@
-module mrsydar/tagbase/tagger
+module mrsydar/tagona/tagger
 
 go 1.26.4
 

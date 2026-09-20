@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"time"
 
-	"mrsydar/tagbase/storage/internal/db"
-	"mrsydar/tagbase/storage/internal/storage"
+	"mrsydar/tagona/storage/internal/db"
+	"mrsydar/tagona/storage/internal/storage"
 )
 
 // Sweeper periodically deletes expired objects.

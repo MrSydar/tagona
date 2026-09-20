@@ -5,7 +5,7 @@ all: build-client build-storage build-tagger
 ## Build
 
 build-client:
-	cd storage && go build -o ../bin/tagbase-client ./cmd/client
+	cd storage && go build -o ../bin/tagona-client ./cmd/client
 
 build-storage:
 	cd storage && go build -o ../bin/storage ./cmd/storage
@@ -28,7 +28,7 @@ e2e:
 
 help:
 	@echo "Available targets:"
-	@echo "  build-client   Build the storage CLI client (bin/tagbase-client)"
+	@echo "  build-client   Build the storage CLI client (bin/tagona-client)"
 	@echo "  build-storage  Build the storage service binary (bin/storage)"
 	@echo "  build-tagger   Build the tagger service binary (bin/tagger)"
 	@echo "  all            Build client, storage, and tagger binaries"

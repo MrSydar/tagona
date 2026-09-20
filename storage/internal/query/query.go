@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"time"
 
-	"mrsydar/tagbase/storage/internal/cursor"
-	"mrsydar/tagbase/storage/internal/db"
-	"mrsydar/tagbase/storage/internal/models"
-	"mrsydar/tagbase/storage/pkg/client"
+	"mrsydar/tagona/storage/internal/cursor"
+	"mrsydar/tagona/storage/internal/db"
+	"mrsydar/tagona/storage/internal/models"
+	"mrsydar/tagona/storage/pkg/client"
 )
 
 // Runner executes tag queries.

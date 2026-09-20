@@ -11,9 +11,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	storageclient "mrsydar/tagbase/storage/pkg/client"
-	"mrsydar/tagbase/tagger/internal/metrics"
-	"mrsydar/tagbase/tagger/pkg/evaluator"
+	storageclient "mrsydar/tagona/storage/pkg/client"
+	"mrsydar/tagona/tagger/internal/metrics"
+	"mrsydar/tagona/tagger/pkg/evaluator"
 )
 
 // Server is the tagging engine HTTP server.

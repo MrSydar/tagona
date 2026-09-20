@@ -8,7 +8,7 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability within Tagbase, please send an e-mail to Denys Hromniuk via denys.hromniuk@mrsydar.dev. All security vulnerabilities will be promptly addressed.
+If you discover a security vulnerability within Tagona, please send an e-mail to Denys Hromniuk via denys.hromniuk@mrsydar.dev. All security vulnerabilities will be promptly addressed.
 
 Please do not open public issues for security vulnerabilities. We appreciate your responsible disclosure.
 
