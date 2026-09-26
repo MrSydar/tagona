@@ -44,7 +44,7 @@ services:
       - .env
     environment:
       TAGGER_HTTP_ADDR: ":8081"
-      TAGGER_STORAGE_BASE_URL: "http://storage:8080"
+      TAGGER_STORAGE_BASE_URL: "http://storage:8082"
     ports:
       - "8081:8081"
     expose:
@@ -60,7 +60,7 @@ services:
       context: .
       dockerfile: storage/Dockerfile
     environment:
-      TAGONA_HTTP_ADDR: ":8080"
+      TAGONA_HTTP_ADDR: ":8082"
       TAGONA_PG_DSN: "postgres://tagona:tagona@postgres:5432/tagona?sslmode=disable"
       TAGONA_S3_ENDPOINT: "http://garage:3900"
       TAGONA_S3_REGION: "us-east-1"
@@ -75,16 +75,35 @@ services:
       TAGONA_MAX_TAGS_PER_QUERY: "100"
       TAGONA_MAX_OBJECT_SIZE_BYTES: "10485760"
       TAGONA_RETENTION_SWEEP_INTERVAL: "60s"
-    ports:
-      - "8080:8080"
     expose:
-      - "8080"
+      - "8082"
     depends_on:
       postgres:
         condition: service_healthy
       garage:
         condition: service_healthy
       tagger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    environment:
+      API_HTTP_ADDR: ":8080"
+      API_STORAGE_BASE_URL: "http://storage:8082"
+    ports:
+      - "8080:8080"
+    expose:
+      - "8080"
+    depends_on:
+      storage:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/readyz"]
@@ -118,7 +137,7 @@ services:
       - "3000:3000"
     depends_on:
       - prometheus
-      - storage
+      - api
       - tagger
 
 volumes:

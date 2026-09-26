@@ -9,25 +9,26 @@ A storage system for collections of objects with sparse boolean tags evaluated o
 ## Architecture
 
 ```
-┌─────────────┐      HTTP      ┌─────────────┐
-│   Clients   │ ◄────────────► │   Storage   │
-└─────────────┘                │   Service   │
-                               └──────┬──────┘
-                                      │
-                         ┌────────────┼────────────┐
-                         │            │            │
-                    ┌────▼────┐ ┌─────▼─────┐ ┌────▼───┐
-                    │ Postgres│ │  Tagging  │ │   S3   │
-                    │ metadata│ │  Engine   │ │payloads│
-                    └─────────┘ └───────────┘ └────────┘
+┌─────────────┐      HTTP      ┌─────────────┐   proxy    ┌─────────────┐
+│   Clients   │ ◄────────────► │     API     │ ◄────────► │   Storage   │
+└─────────────┘                │   Gateway   │            │   Service   │
+                               └─────────────┘            └──────┬──────┘
+                                                                 │
+                                                    ┌────────────┼────────────┐
+                                                    │            │            │
+                                               ┌────▼────┐ ┌─────▼─────┐ ┌────▼───┐
+                                               │ Postgres│ │  Tagging  │ │   S3   │
+                                               │ metadata│ │  Engine   │ │payloads│
+                                               └─────────┘ └───────────┘ └────────┘
 ```
 
 **Services**
 
 | Service | Module | Port | Role |
 |---------|--------|------|------|
-| [storage](storage/) | `mrsydar/tagona/storage` | `:8080` | HTTP API for collections, objects, tag queries, Prometheus metrics at `/metrics` |
-| [tagger](tagger/) | `mrsydar/tagona/tagger` | `:8081` | Evaluates tags by fetching object data from storage, Prometheus metrics at `/metrics` |
+| [api](api/) | `mrsydar/tagona/api` | `:8080` | Public API gateway: reverse-proxies `/v1/*` to storage, health/metrics; future home for auth/RBAC, Prometheus metrics at `/metrics` |
+| [storage](storage/) | `mrsydar/tagona/storage` | `:8082` | Internal data service: collections, objects, tag queries, retention, Prometheus metrics at `/metrics` |
+| [tagger](tagger/) | `mrsydar/tagona/tagger` | `:8081` | Evaluates tags by fetching object data from the internal storage service, Prometheus metrics at `/metrics` |
 
 **Infra**
 
@@ -46,7 +47,7 @@ Requirements: Docker + Docker Compose.
 docker compose up --build
 ```
 
-Wait for services to become healthy (~10-15s).
+Wait for services to become healthy (~10-15s). Services start in order: postgres/garage → tagger → storage (fetches supported types from the tagger, fatal if unreachable) → api (proxies storage).
 
 **Test**
 
@@ -75,11 +76,12 @@ curl -s -X POST http://localhost:8080/v1/collections/jobs/objects/query \
 curl -s "http://localhost:8080/v1/collections/jobs/objects/{id}/tags?tags=golang,qa"
 
 # 6. Check Prometheus metrics
+curl -s http://localhost:8080/metrics | grep api_
 curl -s http://localhost:8080/metrics | grep storage_
 curl -s http://localhost:8081/metrics | grep tagger_
 ```
 
-**Query parameters** (see [`storage/README.md`](storage/) for full API docs):
+**Query parameters** (see [`api/README.md`](api/) for full API docs):
 
 - `timeout_ms` — query timeout. Default `30000` (30 seconds). Must be between `1000` (1s) and `300000` (5m); otherwise a `400 invalid_timeout` error is returned. If exceeded and `best_effort` is `false`, a `query_timeout` error is returned.
 - `best_effort` — when `true`, a timed-out query returns whatever matched objects were found instead of failing. A `next` pagination cursor is included so the client can resume scanning.
@@ -88,11 +90,11 @@ curl -s http://localhost:8081/metrics | grep tagger_
 
 ## End-to-End Tests
 
-The `e2e/` directory contains end-to-end tests that exercise the storage public API against a live Docker Compose stack.
+The `e2e/` directory contains end-to-end tests that exercise the public API against a live Docker Compose stack.
 
 **Prerequisites:**
 - `docker compose up --build` is running
-- Storage readyz returns 200
+- `http://localhost:8080/readyz` returns 200
 
 **Run:**
 
@@ -109,11 +111,17 @@ The test suite covers: collections CRUD, object upload/retrieval/deletion, idemp
 
 ```
 tagona/
-├── e2e/               # End-to-end tests (storage API only)
-├── storage/           # Storage service
-│   ├── cmd/storage/     # main entry point
+├── e2e/               # End-to-end tests (public API only)
+├── api/               # Public API gateway
+│   ├── cmd/api/         # main entry point
 │   ├── internal/        # private implementation
-│   ├── pkg/client/      # public Go client for storage API
+│   ├── Dockerfile
+│   └── README.md
+├── storage/           # Internal storage/data service
+│   ├── cmd/storage/     # main entry point
+│   ├── cmd/client/      # reference CLI client
+│   ├── internal/        # private implementation
+│   ├── pkg/client/      # public Go client + Tagger interface
 │   ├── migrations/
 │   ├── Dockerfile
 │   └── README.md
@@ -136,12 +144,14 @@ See each service's README for full env var documentation.
 
 | Env Var | Default | Description |
 |---------|---------|-------------|
-| `TAGONA_HTTP_ADDR` | `:8080` | Storage service listen address |
+| `API_HTTP_ADDR` | `:8080` | API gateway listen address |
+| `API_STORAGE_BASE_URL` | — | Internal storage service URL the api service proxies to |
+| `TAGONA_HTTP_ADDR` | `:8082` | Storage service listen address |
 | `TAGONA_PG_DSN` | — | Postgres connection string |
 | `TAGONA_S3_ENDPOINT` | — | S3-compatible endpoint |
 | `TAGONA_TAG_ENGINE_URL` | — | URL of the tagging engine |
 | `TAGGER_HTTP_ADDR` | `:8081` | Tagger listen address |
-| `TAGGER_STORAGE_BASE_URL` | `http://localhost:8080` | Storage service URL the tagger calls |
+| `TAGGER_STORAGE_BASE_URL` | `http://localhost:8082` | Internal storage service URL the tagger calls to fetch objects |
 | `TAGGER_EVALUATOR_IMPL` | `false` | Evaluator to use: `grep` (substring match for `txt`) or `false` (all tags `false`) |
 
 ---

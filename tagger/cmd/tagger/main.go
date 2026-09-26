@@ -28,7 +28,7 @@ func main() {
 	}
 	storageBaseURL := os.Getenv("TAGGER_STORAGE_BASE_URL")
 	if storageBaseURL == "" {
-		storageBaseURL = "http://localhost:8080"
+		storageBaseURL = "http://localhost:8082"
 	}
 	evaluatorImpl := os.Getenv("TAGGER_EVALUATOR_IMPL")
 	if evaluatorImpl == "" {
