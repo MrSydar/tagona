@@ -8,12 +8,15 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"strconv"
 	"time"
 )
 
-// VercelEvaluator evaluates tags using the Vercel AI Gateway evaluate endpoint.
-// Each tag becomes a boolean question and the tag is true if the answer's
-// probability meets the classification threshold.
+// VercelEvaluator is the systemone "vercel" backend. It evaluates tags using
+// the Vercel AI Gateway evaluate endpoint. Each tag becomes a boolean question
+// and the tag is true if the answer's probability meets the classification
+// threshold.
 type VercelEvaluator struct {
 	apiKey     string
 	baseURL    string
@@ -36,6 +39,40 @@ func NewVercelEvaluator(apiKey, baseURL, model string, threshold float64, timeou
 			Timeout: timeout,
 		},
 	}
+}
+
+// NewVercelEvaluatorFromEnv creates a VercelEvaluator configured from the
+// TAGGER_VERCEL_* environment variables.
+func NewVercelEvaluatorFromEnv() *VercelEvaluator {
+	slog.Debug("NewVercelEvaluatorFromEnv called")
+	apiKey := os.Getenv("TAGGER_VERCEL_API_KEY")
+	baseURL := os.Getenv("TAGGER_VERCEL_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://ai-gateway.vercel.sh/v1"
+	}
+	model := os.Getenv("TAGGER_VERCEL_MODEL")
+	if model == "" {
+		model = "typesafe-ai/jev"
+	}
+	thresholdStr := os.Getenv("TAGGER_VERCEL_THRESHOLD")
+	threshold := 0.5
+	if thresholdStr != "" {
+		if t, err := strconv.ParseFloat(thresholdStr, 64); err == nil {
+			threshold = t
+		} else {
+			slog.Warn("invalid TAGGER_VERCEL_THRESHOLD, using default", "default", threshold, "error", err)
+		}
+	}
+	timeoutStr := os.Getenv("TAGGER_VERCEL_TIMEOUT")
+	timeout := 60 * time.Second
+	if timeoutStr != "" {
+		if d, err := time.ParseDuration(timeoutStr); err == nil {
+			timeout = d
+		} else {
+			slog.Warn("invalid TAGGER_VERCEL_TIMEOUT, using default", "default", timeout, "error", err)
+		}
+	}
+	return NewVercelEvaluator(apiKey, baseURL, model, threshold, timeout)
 }
 
 // Evaluate evaluates tags for the given content by sending one boolean

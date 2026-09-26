@@ -22,7 +22,7 @@ make docker-up
 
 - Postgres (`:5432`), Garage (`:3900` S3 API, `:3903` admin API), tagger (`:8081`), storage (`:8082`, internal — not exposed on the host), and api (`:8080`) all come up.
 - All services expose Prometheus metrics at `GET /metrics`.
-- `compose.yaml` mounts `.env` into the tagger service. Set `TAGGER_EVALUATOR_IMPL` there (`grep` works offline; `openai`/`vercel` need a valid API key — current local keys are expired, so use `grep`). `vercel` additionally uses `TAGGER_VERCEL_API_KEY`, `TAGGER_VERCEL_MODEL`, `TAGGER_VERCEL_THRESHOLD`. Running tagger standalone without `.env` defaults to `grep`.
+- `compose.yaml` mounts `.env` into the tagger service. Set `TAGGER_EVALUATOR_IMPL` there (`grep` works offline; `openai`/`systemone` need a valid API key — current local keys are expired, so use `grep`). `systemone` (backend `vercel`) additionally uses `TAGGER_VERCEL_API_KEY`, `TAGGER_VERCEL_MODEL`, `TAGGER_VERCEL_THRESHOLD`. Running tagger standalone without `.env` defaults to `grep`.
 - Startup ordering: postgres/garage → tagger → storage → api. Storage waits for tagger to be healthy, and api waits for storage (`depends_on` with `condition: service_healthy`).
 - Storage fails fast on startup if it cannot fetch supported types from tagger.
 - Wait for healthy; then test via `README.md` Quick Start curl commands (public API on `:8080`).

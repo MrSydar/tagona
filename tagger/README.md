@@ -73,9 +73,20 @@ The evaluator is selected via `TAGGER_EVALUATOR_IMPL`:
 | `grep`    | `txt`                | Tag is `true` if the payload (UTF-8 text) contains the tag string as a substring. Case-sensitive. |
 | `false`   | `txt`, `png`         | All tags evaluate to `false`. |
 | `openai`  | `txt`                | An LLM classifies the payload against the requested tags via an OpenAI-compatible chat completions API; missing tags default to `false`. |
-| `vercel`  | `txt`                | One boolean question per tag is sent to the Vercel AI Gateway `evaluate` endpoint; tag is `true` if the returned probability meets `TAGGER_VERCEL_THRESHOLD`. |
+| `systemone` | `txt`              | Pluggable-backend evaluator, selected via `TAGGER_SYSTEMONE_BACKEND` (default `vercel`). See [Systemone](#systemone) below. |
 
 The storage service validates that `data_type` is in the supported-types set (reported by the evaluator) before creating a collection.
+
+---
+
+## Systemone
+
+`TAGGER_EVALUATOR_IMPL=systemone` selects a pluggable-backend evaluator. The backend is chosen via `TAGGER_SYSTEMONE_BACKEND`:
+
+- Default: `vercel` (currently the only backend; more LLM gateway backends will be added later).
+- The `vercel` backend sends one boolean question per tag to the Vercel AI Gateway `evaluate` endpoint and marks a tag `true` when the returned probability meets `TAGGER_VERCEL_THRESHOLD`.
+
+The `vercel` backend keeps using the same env vars with unchanged behavior and threshold semantics: `TAGGER_VERCEL_API_KEY`, `TAGGER_VERCEL_BASE_URL`, `TAGGER_VERCEL_MODEL`, `TAGGER_VERCEL_THRESHOLD`, `TAGGER_VERCEL_TIMEOUT`.
 
 ---
 
@@ -85,12 +96,13 @@ The storage service validates that `data_type` is in the supported-types set (re
 |---------|----------|---------|-------------|
 | `TAGGER_HTTP_ADDR` | No | `:8081` | HTTP listen address |
 | `TAGGER_STORAGE_BASE_URL` | Yes | `http://localhost:8082` | Base URL of the storage service to fetch objects from |
-| `TAGGER_EVALUATOR_IMPL` | No | `false` | Evaluator to use: `grep`, `false`, `openai`, or `vercel` |
+| `TAGGER_EVALUATOR_IMPL` | No | `false` | Evaluator to use: `grep`, `false`, `openai`, or `systemone` |
+| `TAGGER_SYSTEMONE_BACKEND` | No | `vercel` | Systemone backend to use (only `vercel` for now) |
 | `TAGGER_OPENAI_API_KEY` | No | — | OpenAI API key (required when `TAGGER_EVALUATOR_IMPL=openai`) |
 | `TAGGER_OPENAI_BASE_URL` | No | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
 | `TAGGER_OPENAI_MODEL` | No | `gpt-4o-mini` | Model name for chat completions |
 | `TAGGER_OPENAI_TIMEOUT` | No | `60s` | HTTP timeout for OpenAI API requests |
-| `TAGGER_VERCEL_API_KEY` | No | — | Vercel AI Gateway token (required when `TAGGER_EVALUATOR_IMPL=vercel`) |
+| `TAGGER_VERCEL_API_KEY` | No | — | Vercel AI Gateway token (required for the systemone `vercel` backend) |
 | `TAGGER_VERCEL_BASE_URL` | No | `https://ai-gateway.vercel.sh/v1` | Vercel AI Gateway base URL |
 | `TAGGER_VERCEL_MODEL` | No | `typesafe-ai/jev` | Model name sent to the evaluate endpoint |
 | `TAGGER_VERCEL_THRESHOLD` | No | `0.5` | Probability threshold: tag is `true` when probability ≥ threshold |

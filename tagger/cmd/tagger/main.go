@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -61,35 +60,17 @@ func main() {
 			}
 		}
 		ev = evaluator.NewOpenAIEvaluator(openaiAPIKey, openaiBaseURL, openaiModel, openaiTimeout)
-	case "vercel":
-		vercelAPIKey := os.Getenv("TAGGER_VERCEL_API_KEY")
-		vercelBaseURL := os.Getenv("TAGGER_VERCEL_BASE_URL")
-		if vercelBaseURL == "" {
-			vercelBaseURL = "https://ai-gateway.vercel.sh/v1"
+	case "systemone":
+		backend := os.Getenv("TAGGER_SYSTEMONE_BACKEND")
+		if backend == "" {
+			backend = "vercel"
 		}
-		vercelModel := os.Getenv("TAGGER_VERCEL_MODEL")
-		if vercelModel == "" {
-			vercelModel = "typesafe-ai/jev"
+		sone, err := evaluator.NewSystemoneEvaluator(backend)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to create systemone evaluator: %v\n", err)
+			os.Exit(1)
 		}
-		vercelThresholdStr := os.Getenv("TAGGER_VERCEL_THRESHOLD")
-		vercelThreshold := 0.5
-		if vercelThresholdStr != "" {
-			if t, err := strconv.ParseFloat(vercelThresholdStr, 64); err == nil {
-				vercelThreshold = t
-			} else {
-				slog.Warn("invalid TAGGER_VERCEL_THRESHOLD, using default", "default", vercelThreshold, "error", err)
-			}
-		}
-		vercelTimeoutStr := os.Getenv("TAGGER_VERCEL_TIMEOUT")
-		vercelTimeout := 60 * time.Second
-		if vercelTimeoutStr != "" {
-			if d, err := time.ParseDuration(vercelTimeoutStr); err == nil {
-				vercelTimeout = d
-			} else {
-				slog.Warn("invalid TAGGER_VERCEL_TIMEOUT, using default", "default", vercelTimeout, "error", err)
-			}
-		}
-		ev = evaluator.NewVercelEvaluator(vercelAPIKey, vercelBaseURL, vercelModel, vercelThreshold, vercelTimeout)
+		ev = sone
 	default:
 		fmt.Fprintf(os.Stderr, "unknown evaluator implementation: %s\n", evaluatorImpl)
 		os.Exit(1)
