@@ -58,7 +58,7 @@ go run ./cmd/tagger
 **Build binaries:**
 
 ```bash
-make all              # builds bin/api, bin/storage, bin/tagger, bin/tagona-client
+make all              # builds bin/api, bin/storage, bin/tagger, bin/tagona
 cd api && go build -o /tmp/api ./cmd/api
 cd storage && go build -o /tmp/storage ./cmd/storage
 cd tagger && go build -o /tmp/tagger ./cmd/tagger
@@ -69,7 +69,7 @@ cd tagger && go build -o /tmp/tagger ./cmd/tagger
 A reference CLI client exists in the storage module:
 
 ```bash
-make build-client     # builds bin/tagona-client
+make build-client     # builds bin/tagona
 cd storage
 go run ./cmd/client --url http://localhost:8080 <command>
 ```

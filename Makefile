@@ -8,7 +8,7 @@ build-api:
 	cd api && go build -o ../bin/api ./cmd/api
 
 build-client:
-	cd storage && go build -o ../bin/tagona-client ./cmd/client
+	cd storage && go build -o ../bin/tagona ./cmd/client
 
 build-storage:
 	cd storage && go build -o ../bin/storage ./cmd/storage
@@ -32,7 +32,7 @@ e2e:
 help:
 	@echo "Available targets:"
 	@echo "  build-api      Build the api service binary (bin/api)"
-	@echo "  build-client   Build the storage CLI client (bin/tagona-client)"
+	@echo "  build-client   Build the storage CLI client (bin/tagona)"
 	@echo "  build-storage  Build the storage service binary (bin/storage)"
 	@echo "  build-tagger   Build the tagger service binary (bin/tagger)"
 	@echo "  all            Build api, client, storage, and tagger binaries"

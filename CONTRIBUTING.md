@@ -15,7 +15,7 @@ Thank you for your interest in contributing! This document explains the workflow
 ```bash
 git clone git@github.com:MrSydar/tagona.git
 cd tagona
-make all                 # builds bin/storage, bin/tagger, bin/tagona-client
+make all                 # builds bin/storage, bin/tagger, bin/tagona
 ```
 
 ### Running the Stack
