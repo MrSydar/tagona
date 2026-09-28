@@ -94,6 +94,45 @@ type DateFilter struct {
 	EQ  *time.Time `json:"eq,omitempty"`
 }
 
+// APIKey represents an API key used to authenticate /v1/* requests.
+type APIKey struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	KeyPrefix string    `json:"key_prefix"`
+	Key       string    `json:"key,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// APIKeyCreateRequest is the request to create an API key.
+type APIKeyCreateRequest struct {
+	Name string `json:"name"`
+}
+
+// APIKeyCreateResponse is the response after creating an API key.
+// The raw key appears only in this response and is never shown again.
+type APIKeyCreateResponse struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Key       string    `json:"key"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// APIKeysListResponse is the response for listing API keys.
+type APIKeysListResponse struct {
+	Keys []APIKey `json:"keys"`
+}
+
+// APIKeyValidateRequest is the request to validate an API key.
+type APIKeyValidateRequest struct {
+	Key string `json:"key"`
+}
+
+// APIKeyValidateResponse is the response after validating an API key.
+type APIKeyValidateResponse struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // TaggingSupportedTypesResponse is the response from supported-types endpoint.
 type TaggingSupportedTypesResponse struct {
 	Types []string `json:"types"`

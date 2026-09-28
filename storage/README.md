@@ -37,6 +37,19 @@ The storage service answers the same routes it serves to the api gateway (no pat
 | `POST` | `/v1/collections/{collection}/objects/query` | Query by tags |
 | `DELETE` | `/v1/collections/{collection}/objects/{id}` | Hard delete |
 
+### Internal API key endpoints
+
+The storage service also owns API key persistence for the api gateway. These routes are **internal** — unauthenticated and not reachable through the public gateway (which only proxies `/v1/*`):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/internal/v1/api-keys` | Create an API key. Body `{"name":"..."}` (non-empty, valid UTF-8, ≤128 bytes). Returns `201` `{"id","name","key","created_at"}` — the raw key (`tagona_` + 64 hex chars) appears only here; only its SHA-256 hash is stored |
+| `GET` | `/internal/v1/api-keys` | List API keys. Returns `200` `{"keys":[{"id","name","key_prefix","created_at"}]}` |
+| `DELETE` | `/internal/v1/api-keys/{id}` | Delete an API key. `204` on success, `404` if unknown |
+| `POST` | `/internal/v1/api-keys/validate` | Validate a raw key. Body `{"key":"..."}`. Found → `200` `{"id","name"}`; unknown → `401` `{"error":{"code":"invalid_api_key","message":"invalid or unknown api key"}}` |
+
+No auth is enforced here on purpose: storage is internal-only. The api service validates Bearer keys via `/internal/v1/api-keys/validate` and manages keys via the create/list/delete routes, exposing them publicly under `/v1/admin/api-keys` behind admin Basic auth.
+
 ---
 
 ## Configuration
@@ -99,6 +112,7 @@ storage/
 │   ├── config/            # env parsing
 │   ├── cursor/            # pagination cursor encode/decode
 │   ├── db/                # Postgres queries and transactions
+│   ├── keys/              # API key generation and hashing
 │   ├── models/            # shared struct types
 │   ├── query/             # tag query + scan logic
 │   ├── retention/         # TTL background sweeper
@@ -116,28 +130,30 @@ The `pkg/client` package is the reusable Go HTTP client for the Tagona data API.
 
 ### CLI Client
 
-A reference CLI client is available at `cmd/client`:
+A reference CLI client is available at `cmd/client`. Every request requires an API key (sent as `Authorization: Bearer <api-key>`) — pass it with `--token` or the `API_TOKEN` env var:
 
 ```bash
-go run ./cmd/client --url http://localhost:8080 <command> [options]
+go run ./cmd/client --url http://localhost:8080 --token "$API_TOKEN" <command> [options]
 ```
+
+When pointing the client at the api gateway (`:8080`), use a key created via the admin endpoints (see [`api/README.md`](../api/)); when pointing it directly at storage (`:8082`), the header is accepted but not enforced.
 
 ### Commands
 
 ```bash
-# Collections
-client --url http://localhost:8080 list-collections
-client --url http://localhost:8080 create-collection --name jobs --data-type txt
-client --url http://localhost:8080 delete-collection --collection jobs
+# Collections (all commands require --token or API_TOKEN)
+client --url http://localhost:8080 --token "$API_TOKEN" list-collections
+client --url http://localhost:8080 --token "$API_TOKEN" create-collection --name jobs --data-type txt
+client --url http://localhost:8080 --token "$API_TOKEN" delete-collection --collection jobs
 
 # Objects
-client --url http://localhost:8080 upload --collection jobs --data-type txt --file hello.txt
-client --url http://localhost:8080 get --collection jobs --id <id>
-client --url http://localhost:8080 data --collection jobs --id <id> --out hello.txt
-client --url http://localhost:8080 tags --collection jobs --id <id> --tags golang,qa
-client --url http://localhost:8080 query --collection jobs --tags '{"golang":true}' --limit 5 --timeout 30000
-client --url http://localhost:8080 query --collection jobs --tags '{"golang":true}' --limit 5 --best-effort
-client --url http://localhost:8080 delete --collection jobs --id <id>
+client --url http://localhost:8080 --token "$API_TOKEN" upload --collection jobs --data-type txt --file hello.txt
+client --url http://localhost:8080 --token "$API_TOKEN" get --collection jobs --id <id>
+client --url http://localhost:8080 --token "$API_TOKEN" data --collection jobs --id <id> --out hello.txt
+client --url http://localhost:8080 --token "$API_TOKEN" tags --collection jobs --id <id> --tags golang,qa
+client --url http://localhost:8080 --token "$API_TOKEN" query --collection jobs --tags '{"golang":true}' --limit 5 --timeout 30000
+client --url http://localhost:8080 --token "$API_TOKEN" query --collection jobs --tags '{"golang":true}' --limit 5 --best-effort
+client --url http://localhost:8080 --token "$API_TOKEN" delete --collection jobs --id <id>
 ```
 
 ---
@@ -150,6 +166,8 @@ Migrations are applied automatically on startup using a simple file-based runner
 |------|-------------|
 | `000001_initial_schema.up.sql` | Creates `collections`, `objects`, `object_tags` tables with indexes |
 | `000001_initial_schema.down.sql` | Drops tables |
+| `000002_api_keys.up.sql` | Creates the `api_keys` table (hash, prefix, name) used for Bearer API key auth on the api gateway |
+| `000002_api_keys.down.sql` | Drops `api_keys` |
 
 ---
 

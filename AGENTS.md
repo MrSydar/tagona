@@ -89,9 +89,11 @@ make e2e
 
 - `GOWORK=off` is required because the root `go.work` file would otherwise be picked up from the parent directory, interfering with the e2e module.
 - Requires the Docker Compose stack running and `http://localhost:8080/readyz` returning `200`.
+- Tests authenticate with admin HTTP Basic auth (`API_ADMIN_USERNAME`/`API_ADMIN_PASSWORD`, defaults `admin`/`tagona` matching compose) to mint an API key via `POST /v1/admin/api-keys`, then send `Authorization: Bearer <key>` on every `/v1/*` request.
 
 ## Important quirks
 
+- **Auth:** the api service requires `Authorization: Bearer <api key>` on every `/v1/*` request (401 `missing_api_key` when missing/malformed, 401 `invalid_api_key` when unknown, 503 `not_ready` if storage is unreachable during validation). Key management lives under `/v1/admin/api-keys` (create/list/delete) and uses admin HTTP Basic auth from `API_ADMIN_USERNAME`/`API_ADMIN_PASSWORD` (403 `admin_disabled` when unset); presenting an API key there returns 403 `forbidden`. Keys are stored in the storage DB (`api_keys` table, migration `000002`) and exposed via storage's unauthenticated INTERNAL endpoints (`/internal/v1/api-keys*`) — storage and tagger remain auth-free because they are internal-only. `/healthz`, `/readyz`, `/metrics` stay unauthenticated on the api service for Docker healthchecks and Prometheus scraping.
 - **Custom migrations runner:** Storage applies migrations on startup by executing all `*.up.sql` files in `storage/migrations/` in lexicographic order. It is not using `golang-migrate`.
 - **Tagger talks to storage directly:** The tagger fetches object metadata and payloads from the internal storage service (`:8082`) via the `storage/pkg/client` HTTP client (no DB access). Storage's `readyz` checks DB + S3; api's `readyz` checks storage readiness; tagger's `readyz` always returns 200.
 - **Startup ordering matters:** Storage must reach tagger on startup to fetch supported types; api must reach storage (its `readyz` reports storage availability). In Docker Compose this is enforced by `depends_on` + healthchecks: tagger → storage → api. Running storage standalone without tagger causes a fatal error.

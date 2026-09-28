@@ -26,7 +26,7 @@ A storage system for collections of objects with sparse boolean tags evaluated o
 
 | Service | Module | Port | Role |
 |---------|--------|------|------|
-| [api](api/) | `mrsydar/tagona/api` | `:8080` | Public API gateway: reverse-proxies `/v1/*` to storage, health/metrics; future home for auth/RBAC, Prometheus metrics at `/metrics` |
+| [api](api/) | `mrsydar/tagona/api` | `:8080` | Public API gateway: reverse-proxies `/v1/*` to storage behind Bearer API key auth, admin API key management, health/metrics, Prometheus metrics at `/metrics` |
 | [storage](storage/) | `mrsydar/tagona/storage` | `:8082` | Internal data service: collections, objects, tag queries, retention, Prometheus metrics at `/metrics` |
 | [tagger](tagger/) | `mrsydar/tagona/tagger` | `:8081` | Evaluates tags by fetching object data from the internal storage service, Prometheus metrics at `/metrics` |
 
@@ -51,31 +51,43 @@ Wait for services to become healthy (~10-15s). Services start in order: postgres
 
 **Test**
 
+Every `/v1/*` request requires `Authorization: Bearer <api key>`; keys are created via the admin endpoint below (admin HTTP Basic auth). `/healthz`, `/readyz`, and `/metrics` stay open.
+
 ```bash
+# 0. Create an API key (admin Basic auth). The raw key is shown only once.
+KEY=$(curl -s -u admin:tagona -X POST http://localhost:8080/v1/admin/api-keys \
+  -H "Content-Type: application/json" \
+  -d '{"name":"dev"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['key'])")
+
 # 1. Create a collection
 curl -s -X POST http://localhost:8080/v1/collections \
+  -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
   -d '{"name":"jobs","data_type":"txt"}'
 
 # 2. Upload an object
 curl -s -X POST "http://localhost:8080/v1/collections/jobs/objects?data_type=txt" \
+  -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/octet-stream" \
   -d 'hello golang qa'
 
 # 3. Query objects by tags (default timeout 30s)
 curl -s -X POST http://localhost:8080/v1/collections/jobs/objects/query \
+  -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
   -d '{"tags":{"golang":true},"limit":5,"timeout_ms":30000}'
 
 # 4. Best-effort query: returns partial results instead of error on timeout
 curl -s -X POST http://localhost:8080/v1/collections/jobs/objects/query \
+  -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
   -d '{"tags":{"golang":true},"limit":5,"timeout_ms":1000,"best_effort":true}'
 
 # 5. Inspect object tags directly
-curl -s "http://localhost:8080/v1/collections/jobs/objects/{id}/tags?tags=golang,qa"
+curl -s -H "Authorization: Bearer $KEY" \
+  "http://localhost:8080/v1/collections/jobs/objects/{id}/tags?tags=golang,qa"
 
-# 6. Check Prometheus metrics
+# 6. Check Prometheus metrics (unauthenticated)
 curl -s http://localhost:8080/metrics | grep api_
 curl -s http://localhost:8080/metrics | grep storage_
 curl -s http://localhost:8081/metrics | grep tagger_
@@ -103,7 +115,7 @@ cd e2e
 GOWORK=off go test -v -count=1 .
 ```
 
-The test suite covers: collections CRUD, object upload/retrieval/deletion, idempotent uploads, tag evaluation via the tagger, tag queries with AND semantics, and pagination.
+The test suite covers: collections CRUD, object upload/retrieval/deletion, idempotent uploads, tag evaluation via the tagger, tag queries with AND semantics, and pagination. Tests authenticate using admin Basic auth (env `API_ADMIN_USERNAME`/`API_ADMIN_PASSWORD`, defaults matching compose) to mint an API key, then send it as `Authorization: Bearer <key>` on every `/v1/*` call.
 
 ---
 
@@ -146,6 +158,8 @@ See each service's README for full env var documentation.
 |---------|---------|-------------|
 | `API_HTTP_ADDR` | `:8080` | API gateway listen address |
 | `API_STORAGE_BASE_URL` | — | Internal storage service URL the api service proxies to |
+| `API_ADMIN_USERNAME` | — | Admin username for API key management (Basic auth); unset = admin endpoints disabled |
+| `API_ADMIN_PASSWORD` | — | Admin password for API key management (Basic auth); unset = admin endpoints disabled |
 | `TAGONA_HTTP_ADDR` | `:8082` | Storage service listen address |
 | `TAGONA_PG_DSN` | — | Postgres connection string |
 | `TAGONA_S3_ENDPOINT` | — | S3-compatible endpoint |

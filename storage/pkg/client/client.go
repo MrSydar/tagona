@@ -16,6 +16,7 @@ import (
 // Client is an HTTP client for the storage service public API.
 type Client struct {
 	baseURL string
+	token   string
 	http    *http.Client
 }
 
@@ -26,6 +27,25 @@ func New(baseURL string) *Client {
 		baseURL: strings.TrimSuffix(baseURL, "/"),
 		http:    &http.Client{Timeout: 30 * time.Second},
 	}
+}
+
+// NewWithToken creates a new storage client that sends the given API key as a
+// Bearer token on every request.
+func NewWithToken(baseURL, token string) *Client {
+	slog.Debug("NewWithToken", "baseURL", baseURL)
+	return &Client{
+		baseURL: strings.TrimSuffix(baseURL, "/"),
+		token:   token,
+		http:    &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// setAuth sets the Authorization header on the request when a token is configured.
+func (c *Client) setAuth(req *http.Request) {
+	if c.token == "" {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
 }
 
 // Collection represents a collection from the storage service.
@@ -112,6 +132,7 @@ func (c *Client) ListCollections(ctx context.Context) ([]Collection, error) {
 	if err != nil {
 		return nil, err
 	}
+	c.setAuth(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("list collections: %w", err)
@@ -141,6 +162,7 @@ func (c *Client) CreateCollection(ctx context.Context, name, dataType string) (*
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.setAuth(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("create collection: %w", err)
@@ -165,6 +187,7 @@ func (c *Client) GetObjectMetadata(ctx context.Context, collection, id string) (
 	if err != nil {
 		return nil, err
 	}
+	c.setAuth(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch metadata: %w", err)
@@ -188,6 +211,7 @@ func (c *Client) GetObjectData(ctx context.Context, collection, id string) ([]by
 	if err != nil {
 		return nil, err
 	}
+	c.setAuth(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch data: %w", err)
@@ -219,6 +243,7 @@ func (c *Client) GetObjectTags(ctx context.Context, collection, id string, tags 
 	if err != nil {
 		return nil, err
 	}
+	c.setAuth(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch tags: %w", err)
@@ -247,6 +272,7 @@ func (c *Client) QueryObjects(ctx context.Context, collection string, req TagsQu
 		return nil, err
 	}
 	hreq.Header.Set("Content-Type", "application/json")
+	c.setAuth(hreq)
 	resp, err := c.http.Do(hreq)
 	if err != nil {
 		return nil, fmt.Errorf("query objects: %w", err)
@@ -277,6 +303,7 @@ func (c *Client) UploadObject(ctx context.Context, collection, dataType string, 
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
+	c.setAuth(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("upload object: %w", err)
@@ -300,6 +327,7 @@ func (c *Client) DeleteCollection(ctx context.Context, collection string) error 
 	if err != nil {
 		return err
 	}
+	c.setAuth(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("delete collection: %w", err)
@@ -319,6 +347,7 @@ func (c *Client) DeleteObject(ctx context.Context, collection, id string) error 
 	if err != nil {
 		return err
 	}
+	c.setAuth(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("delete object: %w", err)
