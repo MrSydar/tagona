@@ -1,6 +1,7 @@
 # Tagona
 
-A storage system for collections of objects with sparse boolean tags evaluated on demand during queries. Tags are stored only when known; absence means unknown until evaluated by the tagging engine.
+A storage system for collections of objects with sparse boolean tags evaluated on demand during queries.
+Tags are stored only when known; absence means unknown until evaluated by the tagging engine.
 
 **Status:** implemented MVP.
 
