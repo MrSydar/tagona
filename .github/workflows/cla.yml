@@ -23,5 +23,5 @@ jobs:
         with:
           path-to-signatures: 'signatures/version1/cla.json'
           path-to-document: 'https://github.com/MrSydar/tagona/blob/main/CLA.md'
-          branch: 'main'
+          branch: 'cla-signatures'
           allowlist: dependabot[bot], renovate[bot]
