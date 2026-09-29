@@ -22,6 +22,6 @@ jobs:
           PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_ACCESS_TOKEN }}
         with:
           path-to-signatures: 'signatures/version1/cla.json'
-          path-to-document: 'https://github.com/YOUR-ORG/YOUR-REPO/blob/main/CLA.md'
+          path-to-document: 'https://github.com/MrSydar/tagona/blob/main/CLA.md'
           branch: 'main'
           allowlist: dependabot[bot], renovate[bot]
