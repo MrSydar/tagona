@@ -17,3 +17,4 @@ To clarify intellectual property rights granted with Contributions from any pers
 
 ### 4. Support Disclaimer
 * Unless required by applicable law or agreed to in writing, You provide Contributions on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
+
