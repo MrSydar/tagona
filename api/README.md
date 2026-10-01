@@ -2,7 +2,7 @@
 
 Go module: `mrsydar/tagona/api`
 
-The public API gateway for Tagona, listening on `:8080`. A thin layer by design: it owns no business logic (no database, no object storage, no tagger access, no validation). It reverse-proxies every `/v1/*` request verbatim to the internal storage service and serves health/readiness/metrics locally.
+The public API gateway for Tagona, listening on `:8080` inside the compose network. In Docker Compose it is not published on the host: the Traefik edge proxy ([`traefik/`](../traefik/README.md)) exposes it on `:8080` (HTTP) and `:8443` (TLS). A thin layer by design: it owns no business logic (no database, no object storage, no tagger access, no validation). It reverse-proxies every `/v1/*` request verbatim to the internal storage service and serves health/readiness/metrics locally.
 
 This is the future home for cross-cutting concerns such as RBAC. Authentication is implemented here: every `/v1/*` request requires a Bearer API key, and API key management requires admin HTTP Basic auth.
 

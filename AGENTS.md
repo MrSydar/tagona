@@ -20,10 +20,11 @@ make docker-up
 # or: docker compose up --build -d
 ```
 
-- Postgres (`:5432`), Garage (`:3900` S3 API, `:3903` admin API), tagger (`:8081`), storage (`:8082`, internal — not exposed on the host), and api (`:8080`) all come up.
+- Postgres (`:5432`), Garage (`:3900` S3 API, `:3903` admin API), tagger (`:8081`), storage (`:8082`, internal — not exposed on the host), api (`:8080`, internal — not published) and traefik (`:8080` plain HTTP / `:8443` TLS) all come up.
 - All services expose Prometheus metrics at `GET /metrics`.
 - `compose.yaml` mounts `.env` into the tagger service. Set `TAGGER_EVALUATOR_IMPL` there (`grep` works offline; `openai`/`systemone` need a valid API key — current local keys are expired, so use `grep`). `systemone` (backend `vercel`) additionally uses `TAGGER_VERCEL_API_KEY`, `TAGGER_VERCEL_MODEL`, `TAGGER_VERCEL_THRESHOLD`. Running tagger standalone without `.env` defaults to `grep`.
-- Startup ordering: postgres/garage → tagger → storage → api. Storage waits for tagger to be healthy, and api waits for storage (`depends_on` with `condition: service_healthy`).
+- The public entrypoint is **traefik** (`traefik/`, file provider — no Docker socket): `:8080` is plain HTTP and `:8443` is TLS (Traefik's self-signed default cert), both routing `/v1/*`, `/healthz` and `/readyz` to api. `/metrics` is not routed (Prometheus scrapes `api:8080` on the compose network). The api container no longer publishes a host port.
+- Startup ordering: postgres/garage → tagger → storage → api → traefik. Storage waits for tagger to be healthy, api waits for storage, and traefik waits for api (`depends_on` with `condition: service_healthy`).
 - Storage fails fast on startup if it cannot fetch supported types from tagger.
 - Wait for healthy; then test via `README.md` Quick Start curl commands (public API on `:8080`).
 
@@ -97,7 +98,8 @@ make e2e
 - **Custom migrations runner:** Storage applies migrations on startup by executing all `*.up.sql` files in `storage/migrations/` in lexicographic order. It is not using `golang-migrate`.
 - **Tagger talks to storage directly:** The tagger fetches object metadata and payloads from the internal storage service (`:8082`) via the `storage/pkg/client` HTTP client (no DB access). Storage's `readyz` checks DB + S3; api's `readyz` checks storage readiness; tagger's `readyz` always returns 200.
 - **Startup ordering matters:** Storage must reach tagger on startup to fetch supported types; api must reach storage (its `readyz` reports storage availability). In Docker Compose this is enforced by `depends_on` + healthchecks: tagger → storage → api. Running storage standalone without tagger causes a fatal error.
-- **api is a thin reverse proxy:** It owns no DB, no S3, no validation, no tagger access. It proxies `/v1/*` verbatim to storage on `:8082` and serves `/healthz`, `/readyz`, `/metrics` locally. Storage serves the same routes on `:8082` — no path rewriting.
+- **api is a thin reverse proxy:** It owns no DB, no S3, no validation, no tagger access. It proxies an explicit **allowlist** of storage routes (`proxiedRoutes` in `api/cmd/api/gateway.go`) to storage on `:8082` without path rewriting, and serves `/healthz`, `/readyz`, `/metrics` locally. A new storage route stays private until it is added to that list. Unsafe paths (`..`, `//`, encoded slashes) get 400, bodies over `API_MAX_BODY_BYTES` get 413, the `Authorization` and `X-Forwarded-*` headers are not forwarded, key validation is cached (`API_KEY_CACHE_TTL`) and requests are rate limited per API key (`API_RATE_LIMIT_RPS`).
+- **Edge vs api responsibilities:** Traefik handles TLS, per-IP rate limiting and connection timeouts; api handles everything key-aware (auth, per-key limits, allowlist, body limit). Traefik's `dynamic.yml` is a Go template, so do not put `{{` in comments there.
 - **Hash-based idempotency:** Object upload computes SHA-256 over raw bytes. Duplicate uploads in the same collection return the existing object; the newly uploaded S3 object is not retained.
 - **Prometheus metrics:** All services expose metrics at `GET /metrics` via `github.com/prometheus/client_golang`.
   - Storage metrics: `storage_requests_total`, `storage_errors_total`, `storage_tagger_latency_seconds`.

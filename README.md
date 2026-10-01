@@ -26,7 +26,7 @@ A storage system for collections of objects with sparse boolean tags evaluated o
 
 | Service | Module | Port | Role |
 |---------|--------|------|------|
-| [api](api/) | `mrsydar/tagona/api` | `:8080` | Public API gateway: reverse-proxies `/v1/*` to storage behind Bearer API key auth, admin API key management, health/metrics, Prometheus metrics at `/metrics` |
+| [api](api/) | `mrsydar/tagona/api` | `:8080` (internal) | Public API gateway: reverse-proxies an allowlist of `/v1/collections...` routes to storage behind Bearer API key auth, per-key rate limiting, admin API key management, health/readiness, Prometheus metrics at `/metrics` (scraped internally) |
 | [storage](storage/) | `mrsydar/tagona/storage` | `:8082` | Internal data service: collections, objects, tag queries, retention, Prometheus metrics at `/metrics` |
 | [tagger](tagger/) | `mrsydar/tagona/tagger` | `:8081` | Evaluates tags by fetching object data from the internal storage service, Prometheus metrics at `/metrics` |
 
@@ -36,6 +36,7 @@ A storage system for collections of objects with sparse boolean tags evaluated o
 |---------|-------|------|------|
 | postgres | `postgres:15` | `:5432` | Collections, object metadata, tag values |
 | garage | `dxflrs/garage` | `:3900` / `:3903` | S3-compatible object storage |
+| traefik | `traefik:v3.6` | `:8080` / `:8443` | Edge proxy in front of api: plain HTTP on `:8080`, TLS on `:8443`, per-IP rate limiting, timeouts. See [traefik/](traefik/README.md) |
 
 ---
 
@@ -160,6 +161,10 @@ See each service's README for full env var documentation.
 | `API_STORAGE_BASE_URL` | — | Internal storage service URL the api service proxies to |
 | `API_ADMIN_USERNAME` | — | Admin username for API key management (Basic auth); unset = admin endpoints disabled |
 | `API_ADMIN_PASSWORD` | — | Admin password for API key management (Basic auth); unset = admin endpoints disabled |
+| `API_MAX_BODY_BYTES` | `33554432` | Maximum request body size accepted by the api service |
+| `API_KEY_CACHE_TTL` | `30s` | How long API key validation verdicts are cached; `0` disables |
+| `API_RATE_LIMIT_RPS` / `API_RATE_LIMIT_BURST` | `100` / `200` | Per-API-key rate limit; RPS `0` disables |
+| `EDGE_RATE_LIMIT_AVERAGE` / `EDGE_RATE_LIMIT_BURST` | `200` / `400` | Per-IP rate limit at the Traefik edge (requests per second) |
 | `TAGONA_HTTP_ADDR` | `:8082` | Storage service listen address |
 | `TAGONA_PG_DSN` | — | Postgres connection string |
 | `TAGONA_S3_ENDPOINT` | — | S3-compatible endpoint |
