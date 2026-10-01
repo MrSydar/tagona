@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        module: [storage, tagger]
+        module: [api, storage, tagger]
     defaults:
       run:
         working-directory: ${{ matrix.module }}
