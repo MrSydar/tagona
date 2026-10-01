@@ -54,11 +54,18 @@ func main() {
 		maxBodyBytes = n
 	}
 
+	keyCacheTTL := envDuration("API_KEY_CACHE_TTL", 30*time.Second)
+	rateLimitRPS := envFloat("API_RATE_LIMIT_RPS", 100)
+	rateLimitBurst := int(envFloat("API_RATE_LIMIT_BURST", 200))
+
 	slog.Debug("starting tagona api service")
+
+	// One connection pool shared by the proxy, the key client and readyz.
+	transport := newStorageTransport()
 
 	// Storage API key client for key validation and management.
 	slog.Debug("initializing storage key client", "url", storageBaseURL)
-	keyClient := storageapi.New(storageBaseURL)
+	keyClient := storageapi.New(storageBaseURL, storageapi.WithTransport(transport))
 
 	// Reverse proxy to the storage service.
 	slog.Debug("initializing reverse proxy", "url", storageBaseURL)
@@ -67,9 +74,23 @@ func main() {
 		slog.Error("invalid API_STORAGE_BASE_URL", "error", err)
 		os.Exit(1)
 	}
-	proxy := newProxy(target, nil)
+	proxy := newProxy(target, transport)
 
-	r := newRouter(storageBaseURL, proxy, keyClient, adminUsername, adminPassword, gatewayConfig{maxBodyBytes: maxBodyBytes})
+	cfg := gatewayConfig{
+		maxBodyBytes: maxBodyBytes,
+		validator:    keyClient,
+		httpClient:   &http.Client{Transport: transport},
+	}
+	if keyCacheTTL > 0 {
+		cache := newCachedValidator(keyClient, keyCacheTTL)
+		cfg.validator = cache
+		cfg.onKeyDeleted = cache.Purge
+	}
+	if rateLimitRPS > 0 {
+		cfg.rateLimiter = newKeyRateLimiter(rateLimitRPS, rateLimitBurst)
+	}
+
+	r := newRouter(storageBaseURL, proxy, keyClient, adminUsername, adminPassword, cfg)
 
 	// HTTP server.
 	slog.Debug("starting HTTP server", "addr", httpAddr)
@@ -104,6 +125,14 @@ func main() {
 // gatewayConfig holds the tunables of the proxied /v1/* surface.
 type gatewayConfig struct {
 	maxBodyBytes int64
+	// validator checks Bearer keys; nil falls back to the key client.
+	validator keyValidator
+	// rateLimiter limits requests per API key; nil disables limiting.
+	rateLimiter *keyRateLimiter
+	// onKeyDeleted runs after a key is deleted through the gateway.
+	onKeyDeleted func()
+	// httpClient is used for the storage readiness probe; nil uses the default.
+	httpClient *http.Client
 }
 
 // newRouter builds the chi router. Admin key-management routes are static
@@ -111,22 +140,31 @@ type gatewayConfig struct {
 // (see proxiedRoutes), so anything else under /v1/ is a 404.
 func newRouter(storageBaseURL string, proxy http.Handler, keyClient *storageapi.Client, adminUsername, adminPassword string, cfg gatewayConfig) http.Handler {
 	slog.Debug("creating router")
+	validator := cfg.validator
+	if validator == nil {
+		validator = keyClient
+	}
+	httpClient := cfg.httpClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
 	r := chi.NewRouter()
 	r.Use(requestLogger())
 	r.Use(metrics.Middleware)
 	r.Use(safePath)
 
 	r.Get("/healthz", healthz)
-	r.Get("/readyz", readyz(storageBaseURL))
+	r.Get("/readyz", readyz(storageBaseURL, httpClient))
 	r.Get("/metrics", promhttp.Handler().ServeHTTP)
 
 	r.Post("/v1/admin/api-keys", adminAuth(adminUsername, adminPassword, createAPIKey(keyClient)).ServeHTTP)
 	r.Get("/v1/admin/api-keys", adminAuth(adminUsername, adminPassword, listAPIKeys(keyClient)).ServeHTTP)
-	r.Delete("/v1/admin/api-keys/{id}", adminAuth(adminUsername, adminPassword, deleteAPIKey(keyClient)).ServeHTTP)
+	r.Delete("/v1/admin/api-keys/{id}", adminAuth(adminUsername, adminPassword, deleteAPIKey(keyClient, cfg.onKeyDeleted)).ServeHTTP)
 
 	// Allowlisted storage routes require a Bearer API key before proxying.
 	registerProxiedRoutes(r, proxy,
-		func(next http.Handler) http.Handler { return apiKeyAuth(keyClient, next) },
+		func(next http.Handler) http.Handler { return apiKeyAuth(validator, next) },
+		cfg.rateLimiter.middleware,
 		limitBody(cfg.maxBodyBytes),
 	)
 	r.NotFound(notFound)
@@ -140,7 +178,7 @@ func healthz(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok"))
 }
 
-func readyz(storageBaseURL string) func(http.ResponseWriter, *http.Request) {
+func readyz(storageBaseURL string, client *http.Client) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("readyz handler called")
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -151,7 +189,7 @@ func readyz(storageBaseURL string) func(http.ResponseWriter, *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, "not_ready", "storage service not available")
 			return
 		}
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			slog.Error("readyz storage check failed", "error", err)
 			writeError(w, http.StatusServiceUnavailable, "not_ready", "storage service not available")
@@ -204,7 +242,7 @@ func adminAuth(username, password string, next http.Handler) http.Handler {
 
 // apiKeyAuth enforces `Authorization: Bearer <api key>` before proxying to the
 // storage service. The key is validated against the storage service.
-func apiKeyAuth(keyClient *storageapi.Client, next http.Handler) http.Handler {
+func apiKeyAuth(keyClient keyValidator, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("apiKeyAuth middleware called")
 		auth := r.Header.Get("Authorization")
@@ -267,7 +305,7 @@ func listAPIKeys(keyClient *storageapi.Client) http.HandlerFunc {
 	}
 }
 
-func deleteAPIKey(keyClient *storageapi.Client) http.HandlerFunc {
+func deleteAPIKey(keyClient *storageapi.Client, onDeleted func()) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("deleteAPIKey handler called")
 		id := chi.URLParam(r, "id")
@@ -275,6 +313,9 @@ func deleteAPIKey(keyClient *storageapi.Client) http.HandlerFunc {
 		if err := keyClient.DeleteKey(r.Context(), id); err != nil {
 			writeStorageError(w, err)
 			return
+		}
+		if onDeleted != nil {
+			onDeleted()
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}

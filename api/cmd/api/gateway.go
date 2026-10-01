@@ -3,10 +3,14 @@ package main
 import (
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -119,4 +123,45 @@ func registerProxiedRoutes(r chi.Router, proxy http.Handler, mw ...func(http.Han
 			r.Method(route.method, route.pattern, proxy)
 		}
 	})
+}
+
+// newStorageTransport returns the transport shared by every storage-bound
+// caller, with a pool sized for a gateway that talks to a single host.
+func newStorageTransport() *http.Transport {
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:        128,
+		MaxIdleConnsPerHost: 64,
+		IdleConnTimeout:     90 * time.Second,
+	}
+}
+
+func envDuration(name string, def time.Duration) time.Duration {
+	v := os.Getenv(name)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 0 {
+		slog.Error("invalid duration env var, using default", "name", name, "value", v, "default", def)
+		return def
+	}
+	return d
+}
+
+func envFloat(name string, def float64) float64 {
+	v := os.Getenv(name)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f < 0 {
+		slog.Error("invalid number env var, using default", "name", name, "value", v, "default", def)
+		return def
+	}
+	return f
 }

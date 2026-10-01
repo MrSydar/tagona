@@ -14,6 +14,7 @@ This is the future home for cross-cutting concerns such as RBAC. Authentication 
 - `GET /readyz` — readiness: issues `GET {API_STORAGE_BASE_URL}/readyz` with a 2-second timeout; `200 ok` on success, `503` with a `not_ready` error otherwise (unauthenticated)
 - `GET /metrics` — Prometheus metrics (`api_requests_total`, `api_errors_total`, unauthenticated)
 - `/v1/collections...` — an explicit allowlist of the storage routes listed under [Public API](#public-api). Every request must carry `Authorization: Bearer <api key>`; the key is validated against the storage service before the request is reverse-proxied (path, query, headers, streaming body) with no client-side timeout, so long-running uploads and queries are not cut off. Routes added to storage stay private until they are added to `proxiedRoutes` in `cmd/api/gateway.go`
+- per-key rate limiting and a short validation cache sit between auth and the proxy (see Configuration); the proxy, key client and readiness probe share one pooled HTTP transport
 - request hardening: paths with dot segments, empty segments, backslashes, NUL bytes or encoded slashes are rejected with `400 invalid_path`; bodies above `API_MAX_BODY_BYTES` get `413 payload_too_large`; the `Authorization` header and inbound `Forwarded`/`X-Forwarded-*` headers are not forwarded to storage
 - `/v1/admin/api-keys` — key management (create/list/delete) guarded by admin HTTP Basic auth, taking precedence over the `/v1/*` proxy
 - any other path — `404` with the standard error shape `{"error":{"code":"not_found","message":"not found"}}`; a listed path with the wrong method — `405 method_not_allowed`
@@ -117,6 +118,9 @@ curl -s -X POST http://localhost:8080/v1/collections \
 | `API_STORAGE_BASE_URL` | Yes | — | Base URL of the internal storage service (e.g. `http://storage:8082`) |
 | `API_ADMIN_USERNAME` | No | — | Admin username for key management (Basic auth); both admin vars must be set |
 | `API_ADMIN_PASSWORD` | No | — | Admin password for key management (Basic auth); both admin vars must be set |
+| `API_KEY_CACHE_TTL` | No | `30s` | How long key validation verdicts are cached (Go duration); `0` disables. Unknown keys are cached for at most 5s. Deleting a key through the gateway purges the cache; deletes made directly in storage take effect after the TTL |
+| `API_RATE_LIMIT_RPS` | No | `100` | Sustained requests per second allowed per API key on `/v1/collections...`; `0` disables. Over the limit → `429 rate_limited` with `Retry-After: 1` |
+| `API_RATE_LIMIT_BURST` | No | `200` | Per-key burst size |
 | `API_MAX_BODY_BYTES` | No | `33554432` (32 MiB) | Maximum request body size; `0` disables. A backstop above storage's own per-object limit |
 
 ---

@@ -18,13 +18,26 @@ type Client struct {
 	http    *http.Client
 }
 
+// Option customizes a Client.
+type Option func(*Client)
+
+// WithTransport makes the client use rt, so connection pools can be shared
+// with other storage-bound callers.
+func WithTransport(rt http.RoundTripper) Option {
+	return func(c *Client) { c.http.Transport = rt }
+}
+
 // New creates a new storageapi client.
-func New(baseURL string) *Client {
+func New(baseURL string, opts ...Option) *Client {
 	slog.Debug("New", "baseURL", baseURL)
-	return &Client{
+	c := &Client{
 		baseURL: strings.TrimSuffix(baseURL, "/"),
 		http:    &http.Client{Timeout: 30 * time.Second},
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // APIKeyCreated is the response after creating an API key; it contains the raw

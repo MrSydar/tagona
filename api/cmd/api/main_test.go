@@ -370,7 +370,7 @@ func deleteAPIKeyWithID(keyClient *storageapi.Client, id string) http.Handler {
 		rctx := chi.NewRouteContext()
 		rctx.URLParams.Add("id", id)
 		r = r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
-		deleteAPIKey(keyClient).ServeHTTP(w, r)
+		deleteAPIKey(keyClient, nil).ServeHTTP(w, r)
 	})
 }
 
