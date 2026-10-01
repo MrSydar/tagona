@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/http/httputil"
 	"net/url"
 	"strings"
 	"testing"
@@ -189,7 +188,7 @@ func TestAPIKeyAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse stub url: %v", err)
 	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy := newProxy(target, nil)
 	h := apiKeyAuth(storageapi.New(backend.URL), proxy)
 
 	t.Run("no token rejected", func(t *testing.T) {
@@ -384,8 +383,8 @@ func TestRouterAdminRoutesTakePrecedence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse stub url: %v", err)
 	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	router := newRouter(backend.URL, proxy, storageapi.New(backend.URL), "admin", "tagona")
+	proxy := newProxy(target, nil)
+	router := newRouter(backend.URL, proxy, storageapi.New(backend.URL), "admin", "tagona", gatewayConfig{})
 
 	t.Run("bearer on proxied path passes key enforcement", func(t *testing.T) {
 		w := httptest.NewRecorder()

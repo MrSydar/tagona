@@ -13,9 +13,10 @@ This is the future home for cross-cutting concerns such as RBAC. Authentication 
 - `GET /healthz` — liveness (always `200` if the api service is up, unauthenticated)
 - `GET /readyz` — readiness: issues `GET {API_STORAGE_BASE_URL}/readyz` with a 2-second timeout; `200 ok` on success, `503` with a `not_ready` error otherwise (unauthenticated)
 - `GET /metrics` — Prometheus metrics (`api_requests_total`, `api_errors_total`, unauthenticated)
-- `/v1/*` — every request must carry `Authorization: Bearer <api key>`; the key is validated against the storage service before the request is reverse-proxied verbatim (path, query, headers, streaming body) using `httputil.NewSingleHostReverseProxy` with no client-side timeout, so long-running uploads and queries are not cut off
+- `/v1/collections...` — an explicit allowlist of the storage routes listed under [Public API](#public-api). Every request must carry `Authorization: Bearer <api key>`; the key is validated against the storage service before the request is reverse-proxied (path, query, headers, streaming body) with no client-side timeout, so long-running uploads and queries are not cut off. Routes added to storage stay private until they are added to `proxiedRoutes` in `cmd/api/gateway.go`
+- request hardening: paths with dot segments, empty segments, backslashes, NUL bytes or encoded slashes are rejected with `400 invalid_path`; bodies above `API_MAX_BODY_BYTES` get `413 payload_too_large`; the `Authorization` header and inbound `Forwarded`/`X-Forwarded-*` headers are not forwarded to storage
 - `/v1/admin/api-keys` — key management (create/list/delete) guarded by admin HTTP Basic auth, taking precedence over the `/v1/*` proxy
-- any other path — `404` with the standard error shape `{"error":{"code":"not_found","message":"not found"}}`
+- any other path — `404` with the standard error shape `{"error":{"code":"not_found","message":"not found"}}`; a listed path with the wrong method — `405 method_not_allowed`
 
 ---
 
@@ -31,7 +32,7 @@ Authorization: Bearer <api key>
 - Unknown key → `401` `{"error":{"code":"invalid_api_key","message":"invalid or unknown api key"}}`
 - Storage unreachable during validation → `503` `{"error":{"code":"not_ready","message":"storage service not available"}}`
 
-There is no RBAC: every valid API key grants complete access to all `/v1/*` endpoints. Keys are minted via the admin endpoints below and stored (hashed) in the storage service's Postgres DB — the api service owns no database. The Bearer header is forwarded verbatim to the internal storage service, which ignores it.
+There is no RBAC: every valid API key grants complete access to all `/v1/*` endpoints. Keys are minted via the admin endpoints below and stored (hashed) in the storage service's Postgres DB — the api service owns no database. The Bearer header is stripped before the request is forwarded to the internal storage service.
 
 `/healthz`, `/readyz`, and `/metrics` remain unauthenticated so Docker healthchecks and Prometheus scraping work.
 
@@ -116,6 +117,7 @@ curl -s -X POST http://localhost:8080/v1/collections \
 | `API_STORAGE_BASE_URL` | Yes | — | Base URL of the internal storage service (e.g. `http://storage:8082`) |
 | `API_ADMIN_USERNAME` | No | — | Admin username for key management (Basic auth); both admin vars must be set |
 | `API_ADMIN_PASSWORD` | No | — | Admin password for key management (Basic auth); both admin vars must be set |
+| `API_MAX_BODY_BYTES` | No | `33554432` (32 MiB) | Maximum request body size; `0` disables. A backstop above storage's own per-object limit |
 
 ---
 
@@ -269,4 +271,4 @@ The reference CLI client for the Tagona API lives in the storage module (`storag
 
 ---
 
-> **Note:** the api service is a pure proxy — data is always read from/written to the internal storage service on `:8082`. All state and business logic live in [`storage/`](../storage/). It enforces auth (API key enforcement + admin key management) but owns none of the data.
+> **Note:** the api service is a pure proxy (for the allowlisted routes) — data is always read from/written to the internal storage service on `:8082`. All state and business logic live in [`storage/`](../storage/). It enforces auth (API key enforcement + admin key management) but owns none of the data.

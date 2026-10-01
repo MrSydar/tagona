@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -44,6 +44,16 @@ func main() {
 		slog.Debug("admin credentials not configured; key management endpoints disabled")
 	}
 
+	maxBodyBytes := defaultMaxBodyBytes
+	if v := os.Getenv("API_MAX_BODY_BYTES"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			fmt.Fprintf(os.Stderr, "config error: API_MAX_BODY_BYTES must be a non-negative integer\n")
+			os.Exit(1)
+		}
+		maxBodyBytes = n
+	}
+
 	slog.Debug("starting tagona api service")
 
 	// Storage API key client for key validation and management.
@@ -57,9 +67,9 @@ func main() {
 		slog.Error("invalid API_STORAGE_BASE_URL", "error", err)
 		os.Exit(1)
 	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy := newProxy(target, nil)
 
-	r := newRouter(storageBaseURL, proxy, keyClient, adminUsername, adminPassword)
+	r := newRouter(storageBaseURL, proxy, keyClient, adminUsername, adminPassword, gatewayConfig{maxBodyBytes: maxBodyBytes})
 
 	// HTTP server.
 	slog.Debug("starting HTTP server", "addr", httpAddr)
@@ -91,13 +101,20 @@ func main() {
 	slog.Info("shutdown complete")
 }
 
-// newRouter builds the chi router. Admin key-management routes are registered
-// as static routes so chi resolves them ahead of the /v1/* proxy catch-all.
-func newRouter(storageBaseURL string, proxy http.Handler, keyClient *storageapi.Client, adminUsername, adminPassword string) http.Handler {
+// gatewayConfig holds the tunables of the proxied /v1/* surface.
+type gatewayConfig struct {
+	maxBodyBytes int64
+}
+
+// newRouter builds the chi router. Admin key-management routes are static
+// routes; the storage routes forwarded to the proxy are an explicit allowlist
+// (see proxiedRoutes), so anything else under /v1/ is a 404.
+func newRouter(storageBaseURL string, proxy http.Handler, keyClient *storageapi.Client, adminUsername, adminPassword string, cfg gatewayConfig) http.Handler {
 	slog.Debug("creating router")
 	r := chi.NewRouter()
 	r.Use(requestLogger())
 	r.Use(metrics.Middleware)
+	r.Use(safePath)
 
 	r.Get("/healthz", healthz)
 	r.Get("/readyz", readyz(storageBaseURL))
@@ -107,9 +124,13 @@ func newRouter(storageBaseURL string, proxy http.Handler, keyClient *storageapi.
 	r.Get("/v1/admin/api-keys", adminAuth(adminUsername, adminPassword, listAPIKeys(keyClient)).ServeHTTP)
 	r.Delete("/v1/admin/api-keys/{id}", adminAuth(adminUsername, adminPassword, deleteAPIKey(keyClient)).ServeHTTP)
 
-	// All other /v1/* traffic requires a Bearer API key before proxying.
-	r.Handle("/v1/*", apiKeyAuth(keyClient, proxy))
+	// Allowlisted storage routes require a Bearer API key before proxying.
+	registerProxiedRoutes(r, proxy,
+		func(next http.Handler) http.Handler { return apiKeyAuth(keyClient, next) },
+		limitBody(cfg.maxBodyBytes),
+	)
 	r.NotFound(notFound)
+	r.MethodNotAllowed(methodNotAllowed)
 	return r
 }
 
