@@ -1,0 +1,40 @@
+# Static configuration for the Tagona edge proxy.
+#
+# Two entrypoints serve the same routes; the only difference is TLS:
+#   web       :8080  plain HTTP
+#   websecure :8443  TLS (Traefik's built-in self-signed cert unless certs are
+#                    configured, see traefik/README.md)
+entryPoints:
+  web:
+    address: ":8080"
+    transport:
+      respondingTimeouts:
+        readTimeout: 60s
+        writeTimeout: 60s
+        idleTimeout: 120s
+  websecure:
+    address: ":8443"
+    http:
+      tls: {}
+    transport:
+      respondingTimeouts:
+        readTimeout: 60s
+        writeTimeout: 60s
+        idleTimeout: 120s
+  # Internal-only entrypoint for the container healthcheck (never published).
+  traefik:
+    address: ":8099"
+
+ping:
+  entryPoint: traefik
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: true
+
+log:
+  level: INFO
+
+accessLog:
+  format: json

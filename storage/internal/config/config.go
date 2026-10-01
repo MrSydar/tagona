@@ -32,7 +32,7 @@ type Config struct {
 func Load(prefix string) (*Config, error) {
 	slog.Debug("Load", "prefix", prefix)
 	cfg := &Config{
-		HTTPAddr:               envOrDefault(prefix+"HTTP_ADDR", ":8080"),
+		HTTPAddr:               envOrDefault(prefix+"HTTP_ADDR", ":8082"),
 		PGDSN:                  os.Getenv(prefix + "PG_DSN"),
 		S3Endpoint:             os.Getenv(prefix + "S3_ENDPOINT"),
 		S3Region:               envOrDefault(prefix+"S3_REGION", "us-east-1"),

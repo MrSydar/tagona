@@ -2,7 +2,9 @@
 
 Go module: `mrsydar/tagona/storage`
 
-The main HTTP API and storage layer for Tagona. Handles collections, object upload/download, metadata, tag queries, and on-demand tag evaluation via the tagging engine.
+The internal data service for Tagona, listening on `:8082`. It handles collections, object upload/download, metadata, tag queries, and on-demand tag evaluation via the tagging engine.
+
+It is not exposed to the public: the [api service](../api/) (port `:8080`) is the public gateway and reverse-proxies all `/v1/*` requests verbatim to this service. The routes served here are identical to the public API paths — see [`api/README.md`](../api/) for the full API documentation.
 
 ---
 
@@ -18,45 +20,16 @@ The main HTTP API and storage layer for Tagona. Handles collections, object uplo
 
 ## API
 
-### Collections
+The storage service answers the same routes it serves to the api gateway (no path rewriting happens in the proxy):
 
 | Method | Path | Description |
 |--------|------|-------------|
+| `GET` | `/healthz` | Liveness (always `200` if up) |
+| `GET` | `/readyz` | Readiness (checks DB + S3 connectivity) |
+| `GET` | `/metrics` | Prometheus metrics (`storage_*`) |
 | `GET` | `/v1/collections` | List all collections |
 | `POST` | `/v1/collections` | Create a collection |
 | `DELETE` | `/v1/collections/{collection}` | Delete a collection |
-
-**Create Collection**
-
-Request:
-```json
-{"name":"jobs","data_type":"txt"}
-```
-
-Response `201 Created`:
-```json
-{"name":"jobs","data_type":"txt"}
-```
-
-**List Collections**
-
-Response `200 OK`:
-```json
-{
-  "collections": [
-    {"id":"...","name":"jobs","data_type":"txt","created_at":"2026-06-13T12:00:00Z"}
-  ]
-}
-```
-
-**Delete Collection**
-
-Response `204 No Content` — cascades to all objects and tags, and deletes S3 payloads.
-
-### Objects
-
-| Method | Path | Description |
-|--------|------|-------------|
 | `POST` | `/v1/collections/{collection}/objects` | Upload an object |
 | `GET` | `/v1/collections/{collection}/objects/{id}` | Get metadata |
 | `GET` | `/v1/collections/{collection}/objects/{id}/data` | Download payload |
@@ -64,72 +37,18 @@ Response `204 No Content` — cascades to all objects and tags, and deletes S3 p
 | `POST` | `/v1/collections/{collection}/objects/query` | Query by tags |
 | `DELETE` | `/v1/collections/{collection}/objects/{id}` | Hard delete |
 
-**Upload**
+### Internal API key endpoints
 
-```bash
-curl -X POST "http://localhost:8080/v1/collections/jobs/objects?data_type=txt&date=2026-06-07T12:00:00Z&ttl_seconds=3600" \
-  -H "Content-Type: application/octet-stream" \
-  -d 'hello world'
-```
-
-**Response `201 Created`**
-```json
-{
-  "id": "...",
-  "collection": "jobs",
-  "data_type": "txt",
-  "date": "2026-06-07T12:00:00Z",
-  "size_bytes": 11,
-  "content_hash": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
-}
-```
-
-Upload is idempotent by content hash within a collection. If a duplicate is detected after insert, the newly uploaded S3 payload is deleted and the existing metadata is returned.
-
-**Query by Tags**
-
-```bash
-curl -X POST http://localhost:8080/v1/collections/jobs/objects/query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tags": {"golang": true, "qa": false},
-    "date": {"gte": "2026-01-01T00:00:00Z", "lt": "2027-01-01T00:00:00Z"},
-    "limit": 5,
-    "cursor": "...",
-    "timeout_ms": 30000,
-    "best_effort": false
-  }'
-```
-
-**Response**
-```json
-{
-  "objects": [...],
-  "next": "..."
-}
-```
-
-- Tags are ANDed: all provided tags must match exactly.
-- Missing tags are evaluated on-demand via the tagging engine.
-- Ordering: `date DESC`, then `id ASC`.
-- Cursor: `base64url(<unix_millis>|<uuid>)` of the last returned object.
-- `timeout_ms`: query timeout in milliseconds. Defaults to `30000` (30s). Must be between `1000` (1s) and `300000` (5m); otherwise a `400 invalid_timeout` error is returned. If reached and `best_effort` is `false`, a `query_timeout` error is returned.
-- `best_effort`: when `true` and the query times out, the server returns whatever objects were found up to that point instead of failing. A pagination `next` cursor is included when there may be more objects remaining to scan.
-
-**Get Tags**
-
-```bash
-curl "http://localhost:8080/v1/collections/jobs/objects/{id}/tags?tags=golang,qa"
-```
-
-If any requested tag is missing, the storage service invokes the tagging engine before responding.
-
-### Operational
+The storage service also owns API key persistence for the api gateway. These routes are **internal** — unauthenticated and not reachable through the public gateway (which only proxies `/v1/*`):
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/healthz` | Liveness (always `200` if up) |
-| `GET` | `/readyz` | Readiness (checks DB + S3 connectivity) |
+| `POST` | `/internal/v1/api-keys` | Create an API key. Body `{"name":"..."}` (non-empty, valid UTF-8, ≤128 bytes). Returns `201` `{"id","name","key","created_at"}` — the raw key (`tagona_` + 64 hex chars) appears only here; only its SHA-256 hash is stored |
+| `GET` | `/internal/v1/api-keys` | List API keys. Returns `200` `{"keys":[{"id","name","key_prefix","created_at"}]}` |
+| `DELETE` | `/internal/v1/api-keys/{id}` | Delete an API key. `204` on success, `404` if unknown |
+| `POST` | `/internal/v1/api-keys/validate` | Validate a raw key. Body `{"key":"..."}`. Found → `200` `{"id","name"}`; unknown → `401` `{"error":{"code":"invalid_api_key","message":"invalid or unknown api key"}}` |
+
+No auth is enforced here on purpose: storage is internal-only. The api service validates Bearer keys via `/internal/v1/api-keys/validate` and manages keys via the create/list/delete routes, exposing them publicly under `/v1/admin/api-keys` behind admin Basic auth.
 
 ---
 
@@ -137,7 +56,7 @@ If any requested tag is missing, the storage service invokes the tagging engine 
 
 | Env Var | Required | Default | Description |
 |---------|----------|---------|-------------|
-| `TAGONA_HTTP_ADDR` | No | `:8080` | HTTP listen address |
+| `TAGONA_HTTP_ADDR` | No | `:8082` | HTTP listen address |
 | `TAGONA_PG_DSN` | Yes | — | Postgres DSN |
 | `TAGONA_S3_ENDPOINT` | Yes | — | S3 endpoint URL |
 | `TAGONA_S3_REGION` | No | `us-east-1` | S3 region |
@@ -158,7 +77,7 @@ If any requested tag is missing, the storage service invokes the tagging engine 
 
 ## Build & Run
 
-Standalone (requires Postgres and S3-compatible storage running):
+Standalone (requires Postgres, S3-compatible storage, and the tagging engine running):
 
 ```bash
 cd storage
@@ -183,63 +102,59 @@ go test ./...
 
 ---
 
-## CLI Client
-
-A reference CLI client is available at `cmd/client`:
-
-```bash
-go run ./cmd/client --url http://localhost:8080 <command> [options]
-```
-
-### Commands
-
-```bash
-# Collections
-client --url http://localhost:8080 list-collections
-client --url http://localhost:8080 create-collection --name jobs --data-type txt
-client --url http://localhost:8080 delete-collection --collection jobs
-
-# Objects
-client --url http://localhost:8080 upload --collection jobs --data-type txt --file hello.txt
-client --url http://localhost:8080 get --collection jobs --id <id>
-client --url http://localhost:8080 data --collection jobs --id <id> --out hello.txt
-client --url http://localhost:8080 tags --collection jobs --id <id> --tags golang,qa
-client --url http://localhost:8080 query --collection jobs --tags '{"golang":true}' --limit 5 --timeout 30000
-client --url http://localhost:8080 query --collection jobs --tags '{"golang":true}' --limit 5 --best-effort
-client --url http://localhost:8080 delete --collection jobs --id <id>
-```
-
----
-
 ## Internal Structure
 
 ```
 storage/
 ├── cmd/storage/           # main entry point
+├── cmd/client/            # reference CLI client for the Tagona API
 ├── internal/
 │   ├── config/            # env parsing
 │   ├── cursor/            # pagination cursor encode/decode
 │   ├── db/                # Postgres queries and transactions
+│   ├── keys/              # API key generation and hashing
 │   ├── models/            # shared struct types
 │   ├── query/             # tag query + scan logic
 │   ├── retention/         # TTL background sweeper
 │   ├── server/            # HTTP handlers (chi router)
 │   ├── storage/           # S3 client (AWS SDK v2)
 │   └── validate/          # collection/tag/date validation
-├── pkg/client/            # public Go client for the storage HTTP API
-│   ├── client.go          # storage API client
-│   └── tagger.go          # Tagger client interface
+├── pkg/client/            # public Go client + Tagger contract
+│   ├── client.go          # collections, objects, queries
+│   ├── tagger.go          # Tagger client interface
+│   └── instrumented_tagger.go # metrics-instrumented Tagger wrapper
 └── migrations/            # SQL schema files
 ```
 
-## Public Client
+The `pkg/client` package is the reusable Go HTTP client for the Tagona data API. Since the storage service serves the same routes the api gateway exposes publicly, the client works against both `:8082` (internal) and `:8080` (via the api gateway). It is consumed by the tagging engine to fetch object metadata and payloads.
 
-The `pkg/client` package provides a reusable Go HTTP client for the storage service's public API. It is also consumed by the tagging engine to fetch object metadata and payloads.
+### CLI Client
 
-| File | Description |
-|------|-------------|
-| `pkg/client/client.go` | Storage service HTTP client (collections, objects, queries) |
-| `pkg/client/tagger.go` | `Tagger` interface abstracting the tagging engine client |
+A reference CLI client is available at `cmd/client`. Every request requires an API key (sent as `Authorization: Bearer <api-key>`) — pass it with `--token` or the `API_TOKEN` env var:
+
+```bash
+go run ./cmd/client --url http://localhost:8080 --token "$API_TOKEN" <command> [options]
+```
+
+When pointing the client at the api gateway (`:8080`), use a key created via the admin endpoints (see [`api/README.md`](../api/)); when pointing it directly at storage (`:8082`), the header is accepted but not enforced.
+
+### Commands
+
+```bash
+# Collections (all commands require --token or API_TOKEN)
+client --url http://localhost:8080 --token "$API_TOKEN" list-collections
+client --url http://localhost:8080 --token "$API_TOKEN" create-collection --name jobs --data-type txt
+client --url http://localhost:8080 --token "$API_TOKEN" delete-collection --collection jobs
+
+# Objects
+client --url http://localhost:8080 --token "$API_TOKEN" upload --collection jobs --data-type txt --file hello.txt
+client --url http://localhost:8080 --token "$API_TOKEN" get --collection jobs --id <id>
+client --url http://localhost:8080 --token "$API_TOKEN" data --collection jobs --id <id> --out hello.txt
+client --url http://localhost:8080 --token "$API_TOKEN" tags --collection jobs --id <id> --tags golang,qa
+client --url http://localhost:8080 --token "$API_TOKEN" query --collection jobs --tags '{"golang":true}' --limit 5 --timeout 30000
+client --url http://localhost:8080 --token "$API_TOKEN" query --collection jobs --tags '{"golang":true}' --limit 5 --best-effort
+client --url http://localhost:8080 --token "$API_TOKEN" delete --collection jobs --id <id>
+```
 
 ---
 
@@ -251,12 +166,15 @@ Migrations are applied automatically on startup using a simple file-based runner
 |------|-------------|
 | `000001_initial_schema.up.sql` | Creates `collections`, `objects`, `object_tags` tables with indexes |
 | `000001_initial_schema.down.sql` | Drops tables |
+| `000002_api_keys.up.sql` | Creates the `api_keys` table (hash, prefix, name) used for Bearer API key auth on the api gateway |
+| `000002_api_keys.down.sql` | Drops `api_keys` |
 
 ---
 
 ## Design Decisions
 
-- **Hash-based idempotency**: SHA-256 over raw payload bytes, stored as lowercase hex. Duplicate uploads within a collection return existing metadata.
+- **Hash-based idempotency**: SHA-256 over raw bytes, stored as lowercase hex. Duplicate uploads in the same collection return the existing object; the newly uploaded S3 payload is not retained.
 - **Sparse tags**: tags are stored only when known (`true` or `false`). Absence means unknown and triggers on-demand evaluation.
-- **Synchronous tagging**: queries block while the tagging engine evaluates missing tags. Retries are limited to 2 attempts with exponential backoff (`200ms`, `800ms`).
+- **Synchronous tagging**: queries block while the tagging engine evaluates missing tags. Retries are limited to 2 attempts with exponential backoff.
 - **Hard deletes**: deleting an object removes metadata, tags, and S3 payload synchronously.
+- **Internal only**: no auth or RBAC here — that responsibility belongs to the api gateway.

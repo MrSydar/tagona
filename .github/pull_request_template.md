@@ -16,7 +16,7 @@ Fixes # (issue)
 
 ## Checklist
 
-- [ ] I have read the [CONTRIBUTING.md](../CONTRIBUTING.md) guidelines.
+- [ ] I have read the [CONTRIBUTING.md](https://github.com/MrSydar/tagona/blob/main/CONTRIBUTING.md) guidelines.
 - [ ] My code follows the project's style guidelines (`go vet ./...` passes in affected modules).
 - [ ] I have built affected binaries locally (`make all`).
 - [ ] I have added or updated tests as appropriate.

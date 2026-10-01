@@ -9,25 +9,26 @@ A storage system for collections of objects with sparse boolean tags evaluated o
 ## Architecture
 
 ```
-┌─────────────┐      HTTP      ┌─────────────┐
-│   Clients   │ ◄────────────► │   Storage   │
-└─────────────┘                │   Service   │
-                               └──────┬──────┘
-                                      │
-                         ┌────────────┼────────────┐
-                         │            │            │
-                    ┌────▼────┐ ┌─────▼─────┐ ┌────▼───┐
-                    │ Postgres│ │  Tagging  │ │   S3   │
-                    │ metadata│ │  Engine   │ │payloads│
-                    └─────────┘ └───────────┘ └────────┘
+┌─────────────┐      HTTP      ┌─────────────┐   proxy    ┌─────────────┐
+│   Clients   │ ◄────────────► │     API     │ ◄────────► │   Storage   │
+└─────────────┘                │   Gateway   │            │   Service   │
+                               └─────────────┘            └──────┬──────┘
+                                                                 │
+                                                    ┌────────────┼────────────┐
+                                                    │            │            │
+                                               ┌────▼────┐ ┌─────▼─────┐ ┌────▼───┐
+                                               │ Postgres│ │  Tagging  │ │   S3   │
+                                               │ metadata│ │  Engine   │ │payloads│
+                                               └─────────┘ └───────────┘ └────────┘
 ```
 
 **Services**
 
 | Service | Module | Port | Role |
 |---------|--------|------|------|
-| [storage](storage/) | `mrsydar/tagona/storage` | `:8080` | HTTP API for collections, objects, tag queries, Prometheus metrics at `/metrics` |
-| [tagger](tagger/) | `mrsydar/tagona/tagger` | `:8081` | Evaluates tags by fetching object data from storage, Prometheus metrics at `/metrics` |
+| [api](api/) | `mrsydar/tagona/api` | `:8080` (internal) | Public API gateway: reverse-proxies an allowlist of `/v1/collections...` routes to storage behind Bearer API key auth, per-key rate limiting, admin API key management, health/readiness, Prometheus metrics at `/metrics` (scraped internally) |
+| [storage](storage/) | `mrsydar/tagona/storage` | `:8082` | Internal data service: collections, objects, tag queries, retention, Prometheus metrics at `/metrics` |
+| [tagger](tagger/) | `mrsydar/tagona/tagger` | `:8081` | Evaluates tags by fetching object data from the internal storage service, Prometheus metrics at `/metrics` |
 
 **Infra**
 
@@ -35,6 +36,7 @@ A storage system for collections of objects with sparse boolean tags evaluated o
 |---------|-------|------|------|
 | postgres | `postgres:15` | `:5432` | Collections, object metadata, tag values |
 | garage | `dxflrs/garage` | `:3900` / `:3903` | S3-compatible object storage |
+| traefik | `traefik:v3.6` | `:8080` / `:8443` | Edge proxy in front of api: plain HTTP on `:8080`, TLS on `:8443`, per-IP rate limiting, timeouts. See [traefik/](traefik/README.md) |
 
 ---
 
@@ -46,40 +48,53 @@ Requirements: Docker + Docker Compose.
 docker compose up --build
 ```
 
-Wait for services to become healthy (~10-15s).
+Wait for services to become healthy (~10-15s). Services start in order: postgres/garage → tagger → storage (fetches supported types from the tagger, fatal if unreachable) → api (proxies storage).
 
 **Test**
 
+Every `/v1/*` request requires `Authorization: Bearer <api key>`; keys are created via the admin endpoint below (admin HTTP Basic auth). `/healthz`, `/readyz`, and `/metrics` stay open.
+
 ```bash
+# 0. Create an API key (admin Basic auth). The raw key is shown only once.
+KEY=$(curl -s -u admin:tagona -X POST http://localhost:8080/v1/admin/api-keys \
+  -H "Content-Type: application/json" \
+  -d '{"name":"dev"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['key'])")
+
 # 1. Create a collection
 curl -s -X POST http://localhost:8080/v1/collections \
+  -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
   -d '{"name":"jobs","data_type":"txt"}'
 
 # 2. Upload an object
 curl -s -X POST "http://localhost:8080/v1/collections/jobs/objects?data_type=txt" \
+  -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/octet-stream" \
   -d 'hello golang qa'
 
 # 3. Query objects by tags (default timeout 30s)
 curl -s -X POST http://localhost:8080/v1/collections/jobs/objects/query \
+  -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
   -d '{"tags":{"golang":true},"limit":5,"timeout_ms":30000}'
 
 # 4. Best-effort query: returns partial results instead of error on timeout
 curl -s -X POST http://localhost:8080/v1/collections/jobs/objects/query \
+  -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
   -d '{"tags":{"golang":true},"limit":5,"timeout_ms":1000,"best_effort":true}'
 
 # 5. Inspect object tags directly
-curl -s "http://localhost:8080/v1/collections/jobs/objects/{id}/tags?tags=golang,qa"
+curl -s -H "Authorization: Bearer $KEY" \
+  "http://localhost:8080/v1/collections/jobs/objects/{id}/tags?tags=golang,qa"
 
-# 6. Check Prometheus metrics
+# 6. Check Prometheus metrics (unauthenticated)
+curl -s http://localhost:8080/metrics | grep api_
 curl -s http://localhost:8080/metrics | grep storage_
 curl -s http://localhost:8081/metrics | grep tagger_
 ```
 
-**Query parameters** (see [`storage/README.md`](storage/) for full API docs):
+**Query parameters** (see [`api/README.md`](api/) for full API docs):
 
 - `timeout_ms` — query timeout. Default `30000` (30 seconds). Must be between `1000` (1s) and `300000` (5m); otherwise a `400 invalid_timeout` error is returned. If exceeded and `best_effort` is `false`, a `query_timeout` error is returned.
 - `best_effort` — when `true`, a timed-out query returns whatever matched objects were found instead of failing. A `next` pagination cursor is included so the client can resume scanning.
@@ -88,11 +103,11 @@ curl -s http://localhost:8081/metrics | grep tagger_
 
 ## End-to-End Tests
 
-The `e2e/` directory contains end-to-end tests that exercise the storage public API against a live Docker Compose stack.
+The `e2e/` directory contains end-to-end tests that exercise the public API against a live Docker Compose stack.
 
 **Prerequisites:**
 - `docker compose up --build` is running
-- Storage readyz returns 200
+- `http://localhost:8080/readyz` returns 200
 
 **Run:**
 
@@ -101,7 +116,7 @@ cd e2e
 GOWORK=off go test -v -count=1 .
 ```
 
-The test suite covers: collections CRUD, object upload/retrieval/deletion, idempotent uploads, tag evaluation via the tagger, tag queries with AND semantics, and pagination.
+The test suite covers: collections CRUD, object upload/retrieval/deletion, idempotent uploads, tag evaluation via the tagger, tag queries with AND semantics, and pagination. Tests authenticate using admin Basic auth (env `API_ADMIN_USERNAME`/`API_ADMIN_PASSWORD`, defaults matching compose) to mint an API key, then send it as `Authorization: Bearer <key>` on every `/v1/*` call.
 
 ---
 
@@ -109,11 +124,17 @@ The test suite covers: collections CRUD, object upload/retrieval/deletion, idemp
 
 ```
 tagona/
-├── e2e/               # End-to-end tests (storage API only)
-├── storage/           # Storage service
-│   ├── cmd/storage/     # main entry point
+├── e2e/               # End-to-end tests (public API only)
+├── api/               # Public API gateway
+│   ├── cmd/api/         # main entry point
 │   ├── internal/        # private implementation
-│   ├── pkg/client/      # public Go client for storage API
+│   ├── Dockerfile
+│   └── README.md
+├── storage/           # Internal storage/data service
+│   ├── cmd/storage/     # main entry point
+│   ├── cmd/client/      # reference CLI client
+│   ├── internal/        # private implementation
+│   ├── pkg/client/      # public Go client + Tagger interface
 │   ├── migrations/
 │   ├── Dockerfile
 │   └── README.md
@@ -136,13 +157,21 @@ See each service's README for full env var documentation.
 
 | Env Var | Default | Description |
 |---------|---------|-------------|
-| `TAGONA_HTTP_ADDR` | `:8080` | Storage service listen address |
+| `API_HTTP_ADDR` | `:8080` | API gateway listen address |
+| `API_STORAGE_BASE_URL` | — | Internal storage service URL the api service proxies to |
+| `API_ADMIN_USERNAME` | — | Admin username for API key management (Basic auth); unset = admin endpoints disabled |
+| `API_ADMIN_PASSWORD` | — | Admin password for API key management (Basic auth); unset = admin endpoints disabled |
+| `API_MAX_BODY_BYTES` | `33554432` | Maximum request body size accepted by the api service |
+| `API_KEY_CACHE_TTL` | `30s` | How long API key validation verdicts are cached; `0` disables |
+| `API_RATE_LIMIT_RPS` / `API_RATE_LIMIT_BURST` | `100` / `200` | Per-API-key rate limit; RPS `0` disables |
+| `EDGE_RATE_LIMIT_AVERAGE` / `EDGE_RATE_LIMIT_BURST` | `200` / `400` | Per-IP rate limit at the Traefik edge (requests per second) |
+| `TAGONA_HTTP_ADDR` | `:8082` | Storage service listen address |
 | `TAGONA_PG_DSN` | — | Postgres connection string |
 | `TAGONA_S3_ENDPOINT` | — | S3-compatible endpoint |
 | `TAGONA_TAG_ENGINE_URL` | — | URL of the tagging engine |
 | `TAGGER_HTTP_ADDR` | `:8081` | Tagger listen address |
-| `TAGGER_STORAGE_BASE_URL` | `http://localhost:8080` | Storage service URL the tagger calls |
-| `TAGGER_EVALUATOR_IMPL` | `false` | Evaluator to use: `grep` (substring match for `txt`) or `false` (all tags `false`) |
+| `TAGGER_STORAGE_BASE_URL` | `http://localhost:8082` | Internal storage service URL the tagger calls to fetch objects |
+| `TAGGER_EVALUATOR_IMPL` | `grep` | Evaluator to use: `grep` (substring match for `txt`) or `false` (all tags `false`) |
 
 ---
 

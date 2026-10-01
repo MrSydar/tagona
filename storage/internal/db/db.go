@@ -233,6 +233,72 @@ func (d *DB) DeleteObject(ctx context.Context, id string) (string, error) {
 	return payloadKey, nil
 }
 
+// CreateAPIKey inserts a new API key.
+func (d *DB) CreateAPIKey(ctx context.Context, keyHash, keyPrefix, name string) (*models.APIKey, error) {
+	slog.Debug("CreateAPIKey", "name", name, "keyPrefix", keyPrefix)
+	var k models.APIKey
+	err := d.pool.QueryRow(ctx,
+		`INSERT INTO api_keys (key_hash, key_prefix, name) VALUES ($1, $2, $3) RETURNING id, name, key_prefix, created_at`,
+		keyHash, keyPrefix, name,
+	).Scan(&k.ID, &k.Name, &k.KeyPrefix, &k.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("insert api key: %w", err)
+	}
+	return &k, nil
+}
+
+// ListAPIKeys returns all API keys.
+func (d *DB) ListAPIKeys(ctx context.Context) ([]models.APIKey, error) {
+	slog.Debug("ListAPIKeys: called")
+	rows, err := d.pool.Query(ctx,
+		`SELECT id, name, key_prefix, created_at FROM api_keys ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list api keys: %w", err)
+	}
+	defer rows.Close()
+
+	var keys []models.APIKey
+	for rows.Next() {
+		var k models.APIKey
+		if err := rows.Scan(&k.ID, &k.Name, &k.KeyPrefix, &k.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan api key: %w", err)
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
+// GetAPIKeyByHash fetches an API key by its hash.
+func (d *DB) GetAPIKeyByHash(ctx context.Context, keyHash string) (*models.APIKey, error) {
+	slog.Debug("GetAPIKeyByHash", "keyHash", keyHash)
+	var k models.APIKey
+	err := d.pool.QueryRow(ctx,
+		`SELECT id, name, key_prefix, created_at FROM api_keys WHERE key_hash = $1`,
+		keyHash,
+	).Scan(&k.ID, &k.Name, &k.KeyPrefix, &k.CreatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, fmt.Errorf("api key not found: %w", err)
+		}
+		return nil, fmt.Errorf("get api key: %w", err)
+	}
+	return &k, nil
+}
+
+// DeleteAPIKey deletes an API key by ID and reports whether a row was deleted.
+func (d *DB) DeleteAPIKey(ctx context.Context, id string) (bool, error) {
+	slog.Debug("DeleteAPIKey", "id", id)
+	tag, err := d.pool.Exec(ctx,
+		`DELETE FROM api_keys WHERE id = $1`,
+		id,
+	)
+	if err != nil {
+		return false, fmt.Errorf("delete api key: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // GetTagsForObject returns known tags for an object.
 func (d *DB) GetTagsForObject(ctx context.Context, objectID string) (map[string]bool, error) {
 	slog.Debug("GetTagsForObject", "objectID", objectID)

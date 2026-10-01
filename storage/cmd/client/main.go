@@ -20,10 +20,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	baseURL, remaining := parseGlobalFlags(os.Args[1:])
+	baseURL, token, remaining := parseGlobalFlags(os.Args[1:])
 	if baseURL == "" {
 		fmt.Fprintf(os.Stderr, "error: --url is required\n")
 		usage()
+		os.Exit(1)
+	}
+	if token == "" {
+		token = os.Getenv("API_TOKEN")
+	}
+	if token == "" {
+		fmt.Fprintf(os.Stderr, "api key required: pass --token or set API_TOKEN\n")
 		os.Exit(1)
 	}
 	if len(remaining) < 1 {
@@ -31,7 +38,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	c := client.New(baseURL)
+	c := client.NewWithToken(baseURL, token)
 	ctx := context.Background()
 
 	slog.Debug("executing command", "command", remaining[0])
@@ -63,7 +70,10 @@ func main() {
 
 func usage() {
 	slog.Debug("printing usage")
-	fmt.Fprintf(os.Stderr, `usage: client --url <service-url> <command> [options]
+	fmt.Fprintf(os.Stderr, `usage: client --url <service-url> [--token <api-key>] <command> [options]
+
+The API key is required for every request. Pass it with --token or the API_TOKEN
+env var; it is sent as "Authorization: Bearer <api-key>".
 
 commands:
   list-collections   List all collections.
@@ -91,9 +101,10 @@ commands:
 `)
 }
 
-func parseGlobalFlags(args []string) (string, []string) {
+func parseGlobalFlags(args []string) (string, string, []string) {
 	slog.Debug("parsing global flags")
 	var url string
+	var token string
 	var out []string
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--url" {
@@ -107,9 +118,20 @@ func parseGlobalFlags(args []string) (string, []string) {
 			url = strings.TrimPrefix(args[i], "--url=")
 			continue
 		}
+		if args[i] == "--token" {
+			if i+1 < len(args) {
+				token = args[i+1]
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(args[i], "--token=") {
+			token = strings.TrimPrefix(args[i], "--token=")
+			continue
+		}
 		out = append(out, args[i])
 	}
-	return url, out
+	return url, token, out
 }
 
 func createCollection(ctx context.Context, c *client.Client, args []string) {

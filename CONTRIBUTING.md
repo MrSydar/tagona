@@ -15,17 +15,21 @@ Thank you for your interest in contributing! This document explains the workflow
 ```bash
 git clone git@github.com:MrSydar/tagona.git
 cd tagona
-make all                 # builds bin/storage, bin/tagger, bin/tagona-client
+make all                 # builds bin/api, bin/storage, bin/tagger, bin/tagona
 ```
 
 ### Running the Stack
 
 ```bash
-make docker-up           # starts Postgres, Garage, storage, tagger
+make docker-up           # starts Postgres, Garage, tagger, storage, api, Traefik, Prometheus, Grafana
 # wait ~15s for healthchecks
 make e2e                 # runs end-to-end tests
 make docker-down         # tears everything down
 ```
+
+The public entrypoint is Traefik: `http://localhost:8080` (plain HTTP) and `https://localhost:8443` (TLS, self-signed — use `curl -k`). The `api` and `storage` containers do not publish host ports.
+
+Create a `.env` in the repo root for the tagger (compose mounts it). Use `TAGGER_EVALUATOR_IMPL=grep`, which works offline; `openai` and `systemone` need a valid API key. See `tagger/.env.example`.
 
 ## Project Layout
 
@@ -33,9 +37,13 @@ This is a **Go workspace monorepo** (`go.work` at the root).
 
 | Directory | Module | Description |
 |-----------|--------|-------------|
-| `storage/` | `mrsydar/tagona/storage` | HTTP API service, DB migrations, S3 client |
+| `api/` | `mrsydar/tagona/api` | Public API gateway: auth, per-key rate limiting, allowlisted reverse proxy to storage |
+| `storage/` | `mrsydar/tagona/storage` | Internal data service, DB migrations, S3 client, Go client (`pkg/client`) and CLI |
 | `tagger/` | `mrsydar/tagona/tagger` | Tag-evaluation engine |
+| `traefik/` | — | Edge proxy config (TLS, per-IP rate limiting); see [`traefik/README.md`](traefik/README.md) |
 | `e2e/` | standalone module | End-to-end tests (run with `GOWORK=off`) |
+
+> **Adding a public route:** the api service proxies an explicit allowlist. A new storage route is **not** reachable publicly until you add it to `proxiedRoutes` in `api/cmd/api/gateway.go` (and document it in `api/README.md`).
 
 > **Important:** `tagger` imports `mrsydar/tagona/storage/pkg/client`. This is resolved by the Go workspace, **not** by listing `storage` in `tagger/go.mod`. Building from a module directory works because Go automatically resolves sibling workspace modules.
 
@@ -45,14 +53,15 @@ This is a **Go workspace monorepo** (`go.work` at the root).
    ```bash
    git checkout -b feature/your-feature-name
    ```
+   Don't commit directly to `main`.
 2. **Make your changes.** Follow existing code style.
-3. **Add tests.** If you add code, consider adding unit tests in `*_test.go` files.
+3. **Add tests.** If you add code, add unit tests in `*_test.go` files (standard Go `testing` only). The `api` module has examples in `api/cmd/api/*_test.go`.
 4. **Run checks locally:**
    ```bash
    make all                 # ensure everything compiles
-   cd storage && go vet ./...
-   cd tagger && go vet ./...
-   cd e2e && GOWORK=off go test -v -count=1 .
+   gofmt -l .               # should print nothing
+   for m in api storage tagger; do (cd $m && go vet ./... && go test ./...); done
+   make e2e                 # needs the stack up and /readyz on :8080 returning 200
    ```
 5. **Commit** using clear messages. We prefer [Conventional Commits](https://www.conventionalcommits.org/):
    ```
@@ -67,13 +76,14 @@ This is a **Go workspace monorepo** (`go.work` at the root).
 
 *   Keep changes focused — one logical change per PR.
 *   Explain the "why" in the PR description, not just the "what".
-*   Update documentation (`README.md`, `AGENTS.md`, module READMEs) if behavior changes.
+*   Update documentation (`README.md`, `AGENTS.md`, `CHANGELOG.md`, module READMEs) if behavior changes.
 *   Be kind and constructive in review discussions.
 
 ## Code Style
 
 *   Standard Go formatting (`gofmt`).
 *   `go vet ./...` should pass without warnings in each module.
+*   `traefik/dynamic.yml` is a Go template: don't put `{{` in comments there.
 *   Keep exported APIs minimal and well-documented.
 
 ## Reporting Bugs
