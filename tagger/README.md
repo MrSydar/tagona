@@ -96,7 +96,7 @@ The `vercel` backend keeps using the same env vars with unchanged behavior and t
 |---------|----------|---------|-------------|
 | `TAGGER_HTTP_ADDR` | No | `:8081` | HTTP listen address |
 | `TAGGER_STORAGE_BASE_URL` | Yes | `http://localhost:8082` | Base URL of the storage service to fetch objects from |
-| `TAGGER_EVALUATOR_IMPL` | No | `false` | Evaluator to use: `grep`, `false`, `openai`, or `systemone` |
+| `TAGGER_EVALUATOR_IMPL` | No | `grep` | Evaluator to use: `grep`, `false`, `openai`, or `systemone` |
 | `TAGGER_SYSTEMONE_BACKEND` | No | `vercel` | Systemone backend to use (only `vercel` for now) |
 | `TAGGER_OPENAI_API_KEY` | No | — | OpenAI API key (required when `TAGGER_EVALUATOR_IMPL=openai`) |
 | `TAGGER_OPENAI_BASE_URL` | No | `https://api.openai.com/v1` | OpenAI-compatible API base URL |

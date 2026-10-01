@@ -171,7 +171,7 @@ See each service's README for full env var documentation.
 | `TAGONA_TAG_ENGINE_URL` | — | URL of the tagging engine |
 | `TAGGER_HTTP_ADDR` | `:8081` | Tagger listen address |
 | `TAGGER_STORAGE_BASE_URL` | `http://localhost:8082` | Internal storage service URL the tagger calls to fetch objects |
-| `TAGGER_EVALUATOR_IMPL` | `false` | Evaluator to use: `grep` (substring match for `txt`) or `false` (all tags `false`) |
+| `TAGGER_EVALUATOR_IMPL` | `grep` | Evaluator to use: `grep` (substring match for `txt`) or `false` (all tags `false`) |
 
 ---
 
