@@ -5,6 +5,7 @@ go 1.26.4
 require (
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/prometheus/client_golang v1.23.2
+	go.yaml.in/yaml/v3 v3.0.5
 )
 
 require (

@@ -50,6 +50,14 @@ jobs:
           go mod download
           go test -count=0 ./...
 
+  openapi-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint the OpenAPI document
+        run: npx --yes @redocly/cli@1 lint api/openapi/v1.yaml
+
   lint:
     runs-on: ubuntu-latest
     steps:
