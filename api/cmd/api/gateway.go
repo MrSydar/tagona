@@ -26,6 +26,7 @@ var proxiedRoutes = []struct{ method, pattern string }{
 	{http.MethodGet, "/v1/collections"},
 	{http.MethodPost, "/v1/collections"},
 	{http.MethodDelete, "/v1/collections/{collection}"},
+	{http.MethodGet, "/v1/collections/{collection}/tags"},
 	{http.MethodPost, "/v1/collections/{collection}/objects"},
 	{http.MethodPost, "/v1/collections/{collection}/objects/query"},
 	{http.MethodGet, "/v1/collections/{collection}/objects/{id}"},

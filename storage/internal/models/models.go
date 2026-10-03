@@ -33,6 +33,26 @@ type TagResult struct {
 	Value bool   `json:"value"`
 }
 
+// TagStat describes one tag registered in a collection. Tags are sparse: an
+// object has a value for a tag only once the tag was evaluated for it.
+type TagStat struct {
+	Tag string `json:"tag"`
+	// TrueCount and FalseCount are the objects the tag is known true/false for.
+	TrueCount  int64 `json:"true_count"`
+	FalseCount int64 `json:"false_count"`
+	// UnknownCount is the objects the tag has not been evaluated for yet.
+	UnknownCount int64     `json:"unknown_count"`
+	FirstSeenAt  time.Time `json:"first_seen_at"`
+}
+
+// CollectionTagsResponse is the response for listing a collection's tags.
+type CollectionTagsResponse struct {
+	Collection   string    `json:"collection"`
+	TotalObjects int64     `json:"total_objects"`
+	Tags         []TagStat `json:"tags"`
+	Next         string    `json:"next,omitempty"`
+}
+
 // ErrorResponse is the standard error response format.
 type ErrorResponse struct {
 	Error struct {
@@ -77,6 +97,15 @@ type TagsQueryRequest struct {
 	Cursor     string          `json:"cursor,omitempty"`
 	TimeoutMs  int             `json:"timeout_ms,omitempty"`
 	BestEffort bool            `json:"best_effort,omitempty"`
+	// Evaluate controls whether missing tags are evaluated by the tagging
+	// engine. It defaults to true when omitted; when false the query is answered
+	// from already-known tags only and the tagger is never called.
+	Evaluate *bool `json:"evaluate,omitempty"`
+}
+
+// ShouldEvaluate reports whether missing tags may be evaluated (the default).
+func (r TagsQueryRequest) ShouldEvaluate() bool {
+	return r.Evaluate == nil || *r.Evaluate
 }
 
 // TagsQueryResponse is the response for tag queries.

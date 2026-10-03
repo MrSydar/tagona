@@ -30,6 +30,7 @@ The storage service answers the same routes it serves to the api gateway (no pat
 | `GET` | `/v1/collections` | List all collections |
 | `POST` | `/v1/collections` | Create a collection |
 | `DELETE` | `/v1/collections/{collection}` | Delete a collection |
+| `GET` | `/v1/collections/{collection}/tags` | Object count and registered tags with per-tag counts (`?prefix=&limit=&cursor=`; see [`api/README.md`](../api/README.md#public-api)) |
 | `POST` | `/v1/collections/{collection}/objects` | Upload an object |
 | `GET` | `/v1/collections/{collection}/objects/{id}` | Get metadata |
 | `GET` | `/v1/collections/{collection}/objects/{id}/data` | Download payload |
@@ -100,6 +101,12 @@ cd storage
 go test ./...
 ```
 
+The trigger/statistics tests in `internal/db` need a real Postgres and are skipped unless `TAGONA_TEST_PG_DSN` is set. Each test applies the real migrations in a throwaway schema and drops it afterwards, so it is safe to point at the compose database:
+
+```bash
+TAGONA_TEST_PG_DSN='postgres://tagona:tagona@localhost:5432/tagona?sslmode=disable' go test -race ./internal/db
+```
+
 ---
 
 ## Internal Structure
@@ -145,14 +152,17 @@ When pointing the client at the api gateway (`:8080`), use a key created via the
 client --url http://localhost:8080 --token "$API_TOKEN" list-collections
 client --url http://localhost:8080 --token "$API_TOKEN" create-collection --name jobs --data-type txt
 client --url http://localhost:8080 --token "$API_TOKEN" delete-collection --collection jobs
+client --url http://localhost:8080 --token "$API_TOKEN" collection-tags --collection jobs [--prefix lang] [--limit 100] [--cursor <next>]
 
 # Objects
 client --url http://localhost:8080 --token "$API_TOKEN" upload --collection jobs --data-type txt --file hello.txt
 client --url http://localhost:8080 --token "$API_TOKEN" get --collection jobs --id <id>
 client --url http://localhost:8080 --token "$API_TOKEN" data --collection jobs --id <id> --out hello.txt
 client --url http://localhost:8080 --token "$API_TOKEN" tags --collection jobs --id <id> --tags golang,qa
+client --url http://localhost:8080 --token "$API_TOKEN" tags --collection jobs --id <id> --tags golang,qa --evaluate=false   # null for tags not yet evaluated
 client --url http://localhost:8080 --token "$API_TOKEN" query --collection jobs --tags '{"golang":true}' --limit 5 --timeout 30000
 client --url http://localhost:8080 --token "$API_TOKEN" query --collection jobs --tags '{"golang":true}' --limit 5 --best-effort
+client --url http://localhost:8080 --token "$API_TOKEN" query --collection jobs --tag golang=true --evaluate=false   # known tags only, no tagger call
 client --url http://localhost:8080 --token "$API_TOKEN" delete --collection jobs --id <id>
 ```
 
@@ -168,6 +178,8 @@ Migrations are applied automatically on startup using a simple file-based runner
 | `000001_initial_schema.down.sql` | Drops tables |
 | `000002_api_keys.up.sql` | Creates the `api_keys` table (hash, prefix, name) used for Bearer API key auth on the api gateway |
 | `000002_api_keys.down.sql` | Drops `api_keys` |
+| `000003_collection_tag_stats.up.sql` | Adds `collections.object_count` and the `collection_tags` registry (per-tag true/false counters), the triggers that maintain them, and a one-off backfill for existing data |
+| `000003_collection_tag_stats.down.sql` | Drops the triggers, functions, `collection_tags` and `object_count` |
 
 ---
 
@@ -176,5 +188,8 @@ Migrations are applied automatically on startup using a simple file-based runner
 - **Hash-based idempotency**: SHA-256 over raw bytes, stored as lowercase hex. Duplicate uploads in the same collection return the existing object; the newly uploaded S3 payload is not retained.
 - **Sparse tags**: tags are stored only when known (`true` or `false`). Absence means unknown and triggers on-demand evaluation.
 - **Synchronous tagging**: queries block while the tagging engine evaluates missing tags. Retries are limited to 2 attempts with exponential backoff.
+- **Trigger-maintained collection statistics**: `collections.object_count` and the `collection_tags` registry are updated by statement-level triggers (transition tables) on `objects` and `object_tags`, inside the same transaction as the write. They also cover cascading deletes (object delete, retention sweep, collection delete), so nothing in the application can forget to update them. Statements are aggregated per `(collection, tag)`, so a bulk change costs one counter update per tag. Reading is O(tags in the collection) and subtracts objects that have expired but are not yet swept, so numbers match what reads return.
+- **Counter lock order**: concurrent writers on the same tags contend on counter rows. To stay deadlock-free every writer follows one order — object row, then counter rows in sorted tag order, then the collection row (`UpsertTags` pre-locks its counters; triggers sort theirs) — and deadlock victims are retried (`retryOnDeadlock`). Migration `000003` runs its backfill only once (guarded by the existing column) under a write lock, because migrations are re-run on every startup.
+- **Optional evaluation (`evaluate`)**: tag queries and the object tags endpoint accept `evaluate=false`, which skips the tagging engine entirely. Queries then run as one indexed SQL query over `object_tags` (`QueryObjectsKnownTags`) and return only objects whose requested tags are all known and matching; the object tags endpoint returns `null` for requested tags that are not known. The default stays `true`.
 - **Hard deletes**: deleting an object removes metadata, tags, and S3 payload synchronously.
 - **Internal only**: no auth or RBAC here — that responsibility belongs to the api gateway.

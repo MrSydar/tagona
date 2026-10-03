@@ -84,13 +84,26 @@ curl -s -X POST http://localhost:8080/v1/collections/jobs/objects/query \
   -H "Content-Type: application/json" \
   -d '{"tags":{"golang":true},"limit":5,"timeout_ms":1000,"best_effort":true}'
 
-# 5. Inspect object tags directly
+# 5. Inspect object tags directly (evaluates tags that are not known yet)
 curl -s -H "Authorization: Bearer $KEY" \
   "http://localhost:8080/v1/collections/jobs/objects/{id}/tags?tags=golang,qa"
 
-# 6. Check Prometheus metrics (unauthenticated)
-curl -s http://localhost:8080/metrics | grep api_
-curl -s http://localhost:8080/metrics | grep storage_
+# 5b. Same, but never call the tagger: tags not evaluated yet come back as null
+curl -s -H "Authorization: Bearer $KEY" \
+  "http://localhost:8080/v1/collections/jobs/objects/{id}/tags?tags=golang,qa&evaluate=false"
+
+# 5c. Query only among already-tagged objects, without calling the tagger
+curl -s -X POST http://localhost:8080/v1/collections/jobs/objects/query \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"tags":{"golang":true},"limit":5,"evaluate":false}'
+
+# 6. Show the collection's object count and which tags are registered, with
+#    per-tag counts of objects that are true / false / not yet evaluated
+curl -s -H "Authorization: Bearer $KEY" http://localhost:8080/v1/collections/jobs/tags
+
+# 7. Check Prometheus metrics. api and storage are internal (the edge proxy does
+#    not route /metrics): use Prometheus at http://localhost:9090 (api_*, storage_*).
 curl -s http://localhost:8081/metrics | grep tagger_
 ```
 
@@ -98,6 +111,7 @@ curl -s http://localhost:8081/metrics | grep tagger_
 
 - `timeout_ms` — query timeout. Default `30000` (30 seconds). Must be between `1000` (1s) and `300000` (5m); otherwise a `400 invalid_timeout` error is returned. If exceeded and `best_effort` is `false`, a `query_timeout` error is returned.
 - `best_effort` — when `true`, a timed-out query returns whatever matched objects were found instead of failing. A `next` pagination cursor is included so the client can resume scanning.
+- `evaluate` — default `true`. When `false`, tags that are not yet known are not evaluated: the query only returns objects already known to match (the tagger is never called), and the object tags endpoint returns `null` for tags not yet evaluated.
 
 ---
 

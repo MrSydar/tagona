@@ -9,6 +9,23 @@ on:
 jobs:
   unit-test:
     runs-on: ubuntu-latest
+    # Postgres for the storage database tests (skipped when the DSN is unset).
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: tagona
+          POSTGRES_PASSWORD: tagona
+          POSTGRES_DB: tagona
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tagona -d tagona"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TAGONA_TEST_PG_DSN: postgres://tagona:tagona@localhost:5432/tagona?sslmode=disable
     strategy:
       matrix:
         module: [api, storage, tagger]

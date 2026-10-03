@@ -39,6 +39,12 @@ func (r *Runner) Query(ctx context.Context, collection *models.Collection, req m
 
 	targetLimit := req.Limit + 1
 
+	// evaluate=false: answer from tags that are already known, without calling
+	// the tagging engine.
+	if !req.ShouldEvaluate() {
+		return r.queryKnown(ctx, collection, req, cursorDate, cursorID, targetLimit)
+	}
+
 	// No tag filtering: return by date only.
 	if len(req.Tags) == 0 {
 		slog.Debug("Query: no tags provided, querying by date only")
@@ -165,6 +171,27 @@ func (r *Runner) Query(ctx context.Context, collection *models.Collection, req m
 	}
 
 	return buildResponse(results, req.Limit)
+}
+
+// queryKnown returns objects for which every requested tag is already known
+// and matches. Objects with a requested tag that was never evaluated are not
+// returned, since they cannot be confirmed to match. best_effort has no effect
+// here: the lookup is a single indexed query, so there is no partial result.
+func (r *Runner) queryKnown(ctx context.Context, collection *models.Collection, req models.TagsQueryRequest, cursorDate time.Time, cursorID string, targetLimit int) (*models.TagsQueryResponse, error) {
+	slog.Debug("queryKnown", "collection", collection.Name, "tags", len(req.Tags))
+	objs, err := r.db.QueryObjectsKnownTags(ctx, collection.ID, req.Tags, req.Date, cursorDate, cursorID, targetLimit)
+	if err != nil {
+		return nil, fmt.Errorf("query known tags: %w", err)
+	}
+	if objs == nil {
+		objs = []models.Object{} // encode as [] like the evaluating path, not null
+	}
+	if len(req.Tags) > 0 {
+		for i := range objs {
+			objs[i].Tags = req.Tags
+		}
+	}
+	return buildResponse(objs, req.Limit)
 }
 
 func buildResponse(results []models.Object, limit int) (*models.TagsQueryResponse, error) {

@@ -79,7 +79,7 @@ See `storage/cmd/client/main.go` for available commands.
 
 ## Testing
 
-**Unit tests:** `api/`, `storage/` and `tagger/` have none currently. Add `*_test.go` files as usual — standard Go only.
+**Unit tests:** standard Go `*_test.go` files in each module (`go test ./...`). The database tests in `storage/internal/db` need Postgres and are skipped unless `TAGONA_TEST_PG_DSN` is set (they run the real migrations in a throwaway schema; CI provides a Postgres service).
 
 **End-to-end tests:** In the `e2e/` directory (its own module, outside the workspace):
 
@@ -95,7 +95,8 @@ make e2e
 ## Important quirks
 
 - **Auth:** the api service requires `Authorization: Bearer <api key>` on every `/v1/*` request (401 `missing_api_key` when missing/malformed, 401 `invalid_api_key` when unknown, 503 `not_ready` if storage is unreachable during validation). Key management lives under `/v1/admin/api-keys` (create/list/delete) and uses admin HTTP Basic auth from `API_ADMIN_USERNAME`/`API_ADMIN_PASSWORD` (403 `admin_disabled` when unset); presenting an API key there returns 403 `forbidden`. Keys are stored in the storage DB (`api_keys` table, migration `000002`) and exposed via storage's unauthenticated INTERNAL endpoints (`/internal/v1/api-keys*`) — storage and tagger remain auth-free because they are internal-only. `/healthz`, `/readyz`, `/metrics` stay unauthenticated on the api service for Docker healthchecks and Prometheus scraping.
-- **Custom migrations runner:** Storage applies migrations on startup by executing all `*.up.sql` files in `storage/migrations/` in lexicographic order. It is not using `golang-migrate`.
+- **Custom migrations runner:** Storage applies migrations on startup by executing all `*.up.sql` files in `storage/migrations/` in lexicographic order, **on every startup**, each file as one transaction. It is not using `golang-migrate`, so migrations must be idempotent (`IF NOT EXISTS`, `CREATE OR REPLACE`, guarded one-off backfills like `000003`).
+- **Collection tag statistics:** `collections.object_count` and `collection_tags` (per-tag true/false counters, exposed at `GET /v1/collections/{collection}/tags`) are maintained by database triggers, not application code — do not update them from Go. Any code path that writes `object_tags` must go through `UpsertTags` (it keeps the lock order that prevents deadlocks; see `storage/README.md`).
 - **Tagger talks to storage directly:** The tagger fetches object metadata and payloads from the internal storage service (`:8082`) via the `storage/pkg/client` HTTP client (no DB access). Storage's `readyz` checks DB + S3; api's `readyz` checks storage readiness; tagger's `readyz` always returns 200.
 - **Startup ordering matters:** Storage must reach tagger on startup to fetch supported types; api must reach storage (its `readyz` reports storage availability). In Docker Compose this is enforced by `depends_on` + healthchecks: tagger → storage → api. Running storage standalone without tagger causes a fatal error.
 - **api is a thin reverse proxy:** It owns no DB, no S3, no validation, no tagger access. It proxies an explicit **allowlist** of storage routes (`proxiedRoutes` in `api/cmd/api/gateway.go`) to storage on `:8082` without path rewriting, and serves `/healthz`, `/readyz`, `/metrics` locally. A new storage route stays private until it is added to that list. Unsafe paths (`..`, `//`, encoded slashes) get 400, bodies over `API_MAX_BODY_BYTES` get 413, the `Authorization` and `X-Forwarded-*` headers are not forwarded, key validation is cached (`API_KEY_CACHE_TTL`) and requests are rate limited per API key (`API_RATE_LIMIT_RPS`).

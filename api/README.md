@@ -161,6 +161,7 @@ go test ./...
 | `GET` | `/v1/collections` | List all collections |
 | `POST` | `/v1/collections` | Create a collection |
 | `DELETE` | `/v1/collections/{collection}` | Delete a collection |
+| `GET` | `/v1/collections/{collection}/tags` | Object count and registered tags with per-tag counts |
 
 **Create Collection**
 
@@ -188,6 +189,35 @@ Response `200 OK`:
 **Delete Collection**
 
 Response `204 No Content` — cascades to all objects and tags, and deletes S3 payloads.
+
+**Collection Tags**
+
+Tags are sparse: an object only has a value for a tag once the tag was evaluated for it (lazily, by a query or a tags request). This endpoint shows the collection's total object count and every tag registered in it, with how many objects the tag is true, false, or not yet evaluated for.
+
+```bash
+curl -H "Authorization: Bearer $KEY" \
+  "http://localhost:8080/v1/collections/jobs/tags?prefix=lang&limit=100"
+```
+
+Response `200 OK`:
+```json
+{
+  "collection": "jobs",
+  "total_objects": 120,
+  "tags": [
+    {"tag":"golang","true_count":40,"false_count":55,"unknown_count":25,"first_seen_at":"2026-10-02T07:29:19Z"},
+    {"tag":"lang:rust","true_count":3,"false_count":20,"unknown_count":97,"first_seen_at":"2026-10-02T08:01:42Z"}
+  ],
+  "next": "bGFuZzpydXN0"
+}
+```
+
+- `total_objects` — objects currently in the collection (expired objects are excluded even before the retention sweep removes them). It counts the whole collection, not just the tags returned.
+- `true_count` / `false_count` — objects the tag is known true / false for; `unknown_count` = `total_objects - true_count - false_count`.
+- A tag stays registered once seen, even if every object carrying it is later deleted (its counts drop to `0`, `unknown_count` equals `total_objects`).
+- Tags are ordered by name (byte order). Query parameters: `prefix` (literal prefix filter, max 128 bytes), `limit` (default `100`, max `1000`, else `400 invalid_limit`), `cursor` (the `next` value of the previous page; absent on the last page).
+- Errors: `404 not_found` for an unknown collection, `400 invalid_collection_name`, `invalid_limit`, `invalid_prefix`, `invalid_cursor`.
+- Counts are maintained by database triggers in the same transaction as every write, so reads are cheap and always consistent with the data.
 
 ### Objects
 
@@ -231,7 +261,8 @@ curl -X POST http://localhost:8080/v1/collections/jobs/objects/query \
     "limit": 5,
     "cursor": "...",
     "timeout_ms": 30000,
-    "best_effort": false
+    "best_effort": false,
+    "evaluate": true
   }'
 ```
 
@@ -249,6 +280,7 @@ curl -X POST http://localhost:8080/v1/collections/jobs/objects/query \
 - Cursor: `base64url(<unix_millis>|<uuid>)` of the last returned object.
 - `timeout_ms`: query timeout in milliseconds. Defaults to `30000` (30s). Must be between `1000` (1s) and `300000` (5m); otherwise a `400 invalid_timeout` error is returned. If reached and `best_effort` is `false`, a `query_timeout` error is returned.
 - `best_effort`: when `true` and the query times out, the server returns whatever objects were found up to that point instead of failing. A pagination `next` cursor is included.
+- `evaluate` (default `true`): when `false`, the query is answered from tags that are **already known** and the tagging engine is never called. An object is returned only if every requested tag is known for it and matches, so objects whose requested tags have not been evaluated yet are left out (the result is a subset of what `evaluate: true` would return, and it can grow as tags get evaluated). It is fast and cheap, independent of the tagger's availability and speed, and does not register any new tags in the collection. Pagination (`cursor`/`next`) and the `date` filter work as usual; `best_effort` has no effect because there is no partial result to return.
 
 **Get Tags**
 
@@ -256,7 +288,18 @@ curl -X POST http://localhost:8080/v1/collections/jobs/objects/query \
 curl "http://localhost:8080/v1/collections/jobs/objects/{id}/tags?tags=golang,qa"
 ```
 
-If any requested tag is missing, the storage service invokes the tagging engine before responding.
+If any requested tag is missing, the storage service invokes the tagging engine before responding. Without `tags`, only the tags already known for the object are returned.
+
+Query parameter `evaluate` (default `true`): with `evaluate=false` the tagging engine is not called. Requested tags that are known come back as `true`/`false`; requested tags that have not been evaluated yet come back as `null`:
+
+```bash
+curl "http://localhost:8080/v1/collections/jobs/objects/{id}/tags?tags=golang,java&evaluate=false"
+```
+```json
+{"id": "…", "tags": {"golang": true, "java": null}}
+```
+
+Any value other than a boolean (`true`/`false`/`1`/`0`) is rejected with `400 invalid_evaluate`.
 
 ---
 

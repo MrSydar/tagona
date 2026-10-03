@@ -47,6 +47,8 @@ func main() {
 		listCollections(ctx, c, remaining[1:])
 	case "create-collection":
 		createCollection(ctx, c, remaining[1:])
+	case "collection-tags":
+		collectionTags(ctx, c, remaining[1:])
 	case "upload":
 		upload(ctx, c, remaining[1:])
 	case "get":
@@ -81,6 +83,10 @@ commands:
                      Create a new collection with the given name and data type.
   delete-collection  --collection <c>
                      Delete a collection and all its objects.
+  collection-tags    --collection <c> [--prefix <p>] [--limit <n>] [--cursor <cursor>]
+                     Show the total number of objects in a collection and the tags registered in it,
+                     with how many objects each tag is true, false and not yet evaluated (unknown) for.
+                     Tags are ordered by name; pass the returned "next" cursor to fetch the next page.
   upload             --collection <c> --data-type <type> --file <path> [--date <RFC3339>] [--ttl <seconds>]
                      Upload an object to a collection.
                      Use --file - to read from stdin.
@@ -88,14 +94,18 @@ commands:
                      Get object metadata.
   data               --collection <c> --id <id> [--out <path>]
                      Download object data. Default output is stdout, use --out <path> to save to a file.
-  tags               --collection <c> --id <id> [--tags <a,b>]
+  tags               --collection <c> --id <id> [--tags <a,b>] [--evaluate=false]
                      Get or evaluate tags for an object.
                      Without --tags, returns all tags for the object.
                      With --tags, evaluates only the given tag names.
-  query              --collection <c> [--tag <name=value>] [--tag <name=value>] [--limit <n>] [--cursor <cursor>] [--timeout <ms>] [--best-effort]
+                     With --evaluate=false nothing is evaluated: requested tags that are
+                     not yet known are returned as null.
+  query              --collection <c> [--tag <name=value>] [--tag <name=value>] [--limit <n>] [--cursor <cursor>] [--timeout <ms>] [--best-effort] [--evaluate=false]
                      Query objects in a collection by tag criteria.
                      Use --tag multiple times: --tag \"working with kids=true\" --tag golang=false
                      If no =value is given, the tag defaults to true.
+                     With --evaluate=false the tagger is not called: only objects whose requested
+                     tags are already known and match are returned.
   delete             --collection <c> --id <id>
                      Delete an object.
 `)
@@ -160,6 +170,30 @@ func listCollections(ctx context.Context, c *client.Client, args []string) {
 		os.Exit(1)
 	}
 	printJSON(colls)
+}
+
+func collectionTags(ctx context.Context, c *client.Client, args []string) {
+	slog.Debug("collectionTags called")
+	fs := flag.NewFlagSet("collection-tags", flag.ExitOnError)
+	collection := fs.String("collection", "", "collection name")
+	prefix := fs.String("prefix", "", "only tags starting with this prefix")
+	limit := fs.Int("limit", 0, "maximum number of tags to return (server default if 0)")
+	cursor := fs.String("cursor", "", "pagination cursor from a previous response")
+	fs.Parse(args)
+	if *collection == "" {
+		fs.Usage()
+		os.Exit(1)
+	}
+	result, err := c.ListCollectionTags(ctx, *collection, client.CollectionTagsOptions{
+		Prefix: *prefix,
+		Limit:  *limit,
+		Cursor: *cursor,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	printJSON(result)
 }
 
 func deleteCollection(ctx context.Context, c *client.Client, args []string) {
@@ -269,6 +303,7 @@ func getTags(ctx context.Context, c *client.Client, args []string) {
 	collection := fs.String("collection", "", "collection name")
 	id := fs.String("id", "", "object id")
 	tags := fs.String("tags", "", "comma-separated tag names")
+	evaluate := fs.Bool("evaluate", true, "evaluate requested tags that are not yet known; false returns null for them")
 	fs.Parse(args)
 	if *collection == "" || *id == "" {
 		fs.Usage()
@@ -278,7 +313,7 @@ func getTags(ctx context.Context, c *client.Client, args []string) {
 	if *tags != "" {
 		tagList = strings.Split(*tags, ",")
 	}
-	resp, err := c.GetObjectTags(ctx, *collection, *id, tagList)
+	resp, err := c.GetObjectTagsWithOptions(ctx, *collection, *id, client.GetObjectTagsOptions{Tags: tagList, Evaluate: evaluate})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -331,12 +366,16 @@ func query(ctx context.Context, c *client.Client, args []string) {
 	cursor := fs.String("cursor", "", "pagination cursor")
 	timeout := fs.Int("timeout", 30000, "query timeout in milliseconds")
 	bestEffort := fs.Bool("best-effort", false, "return partial results on timeout")
+	evaluate := fs.Bool("evaluate", true, "evaluate tags that are not yet known; false answers from already-known tags only")
 	fs.Parse(args)
 	if *collection == "" {
 		fs.Usage()
 		os.Exit(1)
 	}
 	req := client.TagsQueryRequest{Limit: *limit, Cursor: *cursor, TimeoutMs: *timeout, BestEffort: *bestEffort}
+	if !*evaluate {
+		req.Evaluate = evaluate
+	}
 	if len(tags) > 0 {
 		req.Tags = make(map[string]bool)
 		for _, t := range tags {

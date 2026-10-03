@@ -34,6 +34,7 @@ type tagQueryReq struct {
 	Cursor     string          `json:"cursor,omitempty"`
 	TimeoutMs  int             `json:"timeout_ms,omitempty"`
 	BestEffort bool            `json:"best_effort,omitempty"`
+	Evaluate   *bool           `json:"evaluate,omitempty"`
 }
 
 type tagQueryResp struct {
@@ -316,4 +317,248 @@ func extractIDs(objs []objMeta) []string {
 		ids[i] = o.ID
 	}
 	return ids
+}
+
+type tagStat struct {
+	Tag          string `json:"tag"`
+	TrueCount    int64  `json:"true_count"`
+	FalseCount   int64  `json:"false_count"`
+	UnknownCount int64  `json:"unknown_count"`
+}
+
+type collectionTagsResp struct {
+	Collection   string    `json:"collection"`
+	TotalObjects int64     `json:"total_objects"`
+	Tags         []tagStat `json:"tags"`
+	Next         string    `json:"next,omitempty"`
+}
+
+func getCollectionTags(t *testing.T, apiKey, collection, rawQuery string) (int, []byte) {
+	t.Helper()
+	target := fmt.Sprintf("%s/v1/collections/%s/tags", storageURL, collection)
+	if rawQuery != "" {
+		target += "?" + rawQuery
+	}
+	req, err := http.NewRequest(http.MethodGet, target, nil)
+	require.NoError(t, err)
+	if apiKey != "" {
+		setBearer(req, apiKey)
+	}
+	resp, err := httpClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, b
+}
+
+func collectionTags(t *testing.T, apiKey, collection, rawQuery string) collectionTagsResp {
+	t.Helper()
+	status, b := getCollectionTags(t, apiKey, collection, rawQuery)
+	require.Equal(t, http.StatusOK, status, "collection tags failed: %s", string(b))
+	var result collectionTagsResp
+	require.NoError(t, json.Unmarshal(b, &result))
+	return result
+}
+
+func tagsByName(stats []tagStat) map[string]tagStat {
+	m := make(map[string]tagStat, len(stats))
+	for _, s := range stats {
+		m[s.Tag] = s
+	}
+	return m
+}
+
+func deleteObject(t *testing.T, apiKey, collection, id string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("%s/v1/collections/%s/objects/%s", storageURL, collection, id), nil)
+	require.NoError(t, err)
+	setBearer(req, apiKey)
+	resp, err := httpClient.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+}
+
+func TestCollectionTags(t *testing.T) {
+	creds := createAPIKey(t)
+	defer deleteAPIKey(t, creds.ID)
+	coll := fmt.Sprintf("e2e_tags_%d", time.Now().UnixNano())
+	createCollection(t, creds.Key, coll)
+	defer func() {
+		req, _ := http.NewRequest("DELETE", storageURL+"/v1/collections/"+coll, nil)
+		setBearer(req, creds.Key)
+		if r, _ := httpClient.Do(req); r != nil {
+			r.Body.Close()
+		}
+	}()
+
+	// Empty collection: zero objects and an empty (non-null) tag list.
+	got := collectionTags(t, creds.Key, coll, "")
+	assert.Equal(t, coll, got.Collection)
+	assert.EqualValues(t, 0, got.TotalObjects)
+	require.NotNil(t, got.Tags)
+	assert.Empty(t, got.Tags)
+
+	obj1 := uploadObject(t, creds.Key, coll, "txt", []byte("a golang job"))
+	uploadObject(t, creds.Key, coll, "txt", []byte("a golang and java job"))
+	uploadObject(t, creds.Key, coll, "txt", []byte("a rust job"))
+
+	// Tags are sparse and lazily evaluated: nothing is registered until a
+	// query needs a tag.
+	got = collectionTags(t, creds.Key, coll, "")
+	assert.EqualValues(t, 3, got.TotalObjects)
+	assert.Empty(t, got.Tags)
+
+	queryObjects(t, creds.Key, coll, tagQueryReq{Tags: map[string]bool{"golang": true}, Limit: 10})
+	queryObjects(t, creds.Key, coll, tagQueryReq{Tags: map[string]bool{"java": true}, Limit: 10})
+
+	got = collectionTags(t, creds.Key, coll, "")
+	assert.EqualValues(t, 3, got.TotalObjects)
+	require.Len(t, got.Tags, 2)
+	assert.Equal(t, "golang", got.Tags[0].Tag, "tags are ordered by name")
+	assert.Equal(t, "java", got.Tags[1].Tag)
+	byName := tagsByName(got.Tags)
+	assert.Equal(t, tagStat{Tag: "golang", TrueCount: 2, FalseCount: 1, UnknownCount: 0}, byName["golang"])
+	assert.Equal(t, tagStat{Tag: "java", TrueCount: 1, FalseCount: 2, UnknownCount: 0}, byName["java"])
+
+	// A new object has not been evaluated for the known tags yet.
+	uploadObject(t, creds.Key, coll, "txt", []byte("a golang and kotlin job"))
+	got = collectionTags(t, creds.Key, coll, "")
+	assert.EqualValues(t, 4, got.TotalObjects)
+	byName = tagsByName(got.Tags)
+	assert.Equal(t, tagStat{Tag: "golang", TrueCount: 2, FalseCount: 1, UnknownCount: 1}, byName["golang"])
+	assert.Equal(t, tagStat{Tag: "java", TrueCount: 1, FalseCount: 2, UnknownCount: 1}, byName["java"])
+
+	// Deleting an object updates the counters.
+	deleteObject(t, creds.Key, coll, obj1.ID)
+	got = collectionTags(t, creds.Key, coll, "")
+	assert.EqualValues(t, 3, got.TotalObjects)
+	byName = tagsByName(got.Tags)
+	assert.Equal(t, tagStat{Tag: "golang", TrueCount: 1, FalseCount: 1, UnknownCount: 1}, byName["golang"])
+
+	// Prefix filter and keyset pagination.
+	got = collectionTags(t, creds.Key, coll, "prefix=j")
+	require.Len(t, got.Tags, 1)
+	assert.Equal(t, "java", got.Tags[0].Tag)
+	assert.EqualValues(t, 3, got.TotalObjects, "total counts the whole collection, not the filtered tags")
+
+	page1 := collectionTags(t, creds.Key, coll, "limit=1")
+	require.Len(t, page1.Tags, 1)
+	assert.Equal(t, "golang", page1.Tags[0].Tag)
+	require.NotEmpty(t, page1.Next)
+	page2 := collectionTags(t, creds.Key, coll, "limit=1&cursor="+page1.Next)
+	require.Len(t, page2.Tags, 1)
+	assert.Equal(t, "java", page2.Tags[0].Tag)
+	assert.Empty(t, page2.Next, "last page has no next cursor")
+
+	// Errors.
+	status, body := getCollectionTags(t, creds.Key, coll, "limit=0")
+	require.Equal(t, http.StatusBadRequest, status)
+	assert.Equal(t, "invalid_limit", errorCode(t, body))
+	status, body = getCollectionTags(t, creds.Key, "e2e_does_not_exist", "")
+	require.Equal(t, http.StatusNotFound, status)
+	assert.Equal(t, "not_found", errorCode(t, body))
+	status, body = getCollectionTags(t, "", coll, "")
+	require.Equal(t, http.StatusUnauthorized, status)
+	assert.Equal(t, "missing_api_key", errorCode(t, body))
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+type objectTagsResp struct {
+	ID   string           `json:"id"`
+	Tags map[string]*bool `json:"tags"`
+}
+
+func getObjectTags(t *testing.T, apiKey, collection, id, rawQuery string) (int, []byte) {
+	t.Helper()
+	target := fmt.Sprintf("%s/v1/collections/%s/objects/%s/tags?%s", storageURL, collection, id, rawQuery)
+	req, err := http.NewRequest(http.MethodGet, target, nil)
+	require.NoError(t, err)
+	setBearer(req, apiKey)
+	resp, err := httpClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, b
+}
+
+func objectTags(t *testing.T, apiKey, collection, id, rawQuery string) map[string]*bool {
+	t.Helper()
+	status, b := getObjectTags(t, apiKey, collection, id, rawQuery)
+	require.Equal(t, http.StatusOK, status, "object tags failed: %s", string(b))
+	var result objectTagsResp
+	require.NoError(t, json.Unmarshal(b, &result))
+	require.NotNil(t, result.Tags)
+	return result.Tags
+}
+
+func TestEvaluateFalse(t *testing.T) {
+	creds := createAPIKey(t)
+	defer deleteAPIKey(t, creds.ID)
+	coll := fmt.Sprintf("e2e_evaluate_%d", time.Now().UnixNano())
+	createCollection(t, creds.Key, coll)
+	defer func() {
+		req, _ := http.NewRequest("DELETE", storageURL+"/v1/collections/"+coll, nil)
+		setBearer(req, creds.Key)
+		if r, _ := httpClient.Do(req); r != nil {
+			r.Body.Close()
+		}
+	}()
+
+	goObj := uploadObject(t, creds.Key, coll, "txt", []byte("a golang job"))
+	rustObj := uploadObject(t, creds.Key, coll, "txt", []byte("a rust job"))
+	noEval := boolPtr(false)
+
+	// Nothing has been evaluated yet, so a known-only query finds nothing...
+	result := queryObjects(t, creds.Key, coll, tagQueryReq{Tags: map[string]bool{"golang": true}, Limit: 10, Evaluate: noEval})
+	assert.Empty(t, result.Objects)
+	// ...but without tags it lists every object, still without evaluating.
+	result = queryObjects(t, creds.Key, coll, tagQueryReq{Limit: 10, Evaluate: noEval})
+	assert.Len(t, result.Objects, 2)
+
+	// The tags endpoint returns null for requested tags that are not evaluated.
+	tags := objectTags(t, creds.Key, coll, goObj.ID, "tags=golang,java&evaluate=false")
+	require.Len(t, tags, 2)
+	assert.Contains(t, tags, "golang")
+	assert.Nil(t, tags["golang"], "unevaluated tag must be null")
+	assert.Contains(t, tags, "java")
+	assert.Nil(t, tags["java"])
+	// Without a tags list it returns only what is known: nothing.
+	assert.Empty(t, objectTags(t, creds.Key, coll, goObj.ID, "evaluate=false"))
+
+	// None of that evaluated anything, so no tag was registered in the collection.
+	assert.Empty(t, collectionTags(t, creds.Key, coll, "").Tags)
+
+	// A normal query evaluates and stores golang for both objects.
+	result = queryObjects(t, creds.Key, coll, tagQueryReq{Tags: map[string]bool{"golang": true}, Limit: 10})
+	require.Len(t, result.Objects, 1)
+	assert.Equal(t, goObj.ID, result.Objects[0].ID)
+
+	// Known-only queries now see those results.
+	result = queryObjects(t, creds.Key, coll, tagQueryReq{Tags: map[string]bool{"golang": true}, Limit: 10, Evaluate: noEval})
+	require.Len(t, result.Objects, 1)
+	assert.Equal(t, goObj.ID, result.Objects[0].ID)
+	result = queryObjects(t, creds.Key, coll, tagQueryReq{Tags: map[string]bool{"golang": false}, Limit: 10, Evaluate: noEval})
+	require.Len(t, result.Objects, 1)
+	assert.Equal(t, rustObj.ID, result.Objects[0].ID)
+	// A second tag that was never evaluated still matches nothing.
+	result = queryObjects(t, creds.Key, coll, tagQueryReq{Tags: map[string]bool{"golang": true, "java": true}, Limit: 10, Evaluate: noEval})
+	assert.Empty(t, result.Objects)
+
+	// Known values come back as true/false, unknown ones as null.
+	tags = objectTags(t, creds.Key, coll, goObj.ID, "tags=golang,java&evaluate=false")
+	require.NotNil(t, tags["golang"])
+	assert.True(t, *tags["golang"])
+	assert.Contains(t, tags, "java")
+	assert.Nil(t, tags["java"])
+	// Explicit evaluate=true (and the default) evaluate the missing tag.
+	tags = objectTags(t, creds.Key, coll, goObj.ID, "tags=golang,java&evaluate=true")
+	require.NotNil(t, tags["java"])
+	assert.False(t, *tags["java"])
+
+	// Invalid values are rejected.
+	status, body := getObjectTags(t, creds.Key, coll, goObj.ID, "evaluate=maybe")
+	require.Equal(t, http.StatusBadRequest, status)
+	assert.Equal(t, "invalid_evaluate", errorCode(t, body))
 }
