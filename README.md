@@ -7,8 +7,8 @@
 </p>
 
 <p align="center">
-  <b>A self-hosted object storage system that finds objects by the facts inside them.</b><br>
-  Upload raw data, query by any tag you can think of, and let Tagona label what each query needs — once.
+  <b>A self-hosted storage system that finds objects by the context in them.</b><br>
+  Upload raw data, query by a set of labels that represent the traits of objects you need, and let Tagona fetch them for you.
 </p>
 
 <p align="center">
@@ -29,7 +29,11 @@
 
 ---
 
-Tagona stores collections of objects and lets you query them by **yes/no tags you never defined in advance** — `golang`, `senior`, `remote`. There is no schema and no labeling step: you upload raw bytes. The first time a query needs a tag for an object, Tagona asks a pluggable **evaluator** (a substring match, an LLM, your own code) and **stores the answer**, so every object is evaluated for every tag at most once. The more you ask, the faster it answers.
+Tagona stores collections of objects and lets you query them by **yes/no tags you never defined in advance**. There is no schema and no labeling step: you upload raw bytes. The first time a query needs a tag for an object, Tagona asks a pluggable **evaluator** (System One Models, Decision API, an LLM, a substring match, your own implementation) and **stores the answer**, so every object is evaluated for every tag at most once. The more you ask, the faster it answers, eventually answering the most frequent queries in the blink of an eye with minimal cost while still keeping a capability to process new and unknown cases.
+
+<p align="center">
+  <img src="assets/how-it-works.svg" alt="How Tagona works: objects are inserted without labels; a query asks for comfy:true and fortified:false; Tagona labels objects until the query is satisfied, keeps the labels, and fetches the matching house.">
+</p>
 
 - **Ask for any tag, any time.** Tags are not declared up front; a query is the only thing that creates them.
 - **Sparse, lazy labels.** A tag is `true`, `false`, or *unknown* (never evaluated). Unknown is a first-class state: you can see it, count it, and skip evaluation entirely with `evaluate=false`.
