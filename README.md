@@ -35,9 +35,9 @@ Tagona stores collections of objects and lets you query them by **yes/no tags yo
   <img src="assets/how-it-works.svg" alt="How Tagona works: objects are inserted without labels; a query asks for comfy:true and fortified:false; Tagona labels objects until the query is satisfied, keeps the labels, and fetches the matching house.">
 </p>
 
-- **Ask for any tag, any time.** Tags are not declared up front; a query is the only thing that creates them.
-- **Sparse, lazy labels.** A tag is `true`, `false`, or *unknown* (never evaluated). Unknown is a first-class state: you can see it, count it, and skip evaluation entirely with `evaluate=false`.
-- **Pluggable evaluators.** Ships with an offline substring matcher (`grep`), any OpenAI-compatible LLM (`openai`), and the Vercel AI Gateway (`systemone`). Add your own by implementing one Go interface.
+- **Ask for any tag, any time.** Tags are not declared up front; a query is the only thing that creates them. Your query can contain existing tags already queried in the past, completely new ones never seen before and yet to be evaluated once the query is running, or a mix of both.
+- **Labeled on demand, remembered for next time.** Each tag is evaluated for an object only when a query needs it, and the answer is stored for future use.
+- **Pluggable evaluators.** Ships with System One (`systemone`, through the Vercel AI Gateway today, with Jev, OpenAI's Decision API and more to be added), any OpenAI-compatible LLM (`openai`), and an offline substring matcher (`grep`). Add your own by implementing one Go interface.
 - **Know what you have.** Per-collection object counts and per-tag true / false / unknown counts, maintained transactionally by Postgres.
 - **Documented API.** The gateway serves interactive docs (Swagger UI) and an OpenAPI 3 contract, so you can try every endpoint and generate clients without reading source.
 - **Operable by default.** API keys, per-key and per-IP rate limits, TTL retention, content-hash de-duplication, Prometheus metrics and a Grafana dashboard.
