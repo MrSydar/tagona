@@ -21,6 +21,7 @@ import (
 
 	"mrsydar/tagona/api/internal/metrics"
 	"mrsydar/tagona/api/internal/storageapi"
+	"mrsydar/tagona/api/openapi"
 )
 
 func main() {
@@ -90,6 +91,13 @@ func main() {
 		cfg.rateLimiter = newKeyRateLimiter(rateLimitRPS, rateLimitBurst)
 	}
 
+	docs, err := newDocsHandlers(openapi.V1)
+	if err != nil {
+		slog.Error("invalid embedded openapi document", "error", err)
+		os.Exit(1)
+	}
+	cfg.docs = docs
+
 	r := newRouter(storageBaseURL, proxy, keyClient, adminUsername, adminPassword, cfg)
 
 	// HTTP server.
@@ -133,6 +141,8 @@ type gatewayConfig struct {
 	onKeyDeleted func()
 	// httpClient is used for the storage readiness probe; nil uses the default.
 	httpClient *http.Client
+	// docs serves the OpenAPI document and interactive docs; nil disables them.
+	docs *docsHandlers
 }
 
 // newRouter builds the chi router. Admin key-management routes are static
@@ -156,6 +166,11 @@ func newRouter(storageBaseURL string, proxy http.Handler, keyClient *storageapi.
 	r.Get("/healthz", healthz)
 	r.Get("/readyz", readyz(storageBaseURL, httpClient))
 	r.Get("/metrics", promhttp.Handler().ServeHTTP)
+
+	// Public documentation, registered as static routes ahead of the auth-guarded API.
+	if cfg.docs != nil {
+		cfg.docs.register(r)
+	}
 
 	r.Post("/v1/admin/api-keys", adminAuth(adminUsername, adminPassword, createAPIKey(keyClient)).ServeHTTP)
 	r.Get("/v1/admin/api-keys", adminAuth(adminUsername, adminPassword, listAPIKeys(keyClient)).ServeHTTP)

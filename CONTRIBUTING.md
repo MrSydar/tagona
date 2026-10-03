@@ -43,7 +43,7 @@ This is a **Go workspace monorepo** (`go.work` at the root).
 | `traefik/` | — | Edge proxy config (TLS, per-IP rate limiting); see [`traefik/README.md`](traefik/README.md) |
 | `e2e/` | standalone module | End-to-end tests (run with `GOWORK=off`) |
 
-> **Adding a public route:** the api service proxies an explicit allowlist. A new storage route is **not** reachable publicly until you add it to `proxiedRoutes` in `api/cmd/api/gateway.go` (and document it in `api/README.md`).
+> **Adding a public route:** the api service proxies an explicit allowlist. A new storage route is **not** reachable publicly until you add it to `proxiedRoutes` in `api/cmd/api/gateway.go`. Also document it in `api/openapi/v1.yaml` (the OpenAPI contract served at `/v1/docs`) and `api/README.md`; `go test ./api/...` fails if the spec and the routes disagree, and CI lints the spec (`npx @redocly/cli lint api/openapi/v1.yaml`).
 
 > **Important:** `tagger` imports `mrsydar/tagona/storage/pkg/client`. This is resolved by the Go workspace, **not** by listing `storage` in `tagger/go.mod`. Building from a module directory works because Go automatically resolves sibling workspace modules.
 
