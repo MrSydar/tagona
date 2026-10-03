@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -68,6 +70,7 @@ func (s *Server) Router() chi.Router {
 	r.Get("/v1/collections", s.listCollections)
 	r.Post("/v1/collections", s.createCollection)
 	r.Delete("/v1/collections/{collection}", s.deleteCollection)
+	r.Get("/v1/collections/{collection}/tags", s.listCollectionTags)
 	r.Post("/v1/collections/{collection}/objects", s.putObject)
 	r.Get("/v1/collections/{collection}/objects/{id}", s.getObjectMetadata)
 	r.Get("/v1/collections/{collection}/objects/{id}/data", s.getObjectData)
@@ -164,6 +167,85 @@ func (s *Server) createCollection(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(resp)
+}
+
+const (
+	defaultTagsLimit = 100
+	maxTagsLimit     = 1000
+)
+
+// listCollectionTags returns the number of objects in a collection and the tags
+// registered in it, with per-tag counts. Tags are ordered by name; pass the
+// returned next cursor to fetch the following page.
+func (s *Server) listCollectionTags(w http.ResponseWriter, r *http.Request) {
+	slog.Debug("listCollectionTags handler called")
+	collectionName := chi.URLParam(r, "collection")
+	if err := validate.ValidateCollectionName(collectionName); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_collection_name", err.Error())
+		return
+	}
+
+	q := r.URL.Query()
+	limit := defaultTagsLimit
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			writeError(w, http.StatusBadRequest, "invalid_limit", "limit must be a positive integer")
+			return
+		}
+		if n > maxTagsLimit {
+			writeError(w, http.StatusBadRequest, "invalid_limit", fmt.Sprintf("limit exceeds max of %d", maxTagsLimit))
+			return
+		}
+		limit = n
+	}
+	prefix := q.Get("prefix")
+	if len(prefix) > 128 || !utf8.ValidString(prefix) {
+		writeError(w, http.StatusBadRequest, "invalid_prefix", "prefix must be valid UTF-8 of at most 128 bytes")
+		return
+	}
+	afterTag := ""
+	if c := q.Get("cursor"); c != "" {
+		decoded, err := base64.RawURLEncoding.DecodeString(c)
+		if err != nil || !utf8.Valid(decoded) {
+			writeError(w, http.StatusBadRequest, "invalid_cursor", "invalid cursor")
+			return
+		}
+		afterTag = string(decoded)
+	}
+
+	coll, err := s.db.GetCollectionByName(r.Context(), collectionName)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "collection not found")
+		return
+	}
+
+	// Fetch one extra row to know whether another page exists.
+	total, stats, err := s.db.GetCollectionTagStats(r.Context(), coll.ID, prefix, afterTag, limit+1)
+	if err != nil {
+		if strings.Contains(err.Error(), "collection not found") {
+			writeError(w, http.StatusNotFound, "not_found", "collection not found")
+			return
+		}
+		slog.Error("get collection tag stats failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "failed to get collection tags")
+		return
+	}
+
+	resp := models.CollectionTagsResponse{
+		Collection:   coll.Name,
+		TotalObjects: total,
+		Tags:         stats,
+	}
+	if len(stats) > limit {
+		resp.Tags = stats[:limit]
+		resp.Next = base64.RawURLEncoding.EncodeToString([]byte(resp.Tags[limit-1].Tag))
+	}
+	if resp.Tags == nil {
+		resp.Tags = []models.TagStat{}
+	}
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
 
@@ -446,6 +528,18 @@ func (s *Server) getObjectData(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getObjectTags(w http.ResponseWriter, r *http.Request) {
 	slog.Debug("getObjectTags handler called")
+	// evaluate=false returns only already-known tags (null for requested tags
+	// that were never evaluated) and never calls the tagging engine.
+	evaluate := true
+	if v := r.URL.Query().Get("evaluate"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_evaluate", "evaluate must be true or false")
+			return
+		}
+		evaluate = b
+	}
+
 	id := chi.URLParam(r, "id")
 	obj, err := s.db.GetObjectByID(r.Context(), id)
 	if err != nil {
@@ -491,9 +585,9 @@ func (s *Server) getObjectTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Debug("getObjectTags evaluating missing tags", "requested_count", len(requestedTags))
+	slog.Debug("getObjectTags evaluating missing tags", "requested_count", len(requestedTags), "evaluate", evaluate)
 	// Evaluate missing tags if requestedTags provided.
-	if len(requestedTags) > 0 {
+	if evaluate && len(requestedTags) > 0 {
 		var missing []string
 		for _, tag := range requestedTags {
 			if _, has := knownTags[tag]; !has {
@@ -519,15 +613,22 @@ func (s *Server) getObjectTags(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result := map[string]bool{}
+	// Values are pointers so a requested-but-unevaluated tag can be null.
+	result := map[string]*bool{}
 	if len(requestedTags) > 0 {
 		for _, tag := range requestedTags {
 			if v, has := knownTags[tag]; has {
-				result[tag] = v
+				val := v
+				result[tag] = &val
+			} else if !evaluate {
+				result[tag] = nil
 			}
 		}
 	} else {
-		result = knownTags
+		for tag, v := range knownTags {
+			val := v
+			result[tag] = &val
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

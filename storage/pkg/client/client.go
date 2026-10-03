@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -86,6 +87,11 @@ type TagsQueryRequest struct {
 	Cursor     string          `json:"cursor,omitempty"`
 	TimeoutMs  int             `json:"timeout_ms,omitempty"`
 	BestEffort bool            `json:"best_effort,omitempty"`
+	// Evaluate controls whether tags that are not yet known are evaluated by the
+	// tagging engine. Nil (the default) and true evaluate them; false answers from
+	// already-known tags only, so objects with an unevaluated requested tag are
+	// not returned.
+	Evaluate *bool `json:"evaluate,omitempty"`
 }
 
 // DateFilter defines date constraints.
@@ -107,6 +113,52 @@ type TagsQueryResponse struct {
 type TagResponse struct {
 	ID   string          `json:"id"`
 	Tags map[string]bool `json:"tags"`
+}
+
+// TagStat describes one tag registered in a collection. Tags are sparse: an
+// object has a value for a tag only once the tag was evaluated for it.
+type TagStat struct {
+	Tag string `json:"tag"`
+	// TrueCount and FalseCount are the objects the tag is known true/false for.
+	TrueCount  int64 `json:"true_count"`
+	FalseCount int64 `json:"false_count"`
+	// UnknownCount is the objects the tag has not been evaluated for yet.
+	UnknownCount int64     `json:"unknown_count"`
+	FirstSeenAt  time.Time `json:"first_seen_at"`
+}
+
+// CollectionTags is the response for listing a collection's tags.
+type CollectionTags struct {
+	Collection   string    `json:"collection"`
+	TotalObjects int64     `json:"total_objects"`
+	Tags         []TagStat `json:"tags"`
+	Next         string    `json:"next,omitempty"`
+}
+
+// CollectionTagsOptions narrows and pages ListCollectionTags. Zero values use
+// the server defaults.
+type CollectionTagsOptions struct {
+	Prefix string
+	Limit  int
+	Cursor string
+}
+
+// ObjectTags is returned by GetObjectTagsWithOptions. A nil value means the tag
+// was requested but has not been evaluated for the object (only possible with
+// Evaluate set to false).
+type ObjectTags struct {
+	ID   string           `json:"id"`
+	Tags map[string]*bool `json:"tags"`
+}
+
+// GetObjectTagsOptions are the parameters of GetObjectTagsWithOptions.
+type GetObjectTagsOptions struct {
+	// Tags are the tag names to return; empty returns every known tag.
+	Tags []string
+	// Evaluate controls whether requested tags that are not yet known are
+	// evaluated by the tagging engine. Nil (the default) and true evaluate them;
+	// false returns known values and nil for the rest.
+	Evaluate *bool
 }
 
 // ErrorResponse is the standard error response format.
@@ -148,6 +200,45 @@ func (c *Client) ListCollections(ctx context.Context) ([]Collection, error) {
 		return nil, fmt.Errorf("decode collections: %w", err)
 	}
 	return result.Collections, nil
+}
+
+// ListCollectionTags returns the total number of objects in a collection and the
+// tags registered in it, with per-tag object counts, ordered by tag name. When
+// the result has a Next cursor, pass it in opts.Cursor to fetch the next page.
+func (c *Client) ListCollectionTags(ctx context.Context, collection string, opts CollectionTagsOptions) (*CollectionTags, error) {
+	slog.Debug("ListCollectionTags", "collection", collection, "prefix", opts.Prefix, "limit", opts.Limit)
+	params := url.Values{}
+	if opts.Prefix != "" {
+		params.Set("prefix", opts.Prefix)
+	}
+	if opts.Limit > 0 {
+		params.Set("limit", strconv.Itoa(opts.Limit))
+	}
+	if opts.Cursor != "" {
+		params.Set("cursor", opts.Cursor)
+	}
+	target := fmt.Sprintf("%s/v1/collections/%s/tags", c.baseURL, collection)
+	if len(params) > 0 {
+		target += "?" + params.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", target, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.setAuth(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list collection tags: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, httpError("list collection tags", resp)
+	}
+	var result CollectionTags
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode collection tags: %w", err)
+	}
+	return &result, nil
 }
 
 // CreateCollection creates a new collection.
@@ -229,34 +320,55 @@ func (c *Client) GetObjectData(ctx context.Context, collection, id string) ([]by
 
 // GetObjectTags fetches tags for an object.
 func (c *Client) GetObjectTags(ctx context.Context, collection, id string, tags []string) (*TagResponse, error) {
+	var result TagResponse
+	if err := c.fetchObjectTags(ctx, collection, id, tags, nil, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// GetObjectTagsWithOptions is like GetObjectTags but can skip evaluation: with
+// opts.Evaluate set to false the tagging engine is not called, and requested
+// tags that are not yet known come back as nil.
+func (c *Client) GetObjectTagsWithOptions(ctx context.Context, collection, id string, opts GetObjectTagsOptions) (*ObjectTags, error) {
+	var result ObjectTags
+	if err := c.fetchObjectTags(ctx, collection, id, opts.Tags, opts.Evaluate, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (c *Client) fetchObjectTags(ctx context.Context, collection, id string, tags []string, evaluate *bool, out any) error {
 	slog.Debug("GetObjectTags", "collection", collection, "id", id, "tags", tags)
 	tagsParam := strings.Join(tags, ",")
 	reqURL := fmt.Sprintf("%s/v1/collections/%s/objects/%s/tags", c.baseURL, collection, id)
 	u, parseErr := url.Parse(reqURL)
 	if parseErr != nil {
-		return nil, parseErr
+		return parseErr
 	}
 	q := u.Query()
 	q.Set("tags", tagsParam)
+	if evaluate != nil {
+		q.Set("evaluate", strconv.FormatBool(*evaluate))
+	}
 	u.RawQuery = q.Encode()
 	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	c.setAuth(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch tags: %w", err)
+		return fmt.Errorf("fetch tags: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, httpError("fetch tags", resp)
+		return httpError("fetch tags", resp)
 	}
-	var result TagResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode tags: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("decode tags: %w", err)
 	}
-	return &result, nil
+	return nil
 }
 
 // QueryObjects queries objects by tags.

@@ -2,11 +2,15 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"mrsydar/tagona/storage/internal/models"
 )
@@ -220,10 +224,12 @@ func (d *DB) InsertObject(ctx context.Context, collectionID string, hash string,
 func (d *DB) DeleteObject(ctx context.Context, id string) (string, error) {
 	slog.Debug("DeleteObject", "id", id)
 	var payloadKey string
-	err := d.pool.QueryRow(ctx,
-		`DELETE FROM objects WHERE id = $1 RETURNING payload_key`,
-		id,
-	).Scan(&payloadKey)
+	err := retryOnDeadlock(ctx, func() error {
+		return d.pool.QueryRow(ctx,
+			`DELETE FROM objects WHERE id = $1 RETURNING payload_key`,
+			id,
+		).Scan(&payloadKey)
+	})
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return "", fmt.Errorf("object not found: %w", err)
@@ -324,31 +330,165 @@ func (d *DB) GetTagsForObject(ctx context.Context, objectID string) (map[string]
 }
 
 // UpsertTags inserts or updates tags for an object.
+//
+// The collection_tags counters are row-locked by triggers, so every writer
+// follows one lock order to stay deadlock-free: the object row first (which is
+// also what DeleteObject's cascade takes), then the counter rows in sorted tag
+// order, then the collection row. Deadlocks that still occur (two writers
+// racing to create the same brand-new counter) are retried.
 func (d *DB) UpsertTags(ctx context.Context, collectionID, objectID string, tags map[string]bool) error {
 	slog.Debug("UpsertTags", "collectionID", collectionID, "objectID", objectID, "tagCount", len(tags))
 	if len(tags) == 0 {
 		return nil
 	}
-	tx, err := d.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
+	names := make([]string, 0, len(tags))
+	for tag := range tags {
+		names = append(names, tag)
 	}
-	defer tx.Rollback(ctx)
-	for tag, value := range tags {
-		_, err := tx.Exec(ctx,
+	sort.Strings(names)
+	values := make([]bool, len(names))
+	for i, tag := range names {
+		values[i] = tags[tag]
+	}
+
+	return retryOnDeadlock(ctx, func() error {
+		tx, err := d.pool.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin tx: %w", err)
+		}
+		defer tx.Rollback(ctx)
+
+		var one int
+		if err := tx.QueryRow(ctx, `SELECT 1 FROM objects WHERE id = $1 FOR KEY SHARE`, objectID).Scan(&one); err != nil {
+			if err == pgx.ErrNoRows {
+				return fmt.Errorf("upsert tags: object not found: %w", err)
+			}
+			return fmt.Errorf("lock object: %w", err)
+		}
+		// ON CONFLICT DO UPDATE fires the insert trigger and then the update
+		// trigger, each locking only its own subset of counters. Locking every
+		// existing counter this call can touch up front, in sorted order, keeps
+		// two writers from taking those subsets in opposite orders.
+		if _, err := tx.Exec(ctx,
+			`SELECT 1 FROM collection_tags
+			 WHERE collection_id = $1 AND tag = ANY($2::text[])
+			 ORDER BY tag FOR UPDATE`,
+			collectionID, names,
+		); err != nil {
+			return fmt.Errorf("lock tag counters: %w", err)
+		}
+		_, err = tx.Exec(ctx,
 			`INSERT INTO object_tags (object_id, collection_id, tag, value, updated_at)
-			 VALUES ($1, $2, $3, $4, NOW())
+			 SELECT $1, $2, t.tag, t.value, NOW()
+			 FROM unnest($3::text[], $4::boolean[]) AS t(tag, value)
+			 ORDER BY t.tag
 			 ON CONFLICT (object_id, tag) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-			objectID, collectionID, tag, value,
+			objectID, collectionID, names, values,
 		)
 		if err != nil {
-			return fmt.Errorf("upsert tag %s: %w", tag, err)
+			return fmt.Errorf("upsert tags: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit tx: %w", err)
+		}
+		return nil
+	})
+}
+
+// retryOnDeadlock runs fn, retrying a few times with a short randomized backoff
+// when Postgres aborts it as a deadlock victim.
+func retryOnDeadlock(ctx context.Context, fn func() error) error {
+	const attempts = 5
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if err = fn(); err == nil || !isDeadlock(err) {
+			return err
+		}
+		slog.Warn("deadlock detected, retrying", "attempt", attempt+1)
+		backoff := time.Duration(5+rand.Intn(20)*(attempt+1)) * time.Millisecond
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit tx: %w", err)
+	return err
+}
+
+func isDeadlock(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
+}
+
+// GetCollectionTagStats returns the number of objects in a collection and the
+// tags registered in it, ordered by tag name (byte order). prefix filters tags by prefix,
+// afterTag is an exclusive keyset cursor ("" for the first page), and at most
+// limit tags are returned.
+//
+// Counters are maintained by triggers (migration 000003) and are corrected here
+// for objects that have expired but are not yet swept by the retention job, so
+// the numbers match what object reads and queries return.
+func (d *DB) GetCollectionTagStats(ctx context.Context, collectionID, prefix, afterTag string, limit int) (int64, []models.TagStat, error) {
+	slog.Debug("GetCollectionTagStats", "collectionID", collectionID, "prefix", prefix, "afterTag", afterTag, "limit", limit)
+	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return 0, nil, fmt.Errorf("begin tx: %w", err)
 	}
-	return nil
+	defer tx.Rollback(ctx)
+
+	var total int64
+	err = tx.QueryRow(ctx,
+		`SELECT c.object_count - (
+		     SELECT count(*) FROM objects o
+		     WHERE o.collection_id = c.id AND o.expires_at IS NOT NULL AND o.expires_at <= NOW()
+		 )
+		 FROM collections c WHERE c.id = $1`,
+		collectionID,
+	).Scan(&total)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return 0, nil, fmt.Errorf("collection not found: %w", err)
+		}
+		return 0, nil, fmt.Errorf("get collection object count: %w", err)
+	}
+
+	rows, err := tx.Query(ctx,
+		`WITH expired AS (
+		     SELECT t.tag,
+		            count(*) FILTER (WHERE t.value) AS true_count,
+		            count(*) FILTER (WHERE NOT t.value) AS false_count
+		     FROM objects o JOIN object_tags t ON t.object_id = o.id
+		     WHERE o.collection_id = $1 AND o.expires_at IS NOT NULL AND o.expires_at <= NOW()
+		     GROUP BY t.tag
+		 )
+		 SELECT ct.tag,
+		        ct.true_count - COALESCE(e.true_count, 0),
+		        ct.false_count - COALESCE(e.false_count, 0),
+		        ct.first_seen_at
+		 FROM collection_tags ct LEFT JOIN expired e ON e.tag = ct.tag
+		 WHERE ct.collection_id = $1 AND starts_with(ct.tag, $2) AND ct.tag COLLATE "C" > $3
+		 ORDER BY ct.tag COLLATE "C"
+		 LIMIT $4`,
+		collectionID, prefix, afterTag, limit,
+	)
+	if err != nil {
+		return 0, nil, fmt.Errorf("get collection tag stats: %w", err)
+	}
+	defer rows.Close()
+
+	var stats []models.TagStat
+	for rows.Next() {
+		var st models.TagStat
+		if err := rows.Scan(&st.Tag, &st.TrueCount, &st.FalseCount, &st.FirstSeenAt); err != nil {
+			return 0, nil, fmt.Errorf("scan tag stat: %w", err)
+		}
+		st.UnknownCount = total - st.TrueCount - st.FalseCount
+		stats = append(stats, st)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, nil, fmt.Errorf("iterate tag stats: %w", err)
+	}
+	return total, stats, nil
 }
 
 // ListExpiredObjects returns expired object IDs in batches.
@@ -393,7 +533,7 @@ func (d *DB) QueryObjectsKnownTags(ctx context.Context, collectionID string, tag
 		argIdx++
 		conds = append(conds, fmt.Sprintf("(o.date < $%d OR (o.date = $%d AND o.id > $%d))", argIdx, argIdx, argIdx+1))
 		args = append(args, cursorDate, cursorID)
-		argIdx += 2
+		argIdx = len(args) // last placeholder in use
 	}
 
 	// date filter
@@ -468,12 +608,12 @@ func (d *DB) queryObjectsByDate(ctx context.Context, collectionID string, dateFi
 
 	if cursorID != "" {
 		argIdx++
-		conds = append(conds, fmt.Sprintf("(date < $%d OR (date = $%d AND id > $%d))", argIdx, argIdx, argIdx+1))
+		conds = append(conds, fmt.Sprintf("(o.date < $%d OR (o.date = $%d AND o.id > $%d))", argIdx, argIdx, argIdx+1))
 		args = append(args, cursorDate, cursorID)
-		argIdx += 2
+		argIdx = len(args) // last placeholder in use
 	}
 
-	dateConds, dateArgs, di := buildDateConds("date", argIdx, dateFilter)
+	dateConds, dateArgs, di := buildDateConds("o.date", argIdx, dateFilter)
 	if len(dateConds) > 0 {
 		conds = append(conds, dateConds...)
 		args = append(args, dateArgs...)
@@ -519,7 +659,7 @@ func (d *DB) ScanCandidateObjects(ctx context.Context, collectionID string, date
 		argIdx++
 		conds = append(conds, fmt.Sprintf("(o.date < $%d OR (o.date = $%d AND o.id > $%d))", argIdx, argIdx, argIdx+1))
 		args = append(args, cursorDate, cursorID)
-		argIdx += 2
+		argIdx = len(args) // last placeholder in use
 	}
 
 	dateConds, dateArgs, di := buildDateConds("o.date", argIdx, dateFilter)

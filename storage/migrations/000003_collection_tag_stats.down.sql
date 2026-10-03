@@ -1,0 +1,12 @@
+DROP TRIGGER IF EXISTS tagona_objects_deleted ON objects;
+DROP TRIGGER IF EXISTS tagona_objects_inserted ON objects;
+DROP TRIGGER IF EXISTS tagona_object_tags_deleted ON object_tags;
+DROP TRIGGER IF EXISTS tagona_object_tags_updated ON object_tags;
+DROP TRIGGER IF EXISTS tagona_object_tags_inserted ON object_tags;
+DROP FUNCTION IF EXISTS tagona_objects_deleted();
+DROP FUNCTION IF EXISTS tagona_objects_inserted();
+DROP FUNCTION IF EXISTS tagona_object_tags_deleted();
+DROP FUNCTION IF EXISTS tagona_object_tags_updated();
+DROP FUNCTION IF EXISTS tagona_object_tags_inserted();
+DROP TABLE IF EXISTS collection_tags;
+ALTER TABLE collections DROP COLUMN IF EXISTS object_count;
