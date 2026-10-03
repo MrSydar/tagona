@@ -107,6 +107,8 @@ curl -s -H "Authorization: Bearer $KEY" http://localhost:8080/v1/collections/job
 curl -s http://localhost:8081/metrics | grep tagger_
 ```
 
+**API documentation:** open <http://localhost:8080/v1/docs> for interactive docs (Swagger UI; click **Authorize** and paste an API key to try requests). The raw contract is at `/v1/openapi.json` and `/v1/openapi.yaml`.
+
 **Query parameters** (see [`api/README.md`](api/) for full API docs):
 
 - `timeout_ms` — query timeout. Default `30000` (30 seconds). Must be between `1000` (1s) and `300000` (5m); otherwise a `400 invalid_timeout` error is returned. If exceeded and `best_effort` is `false`, a `query_timeout` error is returned.

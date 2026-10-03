@@ -16,8 +16,25 @@ This is the future home for cross-cutting concerns such as RBAC. Authentication 
 - `/v1/collections...` — an explicit allowlist of the storage routes listed under [Public API](#public-api). Every request must carry `Authorization: Bearer <api key>`; the key is validated against the storage service before the request is reverse-proxied (path, query, headers, streaming body) with no client-side timeout, so long-running uploads and queries are not cut off. Routes added to storage stay private until they are added to `proxiedRoutes` in `cmd/api/gateway.go`
 - per-key rate limiting and a short validation cache sit between auth and the proxy (see Configuration); the proxy, key client and readiness probe share one pooled HTTP transport
 - request hardening: paths with dot segments, empty segments, backslashes, NUL bytes or encoded slashes are rejected with `400 invalid_path`; bodies above `API_MAX_BODY_BYTES` get `413 payload_too_large`; the `Authorization` header and inbound `Forwarded`/`X-Forwarded-*` headers are not forwarded to storage
+- `GET /v1/docs` — interactive API documentation (Swagger UI), `GET /v1/openapi.json` / `GET /v1/openapi.yaml` — the OpenAPI 3 description of the `/v1` contract (all unauthenticated; see [API documentation](#api-documentation))
 - `/v1/admin/api-keys` — key management (create/list/delete) guarded by admin HTTP Basic auth, taking precedence over the `/v1/*` proxy
 - any other path — `404` with the standard error shape `{"error":{"code":"not_found","message":"not found"}}`; a listed path with the wrong method — `405 method_not_allowed`
+
+---
+
+## API documentation
+
+| Path | Description |
+|------|-------------|
+| `GET /v1/docs` | Interactive documentation (Swagger UI). Use **Authorize** with an API key to try requests. |
+| `GET /v1/openapi.json` | The OpenAPI 3 document as JSON, for client generators and tooling |
+| `GET /v1/openapi.yaml` | The same document as YAML (the source, `openapi/v1.yaml`, embedded in the binary) |
+
+They are public and unversioned-by-content: the document lives **under the version prefix** because it is the contract of that version. `info.version` is the contract's semantic version (additive changes bump the minor); a future `/v2` will get its own `/v2/openapi.json` and `/v2/docs` while `/v1` keeps documenting itself.
+
+The UI loads Swagger UI from jsDelivr at a pinned version with Subresource Integrity hashes, so the browser needs internet access to render it (the JSON/YAML documents do not). To upgrade the UI, see the comment in `cmd/api/docs.go`.
+
+**Keeping the spec honest:** `openapi/v1.yaml` is written by hand. A test (`TestOpenAPIMatchesRoutes`) fails when a route is added to or removed from the gateway without updating the spec, another checks that every `$ref` resolves, and CI lints the document with Redocly. Validate locally with `npx @redocly/cli lint api/openapi/v1.yaml`.
 
 ---
 
@@ -308,6 +325,7 @@ Any value other than a boolean (`true`/`false`/`1`/`0`) is rejected with `400 in
 ```
 api/
 ├── cmd/api/            # main entry point
+├── openapi/            # v1.yaml, the OpenAPI description of the /v1 API (embedded and served)
 ├── internal/
 │   ├── metrics/        # Prometheus metrics (api_requests_total, api_errors_total)
 │   └── storageapi/     # HTTP client for the storage internal api-keys endpoints

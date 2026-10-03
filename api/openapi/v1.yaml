@@ -1,0 +1,675 @@
+openapi: 3.0.3
+info:
+  title: Tagona API
+  version: 1.0.0
+  description: |
+    Storage for collections of objects with sparse boolean tags that are evaluated on demand.
+
+    **Contract version.** This document describes the `/v1` API. `info.version` is the
+    semantic version of this contract: backwards-compatible additions bump the minor
+    version, breaking changes will ship as `/v2` with its own document.
+
+    **Authentication.** Every `/v1/collections...` request needs `Authorization: Bearer <api key>`.
+    Keys are minted with the admin endpoints, which use HTTP Basic auth.
+    The documentation endpoints (`/v1/docs`, `/v1/openapi.json`, `/v1/openapi.yaml`) are public.
+
+    **Limits.** Each API key is rate limited (`429 rate_limited`, with a `Retry-After` header),
+    request bodies are capped (`413 payload_too_large`), and the edge proxy applies a coarse
+    per-IP limit.
+
+    **Tags are sparse.** An object only has a value for a tag after the tag was evaluated for it
+    (by a query or a tags request). A tag that was not evaluated is *unknown*. Both tag-aware
+    endpoints accept `evaluate=false` to answer from known tags only, without calling the
+    tagging engine.
+
+    **Errors** always have the shape `{"error": {"code": "...", "message": "..."}}`.
+  license:
+    name: See LICENSE
+    url: https://github.com/MrSydar/tagona/blob/main/LICENSE
+servers:
+  - url: /
+    description: This server
+tags:
+  - name: Collections
+    description: Create, list and delete collections.
+  - name: Objects
+    description: Upload, download, query and delete objects.
+  - name: Tags
+    description: Tag values and per-collection tag statistics.
+  - name: Admin
+    description: API key management. Uses HTTP Basic admin credentials, not an API key.
+security:
+  - bearerAuth: []
+paths:
+  /v1/collections:
+    get:
+      tags: [Collections]
+      operationId: listCollections
+      summary: List collections
+      responses:
+        "200":
+          description: All collections, newest first. `collections` is `null` when there are none.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  collections:
+                    type: array
+                    nullable: true
+                    items:
+                      $ref: "#/components/schemas/Collection"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/NotReady" }
+    post:
+      tags: [Collections]
+      operationId: createCollection
+      summary: Create a collection
+      description: |
+        `data_type` must be one of the types the tagging engine supports (for example `txt`);
+        every object uploaded to the collection must have the same `data_type`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CollectionCreate"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionCreate"
+        "400":
+          description: "`invalid_json`, `invalid_name` or `unsupported_data_type`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`already_exists`: a collection with this name exists."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/collections/{collection}:
+    parameters:
+      - $ref: "#/components/parameters/Collection"
+    delete:
+      tags: [Collections]
+      operationId: deleteCollection
+      summary: Delete a collection
+      description: Deletes the collection together with all its objects, tags and stored payloads.
+      responses:
+        "204":
+          description: Deleted
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/collections/{collection}/tags:
+    parameters:
+      - $ref: "#/components/parameters/Collection"
+    get:
+      tags: [Tags]
+      operationId: listCollectionTags
+      summary: Object count and registered tags of a collection
+      description: |
+        Returns the number of objects in the collection and every tag registered in it, with how
+        many objects the tag is known true for, known false for, and not yet evaluated for.
+        Tags are ordered by name (byte order). A tag stays registered once seen, even if all objects
+        carrying it are later deleted. Expired objects are excluded even before they are removed.
+      parameters:
+        - name: prefix
+          in: query
+          description: Only tags starting with this literal prefix (at most 128 bytes).
+          schema: { type: string, maxLength: 128 }
+        - name: limit
+          in: query
+          description: Maximum tags per page.
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+        - name: cursor
+          in: query
+          description: The `next` value of the previous page.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Counts and tags
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionTags"
+        "400":
+          description: "`invalid_collection_name`, `invalid_limit`, `invalid_prefix` or `invalid_cursor`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/collections/{collection}/objects:
+    parameters:
+      - $ref: "#/components/parameters/Collection"
+    post:
+      tags: [Objects]
+      operationId: uploadObject
+      summary: Upload an object
+      description: |
+        The request body is the raw payload. Uploads are idempotent by content: the SHA-256 of the
+        bytes identifies the object within the collection, and uploading the same bytes again
+        returns the existing object (`200`) instead of creating a new one (`201`).
+      parameters:
+        - name: data_type
+          in: query
+          required: true
+          description: Must equal the collection's `data_type`.
+          schema: { type: string, example: txt }
+        - name: date
+          in: query
+          description: Object date (RFC 3339). Defaults to the upload time. Queries order by it, newest first.
+          schema: { type: string, format: date-time }
+        - name: ttl_seconds
+          in: query
+          description: Seconds until the object expires and is removed. Omit for the server default.
+          schema: { type: integer, minimum: 0 }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "201":
+          description: Object created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ObjectUploadResponse" }
+        "200":
+          description: An object with identical content already exists in the collection; it is returned.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ObjectUploadResponse" }
+        "400":
+          description: "`missing_data_type`, `invalid_data_type`, `invalid_ttl` or `invalid_date`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/collections/{collection}/objects/query:
+    parameters:
+      - $ref: "#/components/parameters/Collection"
+    post:
+      tags: [Objects]
+      operationId: queryObjects
+      summary: Query objects by tags
+      description: |
+        Returns objects ordered by `date` (newest first), then `id`. Tag filters are ANDed. Tags that
+        are not known for a candidate object are evaluated by the tagging engine and stored, unless
+        `evaluate` is `false`.
+
+        With `evaluate: false` the tagging engine is never called and the query is answered from
+        known tags only: an object is returned only if every requested tag is known for it and
+        matches. Objects whose requested tags were never evaluated are left out, so the result is a
+        subset of what an evaluating query returns. No new tags are registered.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TagsQueryRequest"
+            example:
+              tags: { golang: true, qa: false }
+              limit: 5
+              evaluate: true
+      responses:
+        "200":
+          description: Matching objects and, when more exist, a cursor for the next page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TagsQueryResponse" }
+        "400":
+          description: >-
+            `invalid_json`, `invalid_limit`, `invalid_tags`, `invalid_date_filter`, `invalid_timeout`
+            or `invalid_collection_name`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500":
+          description: "`query_timeout`: the query did not finish within `timeout_ms` (and `best_effort` was off)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: "`tag_engine_error`: the tagging engine failed."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/collections/{collection}/objects/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Collection"
+      - $ref: "#/components/parameters/ObjectId"
+    get:
+      tags: [Objects]
+      operationId: getObject
+      summary: Get object metadata
+      responses:
+        "200":
+          description: Object metadata
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Object" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    delete:
+      tags: [Objects]
+      operationId: deleteObject
+      summary: Delete an object
+      description: Hard delete of the metadata, tags and stored payload.
+      responses:
+        "204":
+          description: Deleted
+        "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/collections/{collection}/objects/{id}/data:
+    parameters:
+      - $ref: "#/components/parameters/Collection"
+      - $ref: "#/components/parameters/ObjectId"
+    get:
+      tags: [Objects]
+      operationId: getObjectData
+      summary: Download an object's payload
+      responses:
+        "200":
+          description: The raw payload
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/collections/{collection}/objects/{id}/tags:
+    parameters:
+      - $ref: "#/components/parameters/Collection"
+      - $ref: "#/components/parameters/ObjectId"
+    get:
+      tags: [Tags]
+      operationId: getObjectTags
+      summary: Get or evaluate tags of an object
+      description: |
+        Without `tags`, returns the tags already known for the object (nothing is evaluated).
+        With `tags`, returns exactly those tags: known values come from storage, and missing ones are
+        evaluated by the tagging engine and stored, unless `evaluate=false`.
+
+        With `evaluate=false` the tagging engine is not called and requested tags that are not known
+        come back as `null`.
+      parameters:
+        - name: tags
+          in: query
+          description: Comma-separated tag names (each at most 128 bytes, duplicates ignored).
+          schema: { type: string, example: "golang,qa" }
+        - name: evaluate
+          in: query
+          description: Evaluate requested tags that are not yet known.
+          schema: { type: boolean, default: true }
+      responses:
+        "200":
+          description: Tag values
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ObjectTags" }
+              examples:
+                evaluated:
+                  summary: evaluate=true (default)
+                  value: { id: 3ab1b6e0-a179-424b-9825-2d2817c761ae, tags: { golang: true, qa: false } }
+                notEvaluated:
+                  summary: evaluate=false, "java" never evaluated
+                  value: { id: 3ab1b6e0-a179-424b-9825-2d2817c761ae, tags: { golang: true, java: null } }
+        "400":
+          description: "`invalid_tags`, `invalid_tag` or `invalid_evaluate`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502":
+          description: "`tag_engine_error`: the tagging engine failed."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/admin/api-keys:
+    post:
+      tags: [Admin]
+      operationId: createApiKey
+      summary: Create an API key
+      description: The raw key is returned only in this response and cannot be retrieved again.
+      security:
+        - adminBasicAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiKeyCreated" }
+        "400":
+          description: "`invalid_json` or `invalid_name`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "403": { $ref: "#/components/responses/AdminForbidden" }
+    get:
+      tags: [Admin]
+      operationId: listApiKeys
+      summary: List API keys
+      description: Never includes raw keys, only a short prefix.
+      security:
+        - adminBasicAuth: []
+      responses:
+        "200":
+          description: Keys
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys:
+                    type: array
+                    items: { $ref: "#/components/schemas/ApiKeyInfo" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "403": { $ref: "#/components/responses/AdminForbidden" }
+
+  /v1/admin/api-keys/{id}:
+    delete:
+      tags: [Admin]
+      operationId: deleteApiKey
+      summary: Delete an API key
+      security:
+        - adminBasicAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Deleted
+        "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "403": { $ref: "#/components/responses/AdminForbidden" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "An API key created with `POST /v1/admin/api-keys`, sent as `Authorization: Bearer <key>`."
+    adminBasicAuth:
+      type: http
+      scheme: basic
+      description: Admin credentials configured on the server. An API key is rejected on admin endpoints.
+
+  parameters:
+    Collection:
+      name: collection
+      in: path
+      required: true
+      description: Collection name (1-64 chars, lowercase letters, digits, `_` and `-`, starting with a letter).
+      schema:
+        type: string
+        pattern: "^[a-z][a-z0-9_-]{0,63}$"
+        example: jobs
+    ObjectId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    InvalidRequest:
+      description: "`invalid_collection_name`."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: "`not_found`: the collection, object or key does not exist (expired objects count as missing)."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: "`missing_api_key` (no or malformed Bearer header) or `invalid_api_key` (unknown key)."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: "`rate_limited`: this API key exceeded its rate limit."
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PayloadTooLarge:
+      description: "`payload_too_large`: the body exceeds the allowed size."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotReady:
+      description: "`not_ready`: the storage service is unavailable."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    AdminUnauthorized:
+      description: "`invalid_admin_credentials`. The response carries `WWW-Authenticate: Basic`."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    AdminForbidden:
+      description: >-
+        `forbidden` (an API key was presented; it cannot manage keys) or `admin_disabled`
+        (admin credentials are not configured on the server).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: not_found }
+            message: { type: string, example: not found }
+            details: { type: object, additionalProperties: true }
+
+    CollectionCreate:
+      type: object
+      required: [name, data_type]
+      properties:
+        name: { type: string, pattern: "^[a-z][a-z0-9_-]{0,63}$", example: jobs }
+        data_type: { type: string, example: txt }
+
+    Collection:
+      type: object
+      required: [id, name, data_type, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        data_type: { type: string }
+        created_at: { type: string, format: date-time }
+
+    Object:
+      type: object
+      required: [id, collection, data_type, date, size_bytes, content_hash, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        collection: { type: string }
+        data_type: { type: string }
+        date: { type: string, format: date-time }
+        size_bytes: { type: integer, format: int64 }
+        content_hash: { type: string, description: Lowercase hex SHA-256 of the payload. }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time, description: Present only when the object expires. }
+        payload_key: { type: string, description: Internal object-store key; informational only. }
+        tags:
+          type: object
+          description: In query results, the tag filter the object satisfied.
+          additionalProperties: { type: boolean }
+
+    ObjectUploadResponse:
+      type: object
+      required: [id, collection, data_type, date, size_bytes, content_hash]
+      properties:
+        id: { type: string, format: uuid }
+        collection: { type: string }
+        data_type: { type: string }
+        date: { type: string, format: date-time }
+        size_bytes: { type: integer, format: int64 }
+        content_hash: { type: string }
+
+    DateFilter:
+      type: object
+      description: Range on the object date (RFC 3339). `eq` cannot be combined with the others.
+      properties:
+        gt: { type: string, format: date-time }
+        gte: { type: string, format: date-time }
+        lt: { type: string, format: date-time }
+        lte: { type: string, format: date-time }
+        eq: { type: string, format: date-time }
+
+    TagsQueryRequest:
+      type: object
+      properties:
+        tags:
+          type: object
+          description: Tag name to required value. All must match. Omit for no tag filtering.
+          additionalProperties: { type: boolean }
+        date: { $ref: "#/components/schemas/DateFilter" }
+        limit:
+          type: integer
+          minimum: 1
+          description: Page size. Defaults to the server default and may not exceed the server maximum (`400 invalid_limit`).
+        cursor:
+          type: string
+          description: The `next` value of the previous page.
+        timeout_ms:
+          type: integer
+          minimum: 1000
+          maximum: 300000
+          default: 30000
+          description: Query timeout in milliseconds.
+        best_effort:
+          type: boolean
+          default: false
+          description: >-
+            When the query times out, return the objects found so far (with a `next` cursor) instead of failing.
+            No effect when `evaluate` is `false`.
+        evaluate:
+          type: boolean
+          default: true
+          description: >-
+            When `false`, never call the tagging engine and return only objects whose requested tags are already
+            known and matching.
+
+    TagsQueryResponse:
+      type: object
+      required: [objects]
+      properties:
+        objects:
+          type: array
+          items: { $ref: "#/components/schemas/Object" }
+        next:
+          type: string
+          description: Cursor for the next page; absent on the last page.
+
+    ObjectTags:
+      type: object
+      required: [id, tags]
+      properties:
+        id: { type: string, format: uuid }
+        tags:
+          type: object
+          description: Tag name to value. A value is `null` only when `evaluate=false` and the tag was never evaluated.
+          additionalProperties:
+            type: boolean
+            nullable: true
+
+    TagStat:
+      type: object
+      required: [tag, true_count, false_count, unknown_count, first_seen_at]
+      properties:
+        tag: { type: string }
+        true_count: { type: integer, format: int64, description: Objects the tag is known true for. }
+        false_count: { type: integer, format: int64, description: Objects the tag is known false for. }
+        unknown_count:
+          type: integer
+          format: int64
+          description: Objects the tag has not been evaluated for (`total_objects - true_count - false_count`).
+        first_seen_at: { type: string, format: date-time }
+
+    CollectionTags:
+      type: object
+      required: [collection, total_objects, tags]
+      properties:
+        collection: { type: string }
+        total_objects:
+          type: integer
+          format: int64
+          description: Objects in the whole collection, not only those matching `prefix`.
+        tags:
+          type: array
+          items: { $ref: "#/components/schemas/TagStat" }
+        next:
+          type: string
+          description: Cursor for the next page; absent on the last page.
+
+    ApiKeyCreated:
+      type: object
+      required: [id, name, key, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        key: { type: string, description: The raw key. Shown only once., example: tagona_3f9c… }
+        created_at: { type: string, format: date-time }
+
+    ApiKeyInfo:
+      type: object
+      required: [id, name, key_prefix, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        key_prefix: { type: string }
+        created_at: { type: string, format: date-time }
