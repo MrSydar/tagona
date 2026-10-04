@@ -23,5 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- OpenAPI: documented `ttl_seconds` (omit it for the server default; sending it always enables expiry, so `0` expires the object immediately), how expired objects behave, and the retention sweeper.
 - The api service proxies an explicit allowlist of storage routes instead of every `/v1/*` path, rejects unsafe paths, and no longer forwards `Authorization`/`X-Forwarded-*` headers to storage.
 - The api container no longer publishes a host port; use Traefik on `:8080`/`:8443`. `/metrics` is no longer reachable through the public port.
