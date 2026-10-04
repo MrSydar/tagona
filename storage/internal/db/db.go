@@ -491,27 +491,47 @@ func (d *DB) GetCollectionTagStats(ctx context.Context, collectionID, prefix, af
 	return total, stats, nil
 }
 
-// ListExpiredObjects returns expired object IDs in batches.
-func (d *DB) ListExpiredObjects(ctx context.Context, limit int) ([]string, error) {
-	slog.Debug("ListExpiredObjects", "limit", limit)
+// ExpiredObject identifies an object whose expiry has passed, with what the
+// retention sweeper needs to remove it: its payload key and its position in
+// the (expires_at, id) ordering.
+type ExpiredObject struct {
+	ID         string
+	PayloadKey string
+	ExpiresAt  time.Time
+}
+
+// ListExpiredObjects returns up to limit expired objects ordered by
+// (expires_at, id), oldest first. When after is non-nil, only objects strictly
+// after it in that ordering are returned, so a caller can walk the whole
+// backlog page by page and move past rows it failed to remove.
+func (d *DB) ListExpiredObjects(ctx context.Context, after *ExpiredObject, limit int) ([]ExpiredObject, error) {
+	slog.Debug("ListExpiredObjects", "limit", limit, "paged", after != nil)
+	var afterAt, afterID any // NULL on the first page
+	if after != nil {
+		afterAt, afterID = after.ExpiresAt, after.ID
+	}
 	rows, err := d.pool.Query(ctx,
-		`SELECT id FROM objects WHERE expires_at IS NOT NULL AND expires_at <= NOW() ORDER BY expires_at LIMIT $1`,
-		limit,
+		`SELECT id, payload_key, expires_at FROM objects
+		 WHERE expires_at IS NOT NULL AND expires_at <= NOW()
+		   AND ($2::timestamptz IS NULL OR (expires_at, id) > ($2::timestamptz, $3::uuid))
+		 ORDER BY expires_at, id
+		 LIMIT $1`,
+		limit, afterAt, afterID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list expired: %w", err)
 	}
 	defer rows.Close()
 
-	var ids []string
+	var out []ExpiredObject
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan expired id: %w", err)
+		var o ExpiredObject
+		if err := rows.Scan(&o.ID, &o.PayloadKey, &o.ExpiresAt); err != nil {
+			return nil, fmt.Errorf("scan expired object: %w", err)
 		}
-		ids = append(ids, id)
+		out = append(out, o)
 	}
-	return ids, rows.Err()
+	return out, rows.Err()
 }
 
 // QueryObjectsKnownTags returns objects that already have all tags known and matching.

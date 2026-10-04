@@ -110,7 +110,7 @@ func main() {
 
 	// Retention sweeper.
 	slog.Debug("starting retention sweeper")
-	sweeper := retention.NewSweeper(database, store, cfg.RetentionSweepInterval)
+	sweeper := retention.NewSweeper(database, store, cfg.RetentionSweepInterval, cfg.RetentionBatchSize)
 	sweeperCtx, sweeperCancel := context.WithCancel(context.Background())
 	go sweeper.Start(sweeperCtx)
 

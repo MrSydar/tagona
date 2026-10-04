@@ -213,7 +213,8 @@ Every service is configured with environment variables. In Docker Compose they a
 | `TAGONA_MAX_TAGS_PER_QUERY` | `100` | Maximum tags in one query. |
 | `TAGONA_MAX_OBJECT_SIZE_BYTES` | `10485760` | Maximum object size (10 MiB). |
 | `TAGONA_DEFAULT_TTL` | `0` | Default object lifetime (seconds or a duration); `0` keeps objects forever. |
-| `TAGONA_RETENTION_SWEEP_INTERVAL` | `60s` | How often expired objects are removed. |
+| `TAGONA_RETENTION_SWEEP_INTERVAL` | `60s` | How often the retention sweeper runs. |
+| `TAGONA_RETENTION_BATCH_SIZE` | `100` | Expired objects removed per batch; each run drains the whole backlog batch by batch. |
 
 </details>
 

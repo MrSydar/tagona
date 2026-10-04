@@ -26,6 +26,7 @@ type Config struct {
 	MaxTagsPerQuery        int
 	MaxObjectSizeBytes     int64
 	RetentionSweepInterval time.Duration
+	RetentionBatchSize     int
 }
 
 // Load loads configuration from environment variables with defaults.
@@ -48,6 +49,7 @@ func Load(prefix string) (*Config, error) {
 		MaxTagsPerQuery:        100,
 		MaxObjectSizeBytes:     10 * 1024 * 1024,
 		RetentionSweepInterval: 60 * time.Second,
+		RetentionBatchSize:     100,
 	}
 
 	if v := os.Getenv(prefix + "S3_FORCE_PATH_STYLE"); v != "" {
@@ -116,6 +118,14 @@ func Load(prefix string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid RETENTION_SWEEP_INTERVAL: %w", err)
 		}
+	}
+
+	if v := os.Getenv(prefix + "RETENTION_BATCH_SIZE"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return nil, fmt.Errorf("invalid RETENTION_BATCH_SIZE %q: must be a positive integer", v)
+		}
+		cfg.RetentionBatchSize = n
 	}
 
 	slog.Debug("Load: config loaded", "HTTPAddr", cfg.HTTPAddr, "PGDSN", cfg.PGDSN, "S3Bucket", cfg.S3Bucket, "TagEngineURL", cfg.TagEngineURL)
