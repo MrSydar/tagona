@@ -64,7 +64,9 @@ This is a **Go workspace monorepo** (`go.work` at the root).
    # database tests (skipped without a DSN); needs `make docker-up` or any Postgres
    TAGONA_TEST_PG_DSN='postgres://tagona:tagona@localhost:5432/tagona?sslmode=disable' go test -race ./storage/internal/db
    make e2e                 # needs the stack up and /readyz on :8080 returning 200
+   .github/scripts/test-release-scripts.sh   # tests of the release scripts
    ```
+   CI also builds the three Docker images (`docker-build`) and checks that they run as a non-root user; `docker compose up --build` is the local equivalent.
 5. **Commit** using clear messages. We prefer [Conventional Commits](https://www.conventionalcommits.org/):
    ```
    feat: add pagination cursor to tag queries
@@ -73,6 +75,10 @@ This is a **Go workspace monorepo** (`go.work` at the root).
    ```
 6. **Push** and open a **Pull Request** against `main`.
 7. **CI** will run automatically. Ensure it is green before requesting review.
+
+## Releases
+
+Maintainers cut releases by pushing a `vX.Y.Z` tag; CI then builds, tests, signs and publishes the three service images to GHCR. Contributors do not need to do anything, other than describing user-facing changes under `## [Unreleased]` in `CHANGELOG.md`. The whole flow is described in [RELEASING.md](RELEASING.md).
 
 ## Pull Request Guidelines
 

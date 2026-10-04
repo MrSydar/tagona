@@ -5,6 +5,7 @@
 | Version | Supported          |
 | ------- | ------------------ |
 | main    | :white_check_mark: |
+| latest release (see the [Releases](https://github.com/MrSydar/tagona/releases) page) | :white_check_mark: |
 
 ## Reporting a Vulnerability
 
