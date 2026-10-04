@@ -81,6 +81,8 @@ See `storage/cmd/client/main.go` for available commands.
 
 **Unit tests:** standard Go `*_test.go` files in each module (`go test ./...`). The database tests in `storage/internal/db` need Postgres and are skipped unless `TAGONA_TEST_PG_DSN` is set (they run the real migrations in a throwaway schema; CI provides a Postgres service).
 
+**Release script tests:** `.github/scripts/test-release-scripts.sh` tests the version, tag and changelog logic of the release workflow (CI job `release-scripts`). Change `release-meta.sh` / `release-notes.sh` and their tests together.
+
 **End-to-end tests:** In the `e2e/` directory (its own module, outside the workspace):
 
 ```bash
@@ -102,6 +104,12 @@ make e2e
 - **api is a thin reverse proxy:** It owns no DB, no S3, no validation, no tagger access. It proxies an explicit **allowlist** of storage routes (`proxiedRoutes` in `api/cmd/api/gateway.go`) to storage on `:8082` without path rewriting, and serves `/healthz`, `/readyz`, `/metrics` locally. A new storage route stays private until it is added to that list. Unsafe paths (`..`, `//`, encoded slashes) get 400, bodies over `API_MAX_BODY_BYTES` get 413, the `Authorization` and `X-Forwarded-*` headers are not forwarded, key validation is cached (`API_KEY_CACHE_TTL`) and requests are rate limited per API key (`API_RATE_LIMIT_RPS`).
 - **API docs / OpenAPI:** `api/openapi/v1.yaml` is the hand-written contract of the `/v1` API, embedded in the api binary and served publicly (no key needed) at `GET /v1/openapi.json`, `/v1/openapi.yaml` and `/v1/docs` (Swagger UI from a pinned, SRI-protected CDN URL). Any route you add to `proxiedRoutes` or the admin routes must also be added to the spec — `TestOpenAPIMatchesRoutes` fails otherwise — and `info.version` should be bumped for contract changes. The spec is YAML, so quote descriptions that contain `: `. Lint with `npx @redocly/cli lint api/openapi/v1.yaml` (CI does this).
 - **Edge vs api responsibilities:** Traefik handles TLS, per-IP rate limiting and connection timeouts; api handles everything key-aware (auth, per-key limits, allowlist, body limit). Traefik's `dynamic.yml` is a Go template, so do not put `{{` in comments there.
+- **Docker images:** `api`, `storage` and `tagger` each have a `Dockerfile` that builds from the **repo root** (they need `go.work` and every module). The Go build stage runs on `$BUILDPLATFORM` and cross-compiles (`GOOS/GOARCH=$TARGETOS/$TARGETARCH`), and the runtime stage is `debian:12-slim` plus `curl` (used by the compose healthchecks) running as **uid 10001**, not root. Keep the `org.opencontainers.image.source` label: it links the GHCR package to this repo. The `docker-build` CI job builds all three and fails if an image runs as root or lacks the label.
+- **Compose image names:** the compose services have `image: ghcr.io/mrsydar/tagona-<service>:${TAGONA_VERSION:-dev}` **and** `build:`. `docker compose up --build` builds from source and tags `:dev`; to run a published version use `TAGONA_VERSION=<version> docker compose pull ... && docker compose up -d --no-build`.
+- **Releases:** pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml` (verify → build ×3 for amd64+arm64 as `:sha-<commit>` → e2e against those pushed images → approval on the `release` environment → retag `X.Y.Z`/`X.Y`/`X`/`latest` without rebuilding + cosign signature → GitHub Release). All three services share one version. **Never push a release tag unless the user asks for a release.** Full flow, one-time setup and rollback notes are in `RELEASING.md`; a manual run of the workflow is a dry run that never pushes.
+  - Third-party actions in `release.yml` are pinned to commit SHAs (version in a comment); bump them deliberately and run `actionlint`.
+  - To read an image digest use `docker buildx imagetools inspect <ref> --format '{{json .Manifest}}' | jq -r .digest`; `{{.Manifest.Digest}}` prints the whole descriptor block.
+  - The registry, signing and GitHub Release steps only run on GitHub, so they are first exercised by a release candidate (`v0.1.0-rc.1`).
 - **Hash-based idempotency:** Object upload computes SHA-256 over raw bytes. Duplicate uploads in the same collection return the existing object; the newly uploaded S3 object is not retained.
 - **Prometheus metrics:** All services expose metrics at `GET /metrics` via `github.com/prometheus/client_golang`.
   - Storage metrics: `storage_requests_total`, `storage_errors_total`, `storage_tagger_latency_seconds`.
@@ -115,6 +123,7 @@ make e2e
   - If a check fails, read its log (`gh run view <run-id> --job <job-id> --log`) and find the root cause before doing anything else. Say whether the failure is related to the PR.
   - Fix the cause (on the PR branch, or in a separate PR if the failure is unrelated, such as a flaky test) instead of just re-running. Re-run a failed job (`gh run rerun <run-id> --failed`) only to confirm a suspected flake, and then still fix the flake.
   - A docs-only PR can still fail CI (shared test helpers, flaky tests), so validate it the same way.
+- **New CI jobs become required checks only after they exist on `main`.** When you add a job to `ci.yml` or `unit-tests.yml`, add its check name (matrix jobs appear as `job (value)`) to the `main` ruleset after the PR merges, otherwise it is never enforced.
 
 ## References
 
@@ -122,3 +131,4 @@ make e2e
 - `api/README.md` — public API docs, env vars
 - `storage/README.md` — internal data service env vars, CLI client usage, migrations, design decisions
 - `tagger/README.md` — tag evaluation logic, env vars
+- `RELEASING.md` — how the Docker images are released: flow, one-time GitHub setup, verification, rollback

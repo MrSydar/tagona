@@ -1,0 +1,288 @@
+name: Release
+
+# Publishes the api, storage and tagger images to GHCR (ghcr.io/<owner>/tagona-<service>)
+# when a v* tag is pushed. All three services are released together under one version.
+# See RELEASING.md for the full flow, the one-time GitHub setup and how to cut a release.
+#
+#   verify  -> tag is on main, valid version, CHANGELOG has the section
+#   build   -> 3 images (amd64 + arm64) pushed as :sha-<commit>, with provenance and SBOM
+#   e2e     -> the compose stack runs those exact images and `make e2e` passes
+#   promote -> (approval) the tested image is re-tagged X.Y.Z / X.Y / X / latest and signed
+#   release -> GitHub Release with the changelog notes and the image digests
+#
+# A manual run (workflow_dispatch) is a dry run: it validates and builds, and never pushes.
+# Third-party actions are pinned to a commit SHA; keep the version comment in sync when bumping.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Dry run: version to validate and build, e.g. 0.0.0-dryrun. Nothing is pushed."
+        required: true
+        default: "0.0.0-dryrun"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      publish: ${{ steps.meta.outputs.publish }}
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # the tag must be checked against origin/main
+
+      - name: Compute and validate the release metadata
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: .github/scripts/release-meta.sh
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [api, storage, tagger]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Needed to build the arm64 runtime stage (apt-get, useradd) on an amd64 runner;
+      # the Go compilation itself is cross-compiled natively.
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Image name (GHCR requires lowercase)
+        id: img
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/tagona-${SERVICE}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: needs.verify.outputs.publish == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pushed under a commit-specific tag only; the release tags are added by `promote`
+      # after the e2e tests passed, so what ships is exactly what was tested.
+      - name: Build (and push, unless this is a dry run)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ${{ matrix.service }}/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ needs.verify.outputs.publish == 'true' }}
+          tags: ${{ steps.img.outputs.name }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.verify.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: ${{ needs.verify.outputs.publish == 'true' && 'mode=max' || 'false' }}
+          sbom: ${{ needs.verify.outputs.publish == 'true' }}
+          cache-from: type=gha,scope=release-${{ matrix.service }}
+          cache-to: type=gha,scope=release-${{ matrix.service }},mode=max,ignore-error=true
+
+  e2e:
+    needs: [verify, build]
+    if: needs.verify.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    env:
+      TAGONA_VERSION: sha-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.26.4"
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start the stack from the pushed images (no local build)
+        run: |
+          cp tagger/.env.example .env
+          docker compose pull api storage tagger
+          # traefik depends on api, which depends on storage, which depends on the
+          # tagger, postgres and garage; --wait blocks until all of them are healthy.
+          docker compose up -d --no-build --wait --wait-timeout 240 traefik
+
+      - name: Run the end-to-end tests
+        working-directory: e2e
+        env:
+          GOWORK: "off"
+        run: go test -v -count=1 .
+
+      - name: Stack logs (on failure)
+        if: failure()
+        run: |
+          docker compose ps -a
+          docker compose logs --no-color --tail=200
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose down -v
+
+  promote:
+    needs: [verify, e2e]
+    if: needs.verify.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Manual approval gate: configure required reviewers on the "release" environment.
+    environment: release
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [api, storage, tagger]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # keyless cosign signing
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add the release tags to the tested image (no rebuild) and sign it
+        env:
+          SERVICE: ${{ matrix.service }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          TAGS: ${{ needs.verify.outputs.tags }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/tagona-${SERVICE}"
+          source="${image}:sha-${GITHUB_SHA}"
+
+          # `{{.Manifest.Digest}}` prints the whole descriptor block, so take the digest from the JSON.
+          digest_of() { docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' | jq -r .digest; }
+
+          args=()
+          for tag in ${TAGS}; do args+=(--tag "${image}:${tag}"); done
+          docker buildx imagetools create "${args[@]}" "${source}"
+
+          # Sign and report what users actually pull: the digest of the release tag. Every
+          # release tag must resolve to that same manifest.
+          digest="$(digest_of "${image}:${VERSION}")"
+          for tag in ${TAGS}; do
+            if [ "$(digest_of "${image}:${tag}")" != "${digest}" ]; then
+              echo "::error::${image}:${tag} does not resolve to the same manifest as ${image}:${VERSION}"
+              exit 1
+            fi
+          done
+          if [ "$(digest_of "${source}")" != "${digest}" ]; then
+            echo "::warning::${source} and ${image}:${VERSION} have different digests (expected only when the source was not an index)"
+          fi
+          echo "${image}@${digest}"
+
+          # One signature covers every tag, because they all point at this digest.
+          cosign sign --yes "${image}@${digest}"
+
+          {
+            echo "### ${SERVICE}"
+            echo "- image: \`${image}\`"
+            echo "- digest: \`${digest}\`"
+            echo "- tags: ${TAGS}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    needs: [verify, promote]
+    if: needs.verify.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+
+          {
+            if [ "${PRERELEASE}" = "true" ]; then
+              echo "Pre-release \`${VERSION}\`. It does not move the \`latest\` tag."
+            else
+              .github/scripts/release-notes.sh "${VERSION}"
+            fi
+            echo
+            echo "## Images"
+            echo
+            echo "| Service | Image | Digest |"
+            echo "|---|---|---|"
+            for service in api storage tagger; do
+              image="ghcr.io/${owner}/tagona-${service}"
+              digest="$(docker buildx imagetools inspect "${image}:${VERSION}" --format '{{json .Manifest}}' | jq -r .digest)"
+              echo "| ${service} | \`${image}:${VERSION}\` | \`${digest}\` |"
+            done
+            echo
+            echo "Built for \`linux/amd64\` and \`linux/arm64\`, signed with cosign (keyless) and published with provenance and an SBOM."
+            echo
+            echo "## Run it"
+            echo
+            echo '```bash'
+            echo "TAGONA_VERSION=${VERSION} docker compose pull api storage tagger"
+            echo "TAGONA_VERSION=${VERSION} docker compose up -d --no-build"
+            echo '```'
+            echo
+            echo "## Verify the signature"
+            echo
+            echo '```bash'
+            echo "cosign verify ghcr.io/${owner}/tagona-api:${VERSION} \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\"
+            echo "  --certificate-identity-regexp '^https://github.com/${GITHUB_REPOSITORY}/\\.github/workflows/release\\.yml@refs/tags/v'"
+            echo '```'
+            echo
+            echo "## Upgrading"
+            echo
+            echo "The storage service applies its database migrations on startup, and migrations are forward-only. Back up the database before upgrading, and do not roll an image back past a release that changed the schema."
+          } > release-notes.md
+
+          flags=(--verify-tag --title "${GITHUB_REF_NAME}" --notes-file release-notes.md)
+          if [ "${PRERELEASE}" = "true" ]; then flags+=(--prerelease --latest=false); else flags+=(--latest); fi
+          gh release create "${GITHUB_REF_NAME}" "${flags[@]}"

@@ -158,6 +158,16 @@ curl -s -H "$AUTH" "$API/v1/collections/jobs/tags"                              
 | Grafana | `http://localhost:3000` | `admin` / `admin`, with the provisioned **Tagona** dashboard. |
 | Postgres, Garage (S3), tagger | `:5432`, `:3900` / `:3903`, `:8081` | Published for development only. See [Security](#security). |
 
+**Run a released version.** The `api`, `storage` and `tagger` images are published to GHCR (`ghcr.io/mrsydar/tagona-api`, `-storage`, `-tagger`) for `linux/amd64` and `linux/arm64`. Instead of building from source, pull a version and start it without building:
+
+```bash
+export TAGONA_VERSION=<version>     # for example 1.2.3; see the Releases page. Or put it in .env
+docker compose pull api storage tagger
+docker compose up -d --no-build
+```
+
+Without `TAGONA_VERSION` the stack builds from source and tags the images `:dev`. How releases are made, verified and rolled back is in [RELEASING.md](RELEASING.md).
+
 **CLI and tests**
 
 ```bash
@@ -194,6 +204,15 @@ Every service is configured with environment variables. In Docker Compose they a
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `EDGE_RATE_LIMIT_AVERAGE` / `EDGE_RATE_LIMIT_BURST` | `200` / `400` | Per-client-IP rate limit, in requests per second. |
+
+</details>
+
+<details>
+<summary><b>Docker Compose</b></summary>
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TAGONA_VERSION` | `dev` | Tag of the `ghcr.io/mrsydar/tagona-*` images compose uses. `dev` is built locally by `docker compose up --build`; set a release version and use `up --no-build` to run published images. |
 
 </details>
 
@@ -244,6 +263,7 @@ Tagona is meant to run behind its own edge proxy, with the internal services kep
 - **Use TLS.** `:8443` serves a self-signed certificate until you mount your own (see [`traefik/README.md`](traefik/README.md)). `:8080` is plain HTTP and sends API keys in cleartext, so bind it to loopback or keep it internal in production.
 - **API keys and roles.** `/v1` requires a Bearer API key. Keys are stored hashed, shown once at creation, and can be revoked. Key management requires the admin Basic credentials, and an API key is rejected there. There is no RBAC yet: every key can access every collection.
 - **The API docs are public by design.** `/v1/docs`, `/v1/openapi.json` and `/v1/openapi.yaml` need no key: they describe the API and contain no data.
+- **Released images** run as an unprivileged user (uid 10001), are built for amd64 and arm64, and are signed with cosign (keyless) and published with provenance and an SBOM. See [RELEASING.md](RELEASING.md) to verify one.
 - **Built-in protections.** The gateway forwards an explicit allowlist of routes only, rejects path-traversal tricks, caps request bodies, rate limits per API key (and per IP at the edge), and strips the `Authorization` header before a request reaches storage.
 - **LLM evaluators send your data to a third party.** With `openai` or `systemone`, object content is sent to the configured API for evaluation. Use `grep`, or a model endpoint you control, for sensitive data.
 
@@ -272,9 +292,10 @@ tagona/
 ├── prometheus/ grafana/  Metrics scrape config and the Tagona dashboard
 ├── garage/               Local S3-compatible object store config
 ├── assets/               README banner
-├── .github/              CI workflows, issue and PR templates
+├── .github/              CI and release workflows, release scripts (and their tests), issue and PR templates
 ├── compose.yaml          Full local stack
 ├── Makefile              build, e2e, docker shortcuts
+├── RELEASING.md          how the Docker images are released (flow, setup, verify, rollback)
 └── go.work               Go workspace tying the three service modules together
 ```
 
