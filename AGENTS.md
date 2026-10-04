@@ -111,6 +111,10 @@ make e2e
 ## Git workflow
 
 - **Always create a new branch when working on a feature.** Do not commit directly to the default branch (`main`).
+- **After pushing a PR, validate its GitHub Actions checks.** Pushing or opening the PR is not the end of the task: watch the checks until they all finish (`gh pr checks <n> --watch`, or poll `gh pr checks <n>`) and report the outcome. Every job in `ci.yml` and `unit-tests.yml` plus the `CLA` check must pass; the `main` ruleset requires them, so a PR with a failing check cannot be merged by contributors.
+  - If a check fails, read its log (`gh run view <run-id> --job <job-id> --log`) and find the root cause before doing anything else. Say whether the failure is related to the PR.
+  - Fix the cause (on the PR branch, or in a separate PR if the failure is unrelated, such as a flaky test) instead of just re-running. Re-run a failed job (`gh run rerun <run-id> --failed`) only to confirm a suspected flake, and then still fix the flake.
+  - A docs-only PR can still fail CI (shared test helpers, flaky tests), so validate it the same way.
 
 ## References
 
