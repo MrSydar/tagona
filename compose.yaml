@@ -1,3 +1,14 @@
+# Tagona stack.
+#
+#   docker compose up --build -d       build the api, storage and tagger images from source (tagged :dev)
+#
+# To run the released images from GHCR instead of building (see RELEASING.md):
+#
+#   TAGONA_VERSION=0.1.0 docker compose pull api storage tagger
+#   TAGONA_VERSION=0.1.0 docker compose up -d --no-build
+#
+# TAGONA_VERSION can also be set in .env. It defaults to "dev", a tag that only
+# exists locally, so a plain `up --build` never pulls a published image.
 services:
   postgres:
     image: postgres:15
@@ -37,6 +48,7 @@ services:
     restart: unless-stopped
 
   tagger:
+    image: ghcr.io/mrsydar/tagona-tagger:${TAGONA_VERSION:-dev}
     build:
       context: .
       dockerfile: tagger/Dockerfile
@@ -56,6 +68,7 @@ services:
       retries: 5
 
   storage:
+    image: ghcr.io/mrsydar/tagona-storage:${TAGONA_VERSION:-dev}
     build:
       context: .
       dockerfile: storage/Dockerfile
@@ -92,6 +105,7 @@ services:
     restart: unless-stopped
 
   api:
+    image: ghcr.io/mrsydar/tagona-api:${TAGONA_VERSION:-dev}
     build:
       context: .
       dockerfile: api/Dockerfile

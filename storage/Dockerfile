@@ -15,9 +15,18 @@ COPY tagger ./tagger
 RUN CGO_ENABLED=0 go build -o /bin/storage ./storage/cmd/storage
 
 FROM debian:12-slim
-RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
+# The source label links the published GHCR package to this repository.
+LABEL org.opencontainers.image.title="tagona-storage" \
+      org.opencontainers.image.description="Tagona storage service" \
+      org.opencontainers.image.source="https://github.com/MrSydar/tagona" \
+      org.opencontainers.image.licenses="Apache-2.0"
+# curl is used by the compose healthchecks. The service runs as an unprivileged
+# user (numeric, so orchestrators can verify it is not root).
+RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin tagona
 COPY --from=builder /bin/storage /usr/local/bin/storage
 COPY storage/migrations /app/migrations
 WORKDIR /app
+USER 10001:10001
 EXPOSE 8082
 CMD ["/usr/local/bin/storage"]

@@ -75,3 +75,40 @@ jobs:
             gofmt -l .
             exit 1
           fi
+
+  # Builds the three service images exactly as the release workflow does (but
+  # for one platform and without pushing), so a broken Dockerfile fails the PR
+  # instead of the release.
+  docker-build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [api, storage, tagger]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.service }}/Dockerfile
+          push: false
+          load: true
+          tags: tagona-${{ matrix.service }}:ci
+          cache-from: type=gha,scope=docker-${{ matrix.service }}
+          cache-to: type=gha,scope=docker-${{ matrix.service }},mode=max,ignore-error=true
+
+      - name: Image runs as a non-root user
+        run: |
+          uid="$(docker run --rm --entrypoint id tagona-${{ matrix.service }}:ci -u)"
+          echo "uid=${uid}"
+          test "${uid}" != "0"
+
+      - name: Image is linked to this repository
+        run: |
+          source="$(docker inspect tagona-${{ matrix.service }}:ci --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')"
+          echo "source=${source}"
+          test "${source}" = "https://github.com/MrSydar/tagona"
