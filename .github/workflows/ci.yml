@@ -112,3 +112,13 @@ jobs:
           source="$(docker inspect tagona-${{ matrix.service }}:ci --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')"
           echo "source=${source}"
           test "${source}" = "https://github.com/MrSydar/tagona"
+
+  # The release workflow's version, tag and changelog logic lives in shell scripts so it
+  # can be tested here, long before the first real release.
+  release-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test the release scripts
+        run: .github/scripts/test-release-scripts.sh

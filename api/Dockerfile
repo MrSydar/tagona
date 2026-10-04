@@ -1,6 +1,10 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.26.4 AS builder
+# The build stage always runs on the builder's own architecture and cross-compiles
+# (instead of running the Go toolchain under emulation for arm64 images).
+FROM --platform=$BUILDPLATFORM golang:1.26.4 AS builder
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /app
 COPY go.work ./
 COPY api/go.mod api/go.sum api/
@@ -12,7 +16,7 @@ WORKDIR /app
 COPY api ./api
 COPY storage ./storage
 COPY tagger ./tagger
-RUN CGO_ENABLED=0 go build -o /bin/api ./api/cmd/api
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /bin/api ./api/cmd/api
 
 FROM debian:12-slim
 # The source label links the published GHCR package to this repository.
