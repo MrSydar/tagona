@@ -17,6 +17,11 @@ info:
     request bodies are capped (`413 payload_too_large`), and the edge proxy applies a coarse
     per-IP limit.
 
+    **Retention.** Objects are stored permanently unless they have an expiry: either the server's
+    default TTL (off by default) or the `ttl_seconds` upload parameter. Expired objects disappear
+    from the API immediately and are removed from storage by a background sweeper. The exact rules
+    are described under *Upload an object*.
+
     **Tags are sparse.** An object only has a value for a tag after the tag was evaluated for it
     (by a query or a tags request). A tag that was not evaluated is *unknown*. Both tag-aware
     endpoints accept `evaluate=false` to answer from known tags only, without calling the
@@ -163,6 +168,21 @@ paths:
         The request body is the raw payload. Uploads are idempotent by content: the SHA-256 of the
         bytes identifies the object within the collection, and uploading the same bytes again
         returns the existing object (`200`) instead of creating a new one (`201`).
+
+        **Expiry and retention.** An object has an expiry if the upload sets `ttl_seconds` or the server
+        has a default TTL configured (`TAGONA_DEFAULT_TTL`, off by default). With neither, the object is
+        stored permanently.
+
+        Once an object has expired it is no longer visible: lookups answer `404`, queries skip it, and it
+        is excluded from collection counts and tag statistics. Its data is deleted afterwards by a
+        background retention sweeper that runs every `TAGONA_RETENTION_SWEEP_INTERVAL` (60 seconds by
+        default) and removes expired objects in batches, oldest first. Storage is therefore reclaimed
+        shortly after expiry, and later when very many objects expire at about the same time.
+
+        Uploading identical content again while the object is still valid returns the existing object
+        and does not change its expiry. After the object has expired, the same content is stored as a
+        new object with a new `id`. The expiry of an existing object cannot be changed; delete the
+        object and upload it again instead.
       parameters:
         - name: data_type
           in: query
@@ -175,8 +195,20 @@ paths:
           schema: { type: string, format: date-time }
         - name: ttl_seconds
           in: query
-          description: Seconds until the object expires and is removed. Omit for the server default.
-          schema: { type: integer, minimum: 0 }
+          description: |
+            Lifetime of the object in seconds, counted from the upload.
+
+            **Omit this parameter to use the server default.** With the default configuration
+            (`TAGONA_DEFAULT_TTL=0`) the object is then stored permanently; if the operator configured a
+            default TTL, that TTL applies instead.
+
+            **Sending the parameter always turns expiry on, whatever the value.** In particular `0` does
+            *not* mean "never expire": the object expires immediately and is removed. To store an object
+            permanently, leave the parameter out. There is no per-upload way to opt out of a non-zero
+            server default.
+
+            Must be a non-negative integer, otherwise `400 invalid_ttl`.
+          schema: { type: integer, minimum: 0, example: 3600 }
       requestBody:
         required: true
         content:
@@ -542,7 +574,12 @@ components:
         size_bytes: { type: integer, format: int64 }
         content_hash: { type: string, description: Lowercase hex SHA-256 of the payload. }
         created_at: { type: string, format: date-time }
-        expires_at: { type: string, format: date-time, description: Present only when the object expires. }
+        expires_at:
+          type: string
+          format: date-time
+          description: >-
+            Present only when the object has an expiry. From this moment the object is no longer returned
+            by the API; its data is deleted shortly afterwards by the retention sweeper.
         payload_key: { type: string, description: Internal object-store key; informational only. }
         tags:
           type: object

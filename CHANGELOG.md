@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- OpenAPI: documented `ttl_seconds` (omit it for the server default; sending it always enables expiry, so `0` expires the object immediately), how expired objects behave, and the retention sweeper.
 - Retention sweeper: each run now drains the whole backlog of expired objects (it removed at most 100 per run, about 100 per minute by default, so it could never catch up with a large burst of expiries). The batch size is configurable with `TAGONA_RETENTION_BATCH_SIZE` (default `100`). The S3 payload is now deleted before the database row, so a failed S3 delete is retried on the next run instead of leaving an orphaned payload, and each run logs a single summary line instead of one line per object.
 - The api service proxies an explicit allowlist of storage routes instead of every `/v1/*` path, rejects unsafe paths, and no longer forwards `Authorization`/`X-Forwarded-*` headers to storage.
 - The api container no longer publishes a host port; use Traefik on `:8080`/`:8443`. `/metrics` is no longer reachable through the public port.

@@ -22,6 +22,34 @@ import (
 	"mrsydar/tagona/storage/internal/db"
 )
 
+// extensionLockKey is an arbitrary application-level advisory lock id used to
+// serialize CREATE EXTENSION across test packages and processes.
+const extensionLockKey = 7240001
+
+// EnsureExtension creates the uuid-ossp extension if it is missing, safely for
+// concurrent callers.
+//
+// CREATE EXTENSION IF NOT EXISTS is not race-free: two sessions that both see
+// the extension missing both try to register it, and one fails with a unique
+// violation on pg_extension_name_index. Go runs test packages in parallel and
+// each calls dbtest.New, so on a fresh database (as in CI) that race is real.
+// A transaction-scoped advisory lock serializes the callers, works across
+// processes, and is released automatically on commit or rollback.
+func EnsureExtension(ctx context.Context, pool *pgxpool.Pool) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, extensionLockKey); err != nil {
+		return fmt.Errorf("advisory lock: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // MigrationsDir is the absolute path of storage/migrations.
 func MigrationsDir() string {
 	_, file, _, _ := runtime.Caller(0)
@@ -43,7 +71,7 @@ func New(t *testing.T, migrations ...string) (*db.DB, *pgxpool.Pool) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(admin.Close)
-	if _, err := admin.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`); err != nil {
+	if err := EnsureExtension(ctx, admin); err != nil {
 		t.Fatalf("create extension: %v", err)
 	}
 
