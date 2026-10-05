@@ -115,34 +115,13 @@ services:
       API_STORAGE_BASE_URL: "http://storage:8082"
       API_ADMIN_USERNAME: "admin"
       API_ADMIN_PASSWORD: "tagona"
-    expose:
-      - "8080"
+    ports:
+      - "8080:8080"
     depends_on:
       storage:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/readyz"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    restart: unless-stopped
-
-  traefik:
-    image: traefik:v3.6
-    environment:
-      EDGE_RATE_LIMIT_AVERAGE: "${EDGE_RATE_LIMIT_AVERAGE:-200}"
-      EDGE_RATE_LIMIT_BURST: "${EDGE_RATE_LIMIT_BURST:-400}"
-    volumes:
-      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
-      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
-    ports:
-      - "8080:8080"   # plain HTTP
-      - "8443:8443"   # TLS
-    depends_on:
-      api:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 5s
       timeout: 3s
       retries: 10

@@ -21,13 +21,13 @@ make all                 # builds bin/api, bin/storage, bin/tagger, bin/tagona
 ### Running the Stack
 
 ```bash
-make docker-up           # starts Postgres, Garage, tagger, storage, api, Traefik, Prometheus, Grafana
+make docker-up           # starts Postgres, Garage, tagger, storage, api, Prometheus, Grafana
 # wait ~15s for healthchecks
 make e2e                 # runs end-to-end tests
 make docker-down         # tears everything down
 ```
 
-The public entrypoint is Traefik: `http://localhost:8080` (plain HTTP) and `https://localhost:8443` (TLS, self-signed — use `curl -k`). The `api` and `storage` containers do not publish host ports.
+The public entrypoint is the api on `http://localhost:8080` (plain HTTP). The `storage` container does not publish a host port.
 
 Optionally create a `.env` in the repo root to configure the tagger (compose reads it if present; without it the tagger uses the `grep` evaluator). Use `TAGGER_EVALUATOR_IMPL=grep`, which works offline; `openai` and `systemone` need a valid API key. See `tagger/.env.example`.
 
@@ -37,10 +37,9 @@ This is a **Go workspace monorepo** (`go.work` at the root).
 
 | Directory | Module | Description |
 |-----------|--------|-------------|
-| `api/` | `mrsydar/tagona/api` | Public API gateway: auth, per-key rate limiting, allowlisted reverse proxy to storage |
+| `api/` | `mrsydar/tagona/api` | Public API gateway: auth, allowlisted reverse proxy to storage |
 | `storage/` | `mrsydar/tagona/storage` | Internal data service, DB migrations, S3 client, Go client (`pkg/client`) and CLI |
 | `tagger/` | `mrsydar/tagona/tagger` | Tag-evaluation engine |
-| `traefik/` | — | Edge proxy config (TLS, per-IP rate limiting); see [`traefik/README.md`](traefik/README.md) |
 | `e2e/` | standalone module | End-to-end tests (run with `GOWORK=off`) |
 
 > **Adding a public route:** the api service proxies an explicit allowlist. A new storage route is **not** reachable publicly until you add it to `proxiedRoutes` in `api/cmd/api/gateway.go`. Also document it in `api/openapi/v1.yaml` (the OpenAPI contract served at `/v1/docs`) and `api/README.md`; `go test ./api/...` fails if the spec and the routes disagree, and CI lints the spec (`npx @redocly/cli lint api/openapi/v1.yaml`).
@@ -91,7 +90,6 @@ Maintainers cut releases by pushing a `vX.Y.Z` tag; CI then builds, tests, signs
 
 *   Standard Go formatting (`gofmt`).
 *   `go vet ./...` should pass without warnings in each module.
-*   `traefik/dynamic.yml` is a Go template: don't put `{{` in comments there.
 *   Keep exported APIs minimal and well-documented.
 
 ## Reporting Bugs

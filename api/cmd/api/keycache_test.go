@@ -80,36 +80,7 @@ func TestCachedValidatorDoesNotCacheErrors(t *testing.T) {
 	}
 }
 
-func TestKeyRateLimiter(t *testing.T) {
-	now := time.Unix(1000, 0)
-	l := newKeyRateLimiter(1, 2)
-	l.now = func() time.Time { return now }
-
-	if !l.allow("a") || !l.allow("a") {
-		t.Fatal("burst of 2 should pass")
-	}
-	if l.allow("a") {
-		t.Error("third immediate request should be limited")
-	}
-	if !l.allow("b") {
-		t.Error("other keys have their own bucket")
-	}
-	now = now.Add(1100 * time.Millisecond)
-	if !l.allow("a") {
-		t.Error("a token should have refilled after ~1s")
-	}
-	if l.allow("a") {
-		t.Error("only one token should have refilled")
-	}
-
-	now = now.Add(2 * time.Hour)
-	l.allow("c") // triggers the idle sweep
-	if len(l.buckets) != 1 {
-		t.Errorf("idle buckets should be swept, have %d", len(l.buckets))
-	}
-}
-
-func TestRouterRateLimitAndRevocation(t *testing.T) {
+func TestRouterRevocation(t *testing.T) {
 	validKey := "tagona_" + "ab"
 	backend := newStorageStub(t, validKey)
 	defer backend.Close()
@@ -118,7 +89,6 @@ func TestRouterRateLimitAndRevocation(t *testing.T) {
 	cache := newCachedValidator(keyClient, time.Minute)
 	router := newRouter(backend.URL, newProxy(target, nil), keyClient, "admin", "tagona", gatewayConfig{
 		validator:    cache,
-		rateLimiter:  newKeyRateLimiter(0.001, 2),
 		onKeyDeleted: cache.Purge,
 	})
 	get := func() *httptest.ResponseRecorder {
@@ -129,20 +99,8 @@ func TestRouterRateLimitAndRevocation(t *testing.T) {
 		return w
 	}
 
-	for i := 0; i < 2; i++ {
-		if w := get(); w.Code != http.StatusOK {
-			t.Fatalf("request %d: expected 200, got %d", i, w.Code)
-		}
-	}
-	w := get()
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected 429, got %d", w.Code)
-	}
-	if w.Header().Get("Retry-After") == "" {
-		t.Error("expected Retry-After header")
-	}
-	if code := decodeErrorCode(t, w.Body.Bytes()); code != "rate_limited" {
-		t.Errorf("expected rate_limited, got %q", code)
+	if w := get(); w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
 	}
 
 	// Deleting a key through the gateway purges the validation cache.
