@@ -93,11 +93,11 @@ curl -s -X POST "$API/v1/collections/jobs/objects/query" -H "$AUTH" \
 
 **You need** Docker with Compose v2. Go 1.26+ is only needed to build the CLI or run the tests.
 
-**1. Get the code and configure the tagger.** Compose reads the tagger's settings from a `.env` file, and refuses to start without one:
+**1. Get the code.** The tagger's settings come from an optional `.env` file; without one it uses the offline `grep` evaluator and needs no API keys:
 
 ```bash
 git clone https://github.com/MrSydar/tagona.git && cd tagona
-cp tagger/.env.example .env      # defaults to the offline `grep` evaluator, no API keys needed
+cp tagger/.env.example .env      # optional: only to change the tagger's settings (e.g. an LLM evaluator)
 ```
 
 **2. Start everything.**

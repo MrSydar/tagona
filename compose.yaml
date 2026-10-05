@@ -53,7 +53,8 @@ services:
       context: .
       dockerfile: tagger/Dockerfile
     env_file:
-      - .env
+      - path: .env
+        required: false   # optional: without it the tagger defaults to the offline grep evaluator
     environment:
       TAGGER_HTTP_ADDR: ":8081"
       TAGGER_STORAGE_BASE_URL: "http://storage:8082"
