@@ -482,7 +482,6 @@ func (d *DB) GetCollectionTagStats(ctx context.Context, collectionID, prefix, af
 		if err := rows.Scan(&st.Tag, &st.TrueCount, &st.FalseCount, &st.FirstSeenAt); err != nil {
 			return 0, nil, fmt.Errorf("scan tag stat: %w", err)
 		}
-		st.UnknownCount = total - st.TrueCount - st.FalseCount
 		stats = append(stats, st)
 	}
 	if err := rows.Err(); err != nil {

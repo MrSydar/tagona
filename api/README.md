@@ -222,16 +222,16 @@ Response `200 OK`:
   "collection": "jobs",
   "total_objects": 120,
   "tags": [
-    {"tag":"golang","true_count":40,"false_count":55,"unknown_count":25,"first_seen_at":"2026-10-02T07:29:19Z"},
-    {"tag":"lang:rust","true_count":3,"false_count":20,"unknown_count":97,"first_seen_at":"2026-10-02T08:01:42Z"}
+    {"tag":"golang","true_count":40,"false_count":55,"first_seen_at":"2026-10-02T07:29:19Z"},
+    {"tag":"lang:rust","true_count":3,"false_count":20,"first_seen_at":"2026-10-02T08:01:42Z"}
   ],
   "next": "bGFuZzpydXN0"
 }
 ```
 
 - `total_objects` — objects currently in the collection (expired objects are excluded even before the retention sweep removes them). It counts the whole collection, not just the tags returned.
-- `true_count` / `false_count` — objects the tag is known true / false for; `unknown_count` = `total_objects - true_count - false_count`.
-- A tag stays registered once seen, even if every object carrying it is later deleted (its counts drop to `0`, `unknown_count` equals `total_objects`).
+- `true_count` / `false_count` — objects the tag is known true / false for; the remaining `total_objects - true_count - false_count` objects have not been evaluated for the tag yet.
+- A tag stays registered once seen, even if every object carrying it is later deleted (its counts drop to `0`).
 - Tags are ordered by name (byte order). Query parameters: `prefix` (literal prefix filter, max 128 bytes), `limit` (default `100`, max `1000`, else `400 invalid_limit`), `cursor` (the `next` value of the previous page; absent on the last page).
 - Errors: `404 not_found` for an unknown collection, `400 invalid_collection_name`, `invalid_limit`, `invalid_prefix`, `invalid_cursor`.
 - Counts are maintained by database triggers in the same transaction as every write, so reads are cheap and always consistent with the data.

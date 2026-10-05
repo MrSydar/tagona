@@ -38,11 +38,9 @@ type TagResult struct {
 type TagStat struct {
 	Tag string `json:"tag"`
 	// TrueCount and FalseCount are the objects the tag is known true/false for.
-	TrueCount  int64 `json:"true_count"`
-	FalseCount int64 `json:"false_count"`
-	// UnknownCount is the objects the tag has not been evaluated for yet.
-	UnknownCount int64     `json:"unknown_count"`
-	FirstSeenAt  time.Time `json:"first_seen_at"`
+	TrueCount   int64     `json:"true_count"`
+	FalseCount  int64     `json:"false_count"`
+	FirstSeenAt time.Time `json:"first_seen_at"`
 }
 
 // CollectionTagsResponse is the response for listing a collection's tags.

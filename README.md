@@ -72,8 +72,8 @@ The answers are kept. Every object now has a known value for both tags, so askin
 ```bash
 curl -s "$API/v1/collections/jobs/tags" -H "$AUTH"
 # {"collection":"jobs","total_objects":3,"tags":[
-#   {"tag":"Go",    "true_count":2,"false_count":1,"unknown_count":0},
-#   {"tag":"Remote","true_count":2,"false_count":1,"unknown_count":0}]}
+#   {"tag":"Go",    "true_count":2,"false_count":1},
+#   {"tag":"Remote","true_count":2,"false_count":1}]}
 ```
 
 New objects start out *unknown*. Add one more posting and ask for known answers only (`evaluate: false` never calls the tagger):
@@ -82,7 +82,7 @@ New objects start out *unknown*. Add one more posting and ask for known answers 
 curl -s -X POST "$API/v1/collections/jobs/objects?data_type=txt" -H "$AUTH" -d 'Go platform engineer. Remote.'
 
 curl -s "$API/v1/collections/jobs/tags" -H "$AUTH"
-# … {"tag":"Go","true_count":2,"false_count":1,"unknown_count":1} …   <- the new object is not evaluated yet
+# … {"tag":"Go","true_count":2,"false_count":1} …   <- the new object is not evaluated yet, so it is in neither count
 
 curl -s -X POST "$API/v1/collections/jobs/objects/query" -H "$AUTH" \
   -H 'Content-Type: application/json' -d '{"tags":{"Go":true,"Remote":true},"evaluate":false}'
