@@ -8,7 +8,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -152,17 +151,4 @@ func envDuration(name string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
-}
-
-func envFloat(name string, def float64) float64 {
-	v := os.Getenv(name)
-	if v == "" {
-		return def
-	}
-	f, err := strconv.ParseFloat(v, 64)
-	if err != nil || f < 0 {
-		slog.Error("invalid number env var, using default", "name", name, "value", v, "default", def)
-		return def
-	}
-	return f
 }

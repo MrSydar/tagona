@@ -56,8 +56,6 @@ func main() {
 	}
 
 	keyCacheTTL := envDuration("API_KEY_CACHE_TTL", 30*time.Second)
-	rateLimitRPS := envFloat("API_RATE_LIMIT_RPS", 100)
-	rateLimitBurst := int(envFloat("API_RATE_LIMIT_BURST", 200))
 
 	slog.Debug("starting tagona api service")
 
@@ -86,9 +84,6 @@ func main() {
 		cache := newCachedValidator(keyClient, keyCacheTTL)
 		cfg.validator = cache
 		cfg.onKeyDeleted = cache.Purge
-	}
-	if rateLimitRPS > 0 {
-		cfg.rateLimiter = newKeyRateLimiter(rateLimitRPS, rateLimitBurst)
 	}
 
 	docs, err := newDocsHandlers(openapi.V1)
@@ -135,8 +130,6 @@ type gatewayConfig struct {
 	maxBodyBytes int64
 	// validator checks Bearer keys; nil falls back to the key client.
 	validator keyValidator
-	// rateLimiter limits requests per API key; nil disables limiting.
-	rateLimiter *keyRateLimiter
 	// onKeyDeleted runs after a key is deleted through the gateway.
 	onKeyDeleted func()
 	// httpClient is used for the storage readiness probe; nil uses the default.
@@ -179,7 +172,6 @@ func newRouter(storageBaseURL string, proxy http.Handler, keyClient *storageapi.
 	// Allowlisted storage routes require a Bearer API key before proxying.
 	registerProxiedRoutes(r, proxy,
 		func(next http.Handler) http.Handler { return apiKeyAuth(validator, next) },
-		cfg.rateLimiter.middleware,
 		limitBody(cfg.maxBodyBytes),
 	)
 	r.NotFound(notFound)

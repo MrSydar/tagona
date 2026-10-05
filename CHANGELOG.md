@@ -10,8 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Initial open-source release preparation (LICENSE, CONTRIBUTING.md, CI, issue templates).
-- Traefik edge proxy in front of the api service: plain HTTP on `:8080`, TLS on `:8443`, per-IP rate limiting and timeouts.
-- API gateway hardening: per-API-key rate limiting, cached key validation, request body limit (`API_MAX_BODY_BYTES`).
+- API gateway hardening: cached key validation, request body limit (`API_MAX_BODY_BYTES`).
 - `GET /v1/collections/{collection}/tags`: object count of a collection plus every registered tag with true/false/unknown object counts (prefix filter, keyset pagination). Backed by trigger-maintained counters (migration `000003`) and available in the Go client and CLI (`collection-tags`).
 - `evaluate` option (default `true`) for tag queries (request body field) and the object tags endpoint (query parameter). With `evaluate=false` the tagging engine is never called: queries return only objects whose requested tags are already known and matching, and the tags endpoint returns `null` for tags not yet evaluated. Available in the Go client (`TagsQueryRequest.Evaluate`, `GetObjectTagsWithOptions`) and CLI (`--evaluate=false`).
 
@@ -30,4 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OpenAPI: documented `ttl_seconds` (omit it for the server default; sending it always enables expiry, so `0` expires the object immediately), how expired objects behave, and the retention sweeper.
 - Retention sweeper: each run now drains the whole backlog of expired objects (it removed at most 100 per run, about 100 per minute by default, so it could never catch up with a large burst of expiries). The batch size is configurable with `TAGONA_RETENTION_BATCH_SIZE` (default `100`). The S3 payload is now deleted before the database row, so a failed S3 delete is retried on the next run instead of leaving an orphaned payload, and each run logs a single summary line instead of one line per object.
 - The api service proxies an explicit allowlist of storage routes instead of every `/v1/*` path, rejects unsafe paths, and no longer forwards `Authorization`/`X-Forwarded-*` headers to storage.
-- The api container no longer publishes a host port; use Traefik on `:8080`/`:8443`. `/metrics` is no longer reachable through the public port.
+
+### Removed
+
+- The Traefik edge proxy (`traefik/`) and the per-API-key rate limiting in the api service (`API_RATE_LIMIT_RPS`, `API_RATE_LIMIT_BURST`, `429 rate_limited`). The api container publishes `:8080` on the host again. TLS and rate limiting are expected to come from a proxy in front of the api. OpenAPI `info.version` is now 1.2.0.

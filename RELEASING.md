@@ -203,7 +203,7 @@ These run on every pull request, so a release should never be the first time som
 | `verify` fails: "is not on main" | The tag points at a commit that is not on `main`. Delete the tag and tag a commit on `main`. |
 | `verify` fails: "is not a valid semantic version" | Use `vX.Y.Z` or `vX.Y.Z-rc.1`; no leading zeros. |
 | `build` fails for one service | Run the same build locally: `docker build -f <service>/Dockerfile .` (the `docker-build` PR check would normally have caught it). |
-| `e2e` fails | The workflow prints the stack logs. Reproduce with `TAGONA_VERSION=sha-<commit> docker compose up -d --no-build --wait traefik` and `make e2e`. Fix on `main`, then tag a new version. |
+| `e2e` fails | The workflow prints the stack logs. Reproduce with `TAGONA_VERSION=sha-<commit> docker compose up -d --no-build --wait api` and `make e2e`. Fix on `main`, then tag a new version. |
 | `promote` waits forever | It is waiting for an approval on the `release` environment. |
 | `promote` cannot push or sign | Check the job's `permissions`, and that the three packages are linked to this repository. |
 | A tag was pushed by mistake | If nothing was promoted yet, delete the tag (and the `sha-` staging images if you want). Never move a tag after images were published under it; cut a new patch version instead. |

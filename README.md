@@ -40,7 +40,7 @@ Tagona stores collections of objects and lets you query them by **yes/no tags yo
 - **Pluggable evaluators.** Ships with System One (`systemone`, through the Vercel AI Gateway today, with Jev, OpenAI's Decision API and more to be added), any OpenAI-compatible LLM (`openai`), and an offline substring matcher (`grep`). Add your own by implementing one Go interface.
 - **Know what you have.** Per-collection object counts and per-tag true / false / unknown counts, maintained transactionally by Postgres.
 - **Documented API.** The gateway serves interactive docs (Swagger UI) and an OpenAPI 3 contract, so you can try every endpoint and generate clients without reading source.
-- **Operable by default.** API keys, per-key and per-IP rate limits, TTL retention, content-hash de-duplication, Prometheus metrics and a Grafana dashboard.
+- **Operable by default.** API keys, TTL retention, content-hash de-duplication, Prometheus metrics and a Grafana dashboard.
 - **Boring, self-hosted stack.** Go services, Postgres and any S3-compatible object store, started with one `docker compose up`.
 
 > The bundled evaluators work on text objects today. Object data types are generic in the engine, so other types arrive with new evaluators.
@@ -153,7 +153,7 @@ curl -s -H "$AUTH" "$API/v1/collections/jobs/tags"                              
 
 | Service | Address | Notes |
 |---------|---------|-------|
-| API (through Traefik) | `http://localhost:8080` and `https://localhost:8443` | The only public entrypoint, with docs at `/v1/docs`. `:8443` uses a self-signed certificate (`curl -k`). |
+| API | `http://localhost:8080` | The public entrypoint (plain HTTP), with docs at `/v1/docs`. |
 | Prometheus | `http://localhost:9090` | Scrapes `api`, `storage` and `tagger`. |
 | Grafana | `http://localhost:3000` | `admin` / `admin`, with the provisioned **Tagona** dashboard. |
 | Postgres, Garage (S3), tagger | `:5432`, `:3900` / `:3903`, `:8081` | Published for development only. See [Security](#security). |
@@ -182,7 +182,7 @@ for m in api storage tagger; do (cd $m && go test ./...); done   # unit tests (s
 
 ## Configuration
 
-Every service is configured with environment variables. In Docker Compose they are set in `compose.yaml`; the tagger also reads `.env`. Each service README has the long form: [`api`](api/README.md), [`storage`](storage/README.md), [`tagger`](tagger/README.md), [`traefik`](traefik/README.md).
+Every service is configured with environment variables. In Docker Compose they are set in `compose.yaml`; the tagger also reads `.env`. Each service README has the long form: [`api`](api/README.md), [`storage`](storage/README.md) and [`tagger`](tagger/README.md).
 
 <details open>
 <summary><b>API gateway</b> (<code>api</code>)</summary>
@@ -194,16 +194,6 @@ Every service is configured with environment variables. In Docker Compose they a
 | `API_ADMIN_USERNAME` / `API_ADMIN_PASSWORD` | unset | Admin credentials (HTTP Basic) for API key management. If either is unset, the admin endpoints are disabled. |
 | `API_MAX_BODY_BYTES` | `33554432` | Request body cap (32 MiB); `0` disables. Storage applies its own per-object limit. |
 | `API_KEY_CACHE_TTL` | `30s` | How long key-validation results are cached; `0` disables. |
-| `API_RATE_LIMIT_RPS` / `API_RATE_LIMIT_BURST` | `100` / `200` | Per-API-key rate limit; RPS `0` disables. |
-
-</details>
-
-<details>
-<summary><b>Edge proxy</b> (<code>traefik</code>)</summary>
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EDGE_RATE_LIMIT_AVERAGE` / `EDGE_RATE_LIMIT_BURST` | `200` / `400` | Per-client-IP rate limit, in requests per second. |
 
 </details>
 
@@ -256,15 +246,15 @@ Evaluators: `grep` is a case-sensitive substring match on text and needs no netw
 
 ## Security
 
-Tagona is meant to run behind its own edge proxy, with the internal services kept off the network. Before you expose it:
+Tagona is meant to run behind your own edge proxy, with the internal services kept off the network. Before you expose it:
 
 - **Change every development default.** `compose.yaml` ships credentials that are public in this repository: admin `admin` / `tagona`, Postgres `tagona` / `tagona`, Garage `tagonadev` / `tagona-dev-secret`, Grafana `admin` / `admin`. Set your own.
 - **Only the API entrypoint is meant to be reachable.** `storage` and `tagger` have **no authentication**, because they are internal by design. Compose publishes Postgres, Garage, the tagger, Prometheus and Grafana on the host for convenience; remove those `ports:` entries (or firewall them) outside local development.
-- **Use TLS.** `:8443` serves a self-signed certificate until you mount your own (see [`traefik/README.md`](traefik/README.md)). `:8080` is plain HTTP and sends API keys in cleartext, so bind it to loopback or keep it internal in production.
+- **Use TLS.** The API listens on plain HTTP and sends API keys in cleartext, so terminate TLS in a reverse proxy or load balancer in front of it, and keep `:8080` on loopback or an internal network.
 - **API keys and roles.** `/v1` requires a Bearer API key. Keys are stored hashed, shown once at creation, and can be revoked. Key management requires the admin Basic credentials, and an API key is rejected there. There is no RBAC yet: every key can access every collection.
 - **The API docs are public by design.** `/v1/docs`, `/v1/openapi.json` and `/v1/openapi.yaml` need no key: they describe the API and contain no data.
 - **Released images** run as an unprivileged user (uid 10001), are built for amd64 and arm64, and are signed with cosign (keyless) and published with provenance and an SBOM. See [RELEASING.md](RELEASING.md) to verify one.
-- **Built-in protections.** The gateway forwards an explicit allowlist of routes only, rejects path-traversal tricks, caps request bodies, rate limits per API key (and per IP at the edge), and strips the `Authorization` header before a request reaches storage.
+- **Built-in protections.** The gateway forwards an explicit allowlist of routes only, rejects path-traversal tricks, caps request bodies, and strips the `Authorization` header before a request reaches storage.
 - **LLM evaluators send your data to a third party.** With `openai` or `systemone`, object content is sent to the configured API for evaluation. Use `grep`, or a model endpoint you control, for sensitive data.
 
 Found a vulnerability? Please follow [SECURITY.md](SECURITY.md) and do not open a public issue.
@@ -273,7 +263,7 @@ Found a vulnerability? Please follow [SECURITY.md](SECURITY.md) and do not open 
 
 ```
 tagona/
-├── api/                  Public API gateway: API-key auth, rate limits, route allowlist, reverse proxy
+├── api/                  Public API gateway: API-key auth, route allowlist, reverse proxy
 │   ├── cmd/api/            entry point, router, auth, proxy, docs endpoints
 │   ├── openapi/            v1.yaml, the OpenAPI 3 contract of /v1 (embedded, served at /v1/docs)
 │   └── internal/           metrics, storage key client
@@ -287,7 +277,6 @@ tagona/
 │   ├── cmd/tagger/         entry point
 │   ├── pkg/evaluator/      evaluators: grep, false, openai, systemone (implement your own here)
 │   └── pkg/client/         HTTP client that implements storage's Tagger interface
-├── traefik/              Edge proxy config: TLS, per-IP rate limiting
 ├── e2e/                  End-to-end tests against the running stack (separate Go module)
 ├── prometheus/ grafana/  Metrics scrape config and the Tagona dashboard
 ├── garage/               Local S3-compatible object store config
@@ -307,12 +296,8 @@ tagona/
 flowchart LR
     client([Client or CLI])
 
-    subgraph edge [Edge]
-        traefik["Traefik<br/>TLS · per-IP rate limit"]
-    end
-
     subgraph services [Tagona services]
-        api["api gateway<br/>API keys · per-key limits · route allowlist"]
+        api["api gateway<br/>API keys · route allowlist"]
         storage["storage<br/>collections · objects · tag queries"]
         tagger["tagger<br/>tag evaluation"]
     end
@@ -321,7 +306,7 @@ flowchart LR
     s3[("S3-compatible store<br/>object payloads")]
     evaluator{{"Evaluator<br/>grep · OpenAI-compatible · systemone"}}
 
-    client -->|":8080 / :8443"| traefik --> api
+    client -->|":8080"| api
     api -->|"/v1 allowlist"| storage
     storage -->|"POST /v1/tag"| tagger
     tagger -->|"read object data"| storage
@@ -360,7 +345,7 @@ With `evaluate=false` the loop is skipped: the query reads known tags only and t
 - **`api` is a thin gateway.** It owns no data. It authenticates, limits, and forwards an allowlist of routes to `storage` without rewriting paths, and it serves the OpenAPI contract and docs for the API it fronts.
 - **`storage` owns all state** and is the only service that talks to Postgres and S3. Collection statistics (`object_count`, per-tag counters) are maintained by database triggers, so they always match the data, including after cascading deletes.
 - **`tagger` is stateless.** It has no database; it reads object bytes from `storage`, runs the evaluator, and returns booleans.
-- **Startup order matters:** Postgres and Garage, then tagger, then storage (it fetches the supported data types from the tagger and exits if it cannot), then api, then Traefik. Compose enforces this with health checks.
+- **Startup order matters:** Postgres and Garage, then tagger, then storage (it fetches the supported data types from the tagger and exits if it cannot), then api. Compose enforces this with health checks.
 - **Uploads are content-addressed.** The SHA-256 of the bytes identifies an object within its collection; uploading the same bytes again returns the existing object.
 
 ## Contributing
