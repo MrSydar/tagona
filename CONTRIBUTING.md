@@ -29,7 +29,7 @@ make docker-down         # tears everything down
 
 The public entrypoint is Traefik: `http://localhost:8080` (plain HTTP) and `https://localhost:8443` (TLS, self-signed — use `curl -k`). The `api` and `storage` containers do not publish host ports.
 
-Create a `.env` in the repo root for the tagger (compose mounts it). Use `TAGGER_EVALUATOR_IMPL=grep`, which works offline; `openai` and `systemone` need a valid API key. See `tagger/.env.example`.
+Optionally create a `.env` in the repo root to configure the tagger (compose reads it if present; without it the tagger uses the `grep` evaluator). Use `TAGGER_EVALUATOR_IMPL=grep`, which works offline; `openai` and `systemone` need a valid API key. See `tagger/.env.example`.
 
 ## Project Layout
 
