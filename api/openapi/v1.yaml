@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Tagona API
-  version: 1.0.0
+  version: 1.1.0
   description: |
     Storage for collections of objects with sparse boolean tags that are evaluated on demand.
 
@@ -666,15 +666,11 @@ components:
 
     TagStat:
       type: object
-      required: [tag, true_count, false_count, unknown_count, first_seen_at]
+      required: [tag, true_count, false_count, first_seen_at]
       properties:
         tag: { type: string }
         true_count: { type: integer, format: int64, description: Objects the tag is known true for. }
         false_count: { type: integer, format: int64, description: Objects the tag is known false for. }
-        unknown_count:
-          type: integer
-          format: int64
-          description: Objects the tag has not been evaluated for (`total_objects - true_count - false_count`).
         first_seen_at: { type: string, format: date-time }
 
     CollectionTags:

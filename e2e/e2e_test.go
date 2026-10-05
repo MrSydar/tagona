@@ -320,10 +320,9 @@ func extractIDs(objs []objMeta) []string {
 }
 
 type tagStat struct {
-	Tag          string `json:"tag"`
-	TrueCount    int64  `json:"true_count"`
-	FalseCount   int64  `json:"false_count"`
-	UnknownCount int64  `json:"unknown_count"`
+	Tag        string `json:"tag"`
+	TrueCount  int64  `json:"true_count"`
+	FalseCount int64  `json:"false_count"`
 }
 
 type collectionTagsResp struct {
@@ -418,23 +417,23 @@ func TestCollectionTags(t *testing.T) {
 	assert.Equal(t, "golang", got.Tags[0].Tag, "tags are ordered by name")
 	assert.Equal(t, "java", got.Tags[1].Tag)
 	byName := tagsByName(got.Tags)
-	assert.Equal(t, tagStat{Tag: "golang", TrueCount: 2, FalseCount: 1, UnknownCount: 0}, byName["golang"])
-	assert.Equal(t, tagStat{Tag: "java", TrueCount: 1, FalseCount: 2, UnknownCount: 0}, byName["java"])
+	assert.Equal(t, tagStat{Tag: "golang", TrueCount: 2, FalseCount: 1}, byName["golang"])
+	assert.Equal(t, tagStat{Tag: "java", TrueCount: 1, FalseCount: 2}, byName["java"])
 
 	// A new object has not been evaluated for the known tags yet.
 	uploadObject(t, creds.Key, coll, "txt", []byte("a golang and kotlin job"))
 	got = collectionTags(t, creds.Key, coll, "")
 	assert.EqualValues(t, 4, got.TotalObjects)
 	byName = tagsByName(got.Tags)
-	assert.Equal(t, tagStat{Tag: "golang", TrueCount: 2, FalseCount: 1, UnknownCount: 1}, byName["golang"])
-	assert.Equal(t, tagStat{Tag: "java", TrueCount: 1, FalseCount: 2, UnknownCount: 1}, byName["java"])
+	assert.Equal(t, tagStat{Tag: "golang", TrueCount: 2, FalseCount: 1}, byName["golang"])
+	assert.Equal(t, tagStat{Tag: "java", TrueCount: 1, FalseCount: 2}, byName["java"])
 
 	// Deleting an object updates the counters.
 	deleteObject(t, creds.Key, coll, obj1.ID)
 	got = collectionTags(t, creds.Key, coll, "")
 	assert.EqualValues(t, 3, got.TotalObjects)
 	byName = tagsByName(got.Tags)
-	assert.Equal(t, tagStat{Tag: "golang", TrueCount: 1, FalseCount: 1, UnknownCount: 1}, byName["golang"])
+	assert.Equal(t, tagStat{Tag: "golang", TrueCount: 1, FalseCount: 1}, byName["golang"])
 
 	// Prefix filter and keyset pagination.
 	got = collectionTags(t, creds.Key, coll, "prefix=j")

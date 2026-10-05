@@ -85,7 +85,7 @@ commands:
                      Delete a collection and all its objects.
   collection-tags    --collection <c> [--prefix <p>] [--limit <n>] [--cursor <cursor>]
                      Show the total number of objects in a collection and the tags registered in it,
-                     with how many objects each tag is true, false and not yet evaluated (unknown) for.
+                     with how many objects each tag is true and false for.
                      Tags are ordered by name; pass the returned "next" cursor to fetch the next page.
   upload             --collection <c> --data-type <type> --file <path> [--date <RFC3339>] [--ttl <seconds>]
                      Upload an object to a collection.

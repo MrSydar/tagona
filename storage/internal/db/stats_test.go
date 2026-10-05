@@ -71,9 +71,6 @@ func assertStats(t *testing.T, d *db.DB, collID string, wantTotal int64, want ma
 	got := map[string]counts{}
 	for _, st := range stats {
 		got[st.Tag] = counts{st.TrueCount, st.FalseCount}
-		if st.UnknownCount != total-st.TrueCount-st.FalseCount {
-			t.Errorf("tag %q: unknown = %d, want %d", st.Tag, st.UnknownCount, total-st.TrueCount-st.FalseCount)
-		}
 	}
 	for tag, w := range want {
 		if got[tag] != w {
@@ -165,16 +162,6 @@ func TestCollectionStatsTriggers(t *testing.T) {
 		"remote": {1, 0},
 	})
 	assertConsistent(t, pool, coll)
-
-	_, stats, _ := d.GetCollectionTagStats(ctx, coll, "", "", 100)
-	for _, st := range stats {
-		if st.Tag == "golang" && st.UnknownCount != 0 {
-			t.Errorf("golang unknown = %d, want 0", st.UnknownCount)
-		}
-		if st.Tag == "qa" && st.UnknownCount != 2 {
-			t.Errorf("qa unknown = %d, want 2", st.UnknownCount)
-		}
-	}
 
 	// Re-upserting the same value is a no-op for the counters; flipping moves
 	// the object between true and false.
