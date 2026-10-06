@@ -128,7 +128,7 @@ func Load(prefix string) (*Config, error) {
 		cfg.RetentionBatchSize = n
 	}
 
-	slog.Debug("Load: config loaded", "HTTPAddr", cfg.HTTPAddr, "PGDSN", cfg.PGDSN, "S3Bucket", cfg.S3Bucket, "TagEngineURL", cfg.TagEngineURL)
+	slog.Debug("Load: config loaded", "HTTPAddr", cfg.HTTPAddr, "S3Bucket", cfg.S3Bucket, "TagEngineURL", cfg.TagEngineURL)
 	return cfg, nil
 }
 

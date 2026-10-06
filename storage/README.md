@@ -38,18 +38,7 @@ The storage service answers the same routes it serves to the api gateway (no pat
 | `POST` | `/v1/collections/{collection}/objects/query` | Query by tags |
 | `DELETE` | `/v1/collections/{collection}/objects/{id}` | Hard delete |
 
-### Internal API key endpoints
-
-The storage service also owns API key persistence for the api gateway. These routes are **internal** — unauthenticated and not reachable through the public gateway (which only proxies `/v1/*`):
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/internal/v1/api-keys` | Create an API key. Body `{"name":"..."}` (non-empty, valid UTF-8, ≤128 bytes). Returns `201` `{"id","name","key","created_at"}` — the raw key (`tagona_` + 64 hex chars) appears only here; only its SHA-256 hash is stored |
-| `GET` | `/internal/v1/api-keys` | List API keys. Returns `200` `{"keys":[{"id","name","key_prefix","created_at"}]}` |
-| `DELETE` | `/internal/v1/api-keys/{id}` | Delete an API key. `204` on success, `404` if unknown |
-| `POST` | `/internal/v1/api-keys/validate` | Validate a raw key. Body `{"key":"..."}`. Found → `200` `{"id","name"}`; unknown → `401` `{"error":{"code":"invalid_api_key","message":"invalid or unknown api key"}}` |
-
-No auth is enforced here on purpose: storage is internal-only. The api service validates Bearer keys via `/internal/v1/api-keys/validate` and manages keys via the create/list/delete routes, exposing them publicly under `/v1/admin/api-keys` behind admin Basic auth.
+API keys are not stored here: the [keystorage](../keystorage/README.md) service owns them, under its own database role. This service's role has no access to the keys schema, and it neither validates nor manages keys.
 
 ---
 
@@ -177,10 +166,10 @@ Migrations are applied automatically on startup using a simple file-based runner
 |------|-------------|
 | `000001_initial_schema.up.sql` | Creates `collections`, `objects`, `object_tags` tables with indexes |
 | `000001_initial_schema.down.sql` | Drops tables |
-| `000002_api_keys.up.sql` | Creates the `api_keys` table (hash, prefix, name) used for Bearer API key auth on the api gateway |
-| `000002_api_keys.down.sql` | Drops `api_keys` |
 | `000003_collection_tag_stats.up.sql` | Adds `collections.object_count` and the `collection_tags` registry (per-tag true/false counters), the triggers that maintain them, and a one-off backfill for existing data |
 | `000003_collection_tag_stats.down.sql` | Drops the triggers, functions, `collection_tags` and `object_count` |
+
+There is no `000002`: it created `api_keys`, which moved to the keystorage service.
 
 ---
 

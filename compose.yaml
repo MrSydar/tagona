@@ -1,10 +1,10 @@
 # Tagona stack.
 #
-#   docker compose up --build -d       build the api, storage and tagger images from source (tagged :dev)
+#   docker compose up --build -d       build the api, storage, keystorage and tagger images from source (tagged :dev)
 #
 # To run the released images from GHCR instead of building (see RELEASING.md):
 #
-#   TAGONA_VERSION=0.1.0 docker compose pull api storage tagger
+#   TAGONA_VERSION=0.1.0 docker compose pull api storage keystorage tagger
 #   TAGONA_VERSION=0.1.0 docker compose up -d --no-build
 #
 # TAGONA_VERSION can also be set in .env. It defaults to "dev", a tag that only
@@ -25,6 +25,33 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  # One-shot: creates the database roles (one per service, each limited to its own tables) and
+  # moves a pre-keystorage api_keys table into the keys schema. See postgres/roles.sql. The
+  # passwords are demo defaults; the services' DSNs below use the same variables.
+  db-init:
+    image: postgres:15
+    environment:
+      PGHOST: postgres
+      PGUSER: tagona
+      PGPASSWORD: tagona
+      PGDATABASE: tagona
+    volumes:
+      - ./postgres/roles.sql:/roles.sql:ro
+    command:
+      - psql
+      - "-v"
+      - "ON_ERROR_STOP=1"
+      - "-v"
+      - "storage_password=${TAGONA_STORAGE_DB_PASSWORD:-tagona_storage}"
+      - "-v"
+      - "keys_password=${TAGONA_KEYS_DB_PASSWORD:-tagona_keys}"
+      - "-f"
+      - "/roles.sql"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
   garage:
     image: dxflrs/garage:v2.3.0
@@ -75,7 +102,7 @@ services:
       dockerfile: storage/Dockerfile
     environment:
       TAGONA_HTTP_ADDR: ":8082"
-      TAGONA_PG_DSN: "postgres://tagona:tagona@postgres:5432/tagona?sslmode=disable"
+      TAGONA_PG_DSN: "postgres://tagona_storage:${TAGONA_STORAGE_DB_PASSWORD:-tagona_storage}@postgres:5432/tagona?sslmode=disable"
       TAGONA_S3_ENDPOINT: "http://garage:3900"
       TAGONA_S3_REGION: "us-east-1"
       TAGONA_S3_BUCKET: "tagona"
@@ -92,14 +119,40 @@ services:
     expose:
       - "8082"
     depends_on:
-      postgres:
-        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
       garage:
         condition: service_healthy
       tagger:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8082/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # API key storage and validation. The only service whose database role can reach the api_keys
+  # table. Reachable on the compose network only: key management checks the admin credentials
+  # itself, and validation is open to the api (and, in Tagona Plus, the translator).
+  keystorage:
+    image: ghcr.io/mrsydar/tagona-keystorage:${TAGONA_VERSION:-dev}
+    build:
+      context: .
+      dockerfile: keystorage/Dockerfile
+    environment:
+      KEYSTORAGE_HTTP_ADDR: ":8083"
+      KEYSTORAGE_PG_DSN: "postgres://tagona_keys:${TAGONA_KEYS_DB_PASSWORD:-tagona_keys}@postgres:5432/tagona?sslmode=disable"
+      KEYSTORAGE_PG_SCHEMA: "keys"
+      KEYSTORAGE_ADMIN_USERNAME: "admin"
+      KEYSTORAGE_ADMIN_PASSWORD: "tagona"
+    expose:
+      - "8083"
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/readyz"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -113,12 +166,13 @@ services:
     environment:
       API_HTTP_ADDR: ":8080"
       API_STORAGE_BASE_URL: "http://storage:8082"
-      API_ADMIN_USERNAME: "admin"
-      API_ADMIN_PASSWORD: "tagona"
+      API_KEYSTORAGE_BASE_URL: "http://keystorage:8083"
     ports:
       - "8080:8080"
     depends_on:
       storage:
+        condition: service_healthy
+      keystorage:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/readyz"]

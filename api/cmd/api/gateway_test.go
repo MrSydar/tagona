@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"mrsydar/tagona/api/internal/storageapi"
+	"mrsydar/tagona/api/internal/keystorageapi"
 )
 
 type seenRequest struct {
@@ -47,11 +47,20 @@ func newRecordingStorage(t *testing.T) (*httptest.Server, func() []seenRequest) 
 
 func newGatewayRouter(t *testing.T, backendURL string, cfg gatewayConfig) http.Handler {
 	t.Helper()
+	return newTestRouter(t, backendURL, cfg)
+}
+
+// newTestRouter wires the gateway to a single stub that plays both storage and keystorage.
+func newTestRouter(t *testing.T, backendURL string, cfg gatewayConfig) http.Handler {
+	t.Helper()
 	target, err := url.Parse(backendURL)
 	if err != nil {
 		t.Fatalf("parse backend url: %v", err)
 	}
-	return newRouter(backendURL, newProxy(target, nil), storageapi.New(backendURL), "admin", "tagona", cfg)
+	if cfg.validator == nil {
+		cfg.validator = keystorageapi.New(backendURL)
+	}
+	return newRouter([]string{backendURL}, newProxy(target, nil), newKeystorageProxy(target, nil, cfg.onKeyDeleted), cfg)
 }
 
 func bearer(r *http.Request) { r.Header.Set("Authorization", "Bearer tagona_anykey") }

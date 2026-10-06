@@ -5,12 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"mrsydar/tagona/api/internal/storageapi"
+	"mrsydar/tagona/api/internal/keystorageapi"
 )
 
 type countingValidator struct {
@@ -84,10 +83,8 @@ func TestRouterRevocation(t *testing.T) {
 	validKey := "tagona_" + "ab"
 	backend := newStorageStub(t, validKey)
 	defer backend.Close()
-	target, _ := url.Parse(backend.URL)
-	keyClient := storageapi.New(backend.URL)
-	cache := newCachedValidator(keyClient, time.Minute)
-	router := newRouter(backend.URL, newProxy(target, nil), keyClient, "admin", "tagona", gatewayConfig{
+	cache := newCachedValidator(keystorageapi.New(backend.URL), time.Minute)
+	router := newTestRouter(t, backend.URL, gatewayConfig{
 		validator:    cache,
 		onKeyDeleted: cache.Purge,
 	})
@@ -111,7 +108,7 @@ func TestRouterRevocation(t *testing.T) {
 		t.Fatal("expected a cached verdict")
 	}
 	del := httptest.NewRecorder()
-	req := newRequest(t, http.MethodDelete, "/v1/admin/api-keys/known-id", func(r *http.Request) { r.SetBasicAuth("admin", "tagona") })
+	req := newRequest(t, http.MethodDelete, "/v1/admin/api-keys/"+knownKeyID, func(r *http.Request) { r.SetBasicAuth("admin", "tagona") })
 	router.ServeHTTP(del, req)
 	if del.Code != http.StatusNoContent {
 		t.Fatalf("delete: expected 204, got %d: %s", del.Code, del.Body.String())

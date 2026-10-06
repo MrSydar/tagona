@@ -243,7 +243,7 @@ func TestCollectionStatsExcludeExpired(t *testing.T) {
 
 func TestCollectionStatsBackfillAndIdempotentMigration(t *testing.T) {
 	// Start from the pre-stats schema and create data with no triggers.
-	d, pool := newTestDB(t, "000001_initial_schema.up.sql", "000002_api_keys.up.sql")
+	d, pool := newTestDB(t, "000001_initial_schema.up.sql")
 	coll := mustCollection(t, d, "jobs")
 	o1 := mustObject(t, d, coll, "h1", nil)
 	o2 := mustObject(t, d, coll, "h2", nil)
