@@ -1,6 +1,6 @@
-.PHONY: all build-api build-client build-storage build-tagger e2e docker-up docker-down help
+.PHONY: all build-api build-client build-keystorage build-storage build-tagger e2e docker-up docker-down help
 
-all: build-api build-client build-storage build-tagger
+all: build-api build-client build-keystorage build-storage build-tagger
 
 ## Build
 
@@ -9,6 +9,9 @@ build-api:
 
 build-client:
 	cd storage && go build -o ../bin/tagona ./cmd/client
+
+build-keystorage:
+	cd keystorage && go build -o ../bin/keystorage ./cmd/keystorage
 
 build-storage:
 	cd storage && go build -o ../bin/storage ./cmd/storage
@@ -33,9 +36,10 @@ help:
 	@echo "Available targets:"
 	@echo "  build-api      Build the api service binary (bin/api)"
 	@echo "  build-client   Build the storage CLI client (bin/tagona)"
+	@echo "  build-keystorage Build the keystorage service binary (bin/keystorage)"
 	@echo "  build-storage  Build the storage service binary (bin/storage)"
 	@echo "  build-tagger   Build the tagger service binary (bin/tagger)"
-	@echo "  all            Build api, client, storage, and tagger binaries"
+	@echo "  all            Build api, client, keystorage, storage, and tagger binaries"
 	@echo "  docker-up      Start the full Docker Compose stack"
 	@echo "  docker-down    Stop the Docker Compose stack"
 	@echo "  e2e            Run end-to-end tests (requires stack running)"

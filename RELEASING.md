@@ -1,10 +1,11 @@
 # Releasing Tagona
 
-Tagona is released as three Docker images, published to the GitHub Container Registry (GHCR):
+Tagona is released as four Docker images, published to the GitHub Container Registry (GHCR):
 
 | Image | Service |
 |-------|---------|
 | `ghcr.io/mrsydar/tagona-api` | the public API gateway |
+| `ghcr.io/mrsydar/tagona-keystorage` | the API key service (stores and validates keys; owns the `keys` database schema) |
 | `ghcr.io/mrsydar/tagona-storage` | the data service (includes the database migrations) |
 | `ghcr.io/mrsydar/tagona-tagger` | the tag evaluation service |
 
@@ -28,7 +29,7 @@ anything is published under a release tag.
 
 ## Versioning
 
-All three services are released **together under one version** that follows [Semantic Versioning](https://semver.org/).
+All four services are released **together under one version** that follows [Semantic Versioning](https://semver.org/).
 
 They are tightly coupled (the tagger imports the storage client, storage and the tagger share an HTTP
 contract, the API and storage share the internal key endpoints, and storage owns the migrations), so
@@ -87,7 +88,7 @@ A tag publishes images, so only admins should be able to create (or move) one.
 ### 3. After the first release: make the packages public
 
 GHCR creates a package as **private** on its first push. After the first release run, open each of
-`tagona-api`, `tagona-storage` and `tagona-tagger` under your profile's **Packages**, then
+`tagona-api`, `tagona-keystorage`, `tagona-storage` and `tagona-tagger` under your profile's **Packages**, then
 **Package settings → Change visibility → Public**. Each package is linked to this repository by the
 `org.opencontainers.image.source` label that the Dockerfiles set, so the workflow's `GITHUB_TOKEN` can push to it.
 
@@ -113,8 +114,8 @@ The `main` ruleset requires specific check names. Add `docker-build (api)`, `doc
    (Or use **Releases → Draft a new release** and create the tag there. Do not publish the release by hand; the workflow creates it.)
 4. **Watch the workflow** (Actions → Release). `verify`, `build` and `e2e` run on their own.
 5. **Approve** the `promote` jobs when the `release` environment asks. Only approve once `e2e` is green.
-6. **Check the result:** the GitHub Release exists, the three images carry the new tags, and `cosign verify` succeeds (see below).
-7. On the very first release, make the three packages public ([setup step 3](#3-after-the-first-release-make-the-packages-public)).
+6. **Check the result:** the GitHub Release exists, the four images carry the new tags, and `cosign verify` succeeds (see below).
+7. On the very first release, make the four packages public ([setup step 3](#3-after-the-first-release-make-the-packages-public)).
 
 A pre-release (`v1.2.3-rc.1`) follows the same flow. It gets only its exact tag (it never moves `latest`, `X.Y` or `X`), needs no changelog section, and the GitHub Release is marked as a pre-release.
 Cut a release candidate first to exercise the pipeline before a real version.
@@ -122,14 +123,14 @@ Cut a release candidate first to exercise the pipeline before a real version.
 ## Dry run
 
 **Actions → Release → Run workflow** and enter a version such as `0.0.0-dryrun`. A manual run validates the
-version and builds all three images for both platforms, but **never pushes anything and skips `e2e`, `promote` and `release`**.
+version and builds all four images for both platforms, but **never pushes anything and skips `e2e`, `promote` and `release`**.
 Use it to check that the Docker builds still work after changing the Dockerfiles or the workflow.
 
 (The workflow can only be started manually once it exists on the default branch.)
 
 ## What gets published
 
-For a stable release `1.2.3`, each of the three images gets:
+For a stable release `1.2.3`, each of the four images gets:
 
 | Tag | Meaning |
 |-----|---------|
@@ -154,7 +155,7 @@ source and tags the images `:dev`. To run a published version instead:
 
 ```bash
 export TAGONA_VERSION=1.2.3        # or put TAGONA_VERSION=1.2.3 in .env
-docker compose pull api storage tagger
+docker compose pull api keystorage storage tagger
 docker compose up -d --no-build
 ```
 
@@ -176,7 +177,7 @@ The GitHub Release lists the digest of each image, so you can also pin by digest
 - **Migrations are forward-only.** The storage service applies its SQL migrations on every start and has no automatic down-migration.
 - **Back up Postgres before upgrading.**
 - **Do not roll an image back past a release that changed the schema** unless that release's notes say the previous version still works with the new schema. Restore a backup instead.
-- Upgrade all three services together: they are released and tested as a set.
+- Upgrade all four services together: they are released and tested as a set.
 
 ## The CI that guards releases
 
@@ -205,7 +206,7 @@ These run on every pull request, so a release should never be the first time som
 | `build` fails for one service | Run the same build locally: `docker build -f <service>/Dockerfile .` (the `docker-build` PR check would normally have caught it). |
 | `e2e` fails | The workflow prints the stack logs. Reproduce with `TAGONA_VERSION=sha-<commit> docker compose up -d --no-build --wait api` and `make e2e`. Fix on `main`, then tag a new version. |
 | `promote` waits forever | It is waiting for an approval on the `release` environment. |
-| `promote` cannot push or sign | Check the job's `permissions`, and that the three packages are linked to this repository. |
+| `promote` cannot push or sign | Check the job's `permissions`, and that the four packages are linked to this repository. |
 | A tag was pushed by mistake | If nothing was promoted yet, delete the tag (and the `sha-` staging images if you want). Never move a tag after images were published under it; cut a new patch version instead. |
 | Pulling an image says "denied" or "not found" | The package is still private. See [setup step 3](#3-after-the-first-release-make-the-packages-public). |
 

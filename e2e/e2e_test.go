@@ -14,7 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const storageURL = "http://localhost:8080"
+// storageURL is the public api; TAGONA_URL points the tests at another stack.
+var storageURL = envOrDefault("TAGONA_URL", "http://localhost:8080")
 
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 

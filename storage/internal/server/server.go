@@ -22,7 +22,6 @@ import (
 
 	"mrsydar/tagona/storage/internal/config"
 	"mrsydar/tagona/storage/internal/db"
-	"mrsydar/tagona/storage/internal/keys"
 	"mrsydar/tagona/storage/internal/metrics"
 	"mrsydar/tagona/storage/internal/models"
 	"mrsydar/tagona/storage/internal/query"
@@ -77,11 +76,6 @@ func (s *Server) Router() chi.Router {
 	r.Get("/v1/collections/{collection}/objects/{id}/tags", s.getObjectTags)
 	r.Post("/v1/collections/{collection}/objects/query", s.queryObjects)
 	r.Delete("/v1/collections/{collection}/objects/{id}", s.deleteObject)
-
-	r.Post("/internal/v1/api-keys", s.createAPIKey)
-	r.Get("/internal/v1/api-keys", s.listAPIKeys)
-	r.Delete("/internal/v1/api-keys/{id}", s.deleteAPIKey)
-	r.Post("/internal/v1/api-keys/validate", s.validateAPIKey)
 
 	return r
 }
@@ -746,110 +740,6 @@ func (s *Server) deleteObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) createAPIKey(w http.ResponseWriter, r *http.Request) {
-	slog.Debug("createAPIKey handler called")
-	var req models.APIKeyCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_json", "invalid request body")
-		return
-	}
-	if err := validate.ValidateAPIKeyName(req.Name); err != nil {
-		slog.Debug("createAPIKey validation failed: invalid name", "name", req.Name)
-		writeError(w, http.StatusBadRequest, "invalid_name", err.Error())
-		return
-	}
-	raw, hash, keyPrefix, err := keys.Generate()
-	if err != nil {
-		slog.Error("generate api key failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to generate api key")
-		return
-	}
-	slog.Debug("creating api key", "name", req.Name, "key_prefix", keyPrefix)
-	key, err := s.db.CreateAPIKey(r.Context(), hash, keyPrefix, req.Name)
-	if err != nil {
-		slog.Error("create api key failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to create api key")
-		return
-	}
-	slog.Debug("api key created", "id", key.ID, "name", key.Name)
-	resp := models.APIKeyCreateResponse{
-		ID:        key.ID,
-		Name:      key.Name,
-		Key:       raw,
-		CreatedAt: key.CreatedAt,
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(resp)
-}
-
-func (s *Server) listAPIKeys(w http.ResponseWriter, r *http.Request) {
-	slog.Debug("listAPIKeys handler called")
-	keys, err := s.db.ListAPIKeys(r.Context())
-	if err != nil {
-		slog.Error("list api keys failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to list api keys")
-		return
-	}
-	if keys == nil {
-		keys = []models.APIKey{}
-	}
-	resp := models.APIKeysListResponse{
-		Keys: keys,
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
-}
-
-func (s *Server) deleteAPIKey(w http.ResponseWriter, r *http.Request) {
-	slog.Debug("deleteAPIKey handler called")
-	id := chi.URLParam(r, "id")
-	deleted, err := s.db.DeleteAPIKey(r.Context(), id)
-	if err != nil {
-		slog.Error("delete api key failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to delete api key")
-		return
-	}
-	if !deleted {
-		slog.Debug("deleteAPIKey not found", "id", id)
-		writeError(w, http.StatusNotFound, "not_found", "api key not found")
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) validateAPIKey(w http.ResponseWriter, r *http.Request) {
-	slog.Debug("validateAPIKey handler called")
-	var req models.APIKeyValidateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_json", "invalid request body")
-		return
-	}
-	if req.Key == "" {
-		slog.Debug("validateAPIKey missing key")
-		writeError(w, http.StatusBadRequest, "missing_key", "key is required")
-		return
-	}
-	hash := keys.Hash(req.Key)
-	key, err := s.db.GetAPIKeyByHash(r.Context(), hash)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			slog.Debug("validateAPIKey unknown key", "key_prefix", req.Key[:min(len(req.Key), 12)])
-			writeError(w, http.StatusUnauthorized, "invalid_api_key", "invalid or unknown api key")
-			return
-		}
-		slog.Error("get api key by hash failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to validate api key")
-		return
-	}
-	resp := models.APIKeyValidateResponse{
-		ID:   key.ID,
-		Name: key.Name,
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {

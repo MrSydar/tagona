@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        module: [api, storage, tagger]
+        module: [api, keystorage, storage, tagger]
     defaults:
       run:
         working-directory: ${{ matrix.module }}
@@ -76,7 +76,7 @@ jobs:
             exit 1
           fi
 
-  # Builds the three service images exactly as the release workflow does (but
+  # Builds the service images exactly as the release workflow does (but
   # for one platform and without pushing), so a broken Dockerfile fails the PR
   # instead of the release.
   docker-build:
@@ -84,7 +84,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [api, storage, tagger]
+        service: [api, keystorage, storage, tagger]
     steps:
       - uses: actions/checkout@v4
 

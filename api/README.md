@@ -2,22 +2,22 @@
 
 Go module: `mrsydar/tagona/api`
 
-The public API gateway for Tagona, listening on `:8080` inside the compose network. In Docker Compose it is published on the host at `:8080` (plain HTTP); put a TLS-terminating reverse proxy in front of it for anything beyond local use. A thin layer by design: it owns no business logic (no database, no object storage, no tagger access, no validation). It reverse-proxies every `/v1/*` request verbatim to the internal storage service and serves health/readiness/metrics locally.
+The public API gateway for Tagona, listening on `:8080` inside the compose network. In Docker Compose it is published on the host at `:8080` (plain HTTP); put a TLS-terminating reverse proxy in front of it for anything beyond local use. A thin layer by design: it owns no business logic (no database, no object storage, no tagger access, no validation). It reverse-proxies every `/v1/*` request verbatim to the internal storage service, forwards API key management to the internal [keystorage](../keystorage/README.md) service, and serves health/readiness/metrics locally.
 
-This is the future home for cross-cutting concerns such as RBAC. Authentication is implemented here: every `/v1/*` request requires a Bearer API key, and API key management requires admin HTTP Basic auth.
+This is the future home for cross-cutting concerns such as RBAC. Authentication is enforced here: every `/v1/*` request requires a Bearer API key, which is validated by the keystorage service. API key management requires admin HTTP Basic auth, which keystorage checks itself.
 
 ---
 
 ## How it works
 
 - `GET /healthz` — liveness (always `200` if the api service is up, unauthenticated)
-- `GET /readyz` — readiness: issues `GET {API_STORAGE_BASE_URL}/readyz` with a 2-second timeout; `200 ok` on success, `503` with a `not_ready` error otherwise (unauthenticated)
+- `GET /readyz` — readiness: issues `GET /readyz` to both the storage and the keystorage service with a 2-second timeout; `200 ok` when both answer `200`, `503` with a `not_ready` error otherwise (unauthenticated)
 - `GET /metrics` — Prometheus metrics (`api_requests_total`, `api_errors_total`, unauthenticated)
-- `/v1/collections...` — an explicit allowlist of the storage routes listed under [Public API](#public-api). Every request must carry `Authorization: Bearer <api key>`; the key is validated against the storage service before the request is reverse-proxied (path, query, headers, streaming body) with no client-side timeout, so long-running uploads and queries are not cut off. Routes added to storage stay private until they are added to `proxiedRoutes` in `cmd/api/gateway.go`
+- `/v1/collections...` — an explicit allowlist of the storage routes listed under [Public API](#public-api). Every request must carry `Authorization: Bearer <api key>`; the key is validated against the keystorage service before the request is reverse-proxied (path, query, headers, streaming body) with no client-side timeout, so long-running uploads and queries are not cut off. Routes added to storage stay private until they are added to `proxiedRoutes` in `cmd/api/gateway.go`
 - a short validation cache sits between auth and the proxy (see Configuration); the proxy, key client and readiness probe share one pooled HTTP transport
 - request hardening: paths with dot segments, empty segments, backslashes, NUL bytes or encoded slashes are rejected with `400 invalid_path`; bodies above `API_MAX_BODY_BYTES` get `413 payload_too_large`; the `Authorization` header and inbound `Forwarded`/`X-Forwarded-*` headers are not forwarded to storage
 - `GET /v1/docs` — interactive API documentation (Swagger UI), `GET /v1/openapi.json` / `GET /v1/openapi.yaml` — the OpenAPI 3 description of the `/v1` contract (all unauthenticated; see [API documentation](#api-documentation))
-- `/v1/admin/api-keys` — key management (create/list/delete) guarded by admin HTTP Basic auth, taking precedence over the `/v1/*` proxy
+- `/v1/admin/api-keys` — key management (create/list/delete), forwarded to the keystorage service through an explicit allowlist of exactly these three routes (`adminRoutes` in `cmd/api/gateway.go`). The `Authorization` header is forwarded and the admin credentials are checked by keystorage, not here; only `Authorization` and `Content-Type` are forwarded, the query string is dropped, bodies over 4 KiB get `413`, and a key id that is not a UUID gets `404`. Keystorage's key validation endpoint is never reachable through the gateway
 - any other path — `404` with the standard error shape `{"error":{"code":"not_found","message":"not found"}}`; a listed path with the wrong method — `405 method_not_allowed`
 
 ---
@@ -48,9 +48,9 @@ Authorization: Bearer <api key>
 
 - Missing or malformed header → `401` `{"error":{"code":"missing_api_key","message":"authorization header with bearer api key is required"}}`
 - Unknown key → `401` `{"error":{"code":"invalid_api_key","message":"invalid or unknown api key"}}`
-- Storage unreachable during validation → `503` `{"error":{"code":"not_ready","message":"storage service not available"}}`
+- Keystorage unreachable during validation → `503` `{"error":{"code":"not_ready","message":"key service not available"}}`
 
-There is no RBAC: every valid API key grants complete access to all `/v1/*` endpoints. Keys are minted via the admin endpoints below and stored (hashed) in the storage service's Postgres DB — the api service owns no database. The Bearer header is stripped before the request is forwarded to the internal storage service.
+There is no RBAC: every valid API key grants complete access to all `/v1/*` endpoints. Keys are minted via the admin endpoints below and stored (hashed) by the keystorage service in its own database schema — the api service owns no database. The Bearer header is stripped before the request is forwarded to the internal storage service.
 
 `/healthz`, `/readyz`, and `/metrics` remain unauthenticated so Docker healthchecks and Prometheus scraping work.
 
@@ -64,12 +64,12 @@ There is no RBAC: every valid API key grants complete access to all `/v1/*` endp
 | `GET` | `/v1/admin/api-keys` | List API keys |
 | `DELETE` | `/v1/admin/api-keys/{id}` | Delete an API key |
 
-These endpoints require admin HTTP Basic auth from `API_ADMIN_USERNAME`/`API_ADMIN_PASSWORD`:
+These endpoints require admin HTTP Basic auth, checked by the keystorage service against `KEYSTORAGE_ADMIN_USERNAME`/`KEYSTORAGE_ADMIN_PASSWORD` (the api has no admin settings of its own):
 
 - Valid credentials → request proceeds
 - Wrong or missing credentials → `401` `{"error":{"code":"invalid_admin_credentials","message":"admin authentication required"}}` with `WWW-Authenticate: Basic realm="tagona-admin"`
 - Presenting `Authorization: Bearer ...` (an API key) → `403` `{"error":{"code":"forbidden","message":"api keys cannot be used for key management"}}` — API keys are rejected here even when valid
-- Either env var unset → `403` `{"error":{"code":"admin_disabled","message":"admin credentials are not configured"}}`
+- Either keystorage admin variable unset → `403` `{"error":{"code":"admin_disabled","message":"admin credentials are not configured"}}`
 
 **Create an API key**
 
@@ -133,9 +133,8 @@ curl -s -X POST http://localhost:8080/v1/collections \
 |---------|----------|---------|-------------|
 | `API_HTTP_ADDR` | No | `:8080` | HTTP listen address |
 | `API_STORAGE_BASE_URL` | Yes | — | Base URL of the internal storage service (e.g. `http://storage:8082`) |
-| `API_ADMIN_USERNAME` | No | — | Admin username for key management (Basic auth); both admin vars must be set |
-| `API_ADMIN_PASSWORD` | No | — | Admin password for key management (Basic auth); both admin vars must be set |
-| `API_KEY_CACHE_TTL` | No | `30s` | How long key validation verdicts are cached (Go duration); `0` disables. Unknown keys are cached for at most 5s. Deleting a key through the gateway purges the cache; deletes made directly in storage take effect after the TTL |
+| `API_KEYSTORAGE_BASE_URL` | Yes | — | Base URL of the internal keystorage service (e.g. `http://keystorage:8083`) |
+| `API_KEY_CACHE_TTL` | No | `30s` | How long key validation verdicts are cached (Go duration); `0` disables. Unknown keys are cached for at most 5s. Deleting a key through the gateway purges the cache; deletes made directly in keystorage take effect after the TTL |
 | `API_MAX_BODY_BYTES` | No | `33554432` (32 MiB) | Maximum request body size; `0` disables. A backstop above storage's own per-object limit |
 
 ---
@@ -326,7 +325,7 @@ api/
 ├── openapi/            # v1.yaml, the OpenAPI description of the /v1 API (embedded and served)
 ├── internal/
 │   ├── metrics/        # Prometheus metrics (api_requests_total, api_errors_total)
-│   └── storageapi/     # HTTP client for the storage internal api-keys endpoints
+│   └── keystorageapi/  # HTTP client for keystorage's key validation endpoint
 └── Dockerfile
 ```
 
@@ -334,4 +333,4 @@ The reference CLI client for the Tagona API lives in the storage module (`storag
 
 ---
 
-> **Note:** the api service is a pure proxy (for the allowlisted routes) — data is always read from/written to the internal storage service on `:8082`. All state and business logic live in [`storage/`](../storage/). It enforces auth (API key enforcement + admin key management) but owns none of the data.
+> **Note:** the api service is a pure proxy (for the allowlisted routes) — data is always read from/written to the internal storage service on `:8082`. All state and business logic live in [`storage/`](../storage/). It enforces API key authentication but owns none of the data or the keys: keys live in [`keystorage/`](../keystorage/).

@@ -59,7 +59,7 @@ This is a **Go workspace monorepo** (`go.work` at the root).
    ```bash
    make all                 # ensure everything compiles
    gofmt -l .               # should print nothing
-   for m in api storage tagger; do (cd $m && go vet ./... && go test ./...); done
+   for m in api keystorage storage tagger; do (cd $m && go vet ./... && go test ./...); done
    # database tests (skipped without a DSN); needs `make docker-up` or any Postgres
    TAGONA_TEST_PG_DSN='postgres://tagona:tagona@localhost:5432/tagona?sslmode=disable' go test -race ./storage/internal/db
    make e2e                 # needs the stack up and /readyz on :8080 returning 200

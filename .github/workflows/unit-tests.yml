@@ -9,7 +9,7 @@ on:
 jobs:
   unit-test:
     runs-on: ubuntu-latest
-    # Postgres for the storage database tests (skipped when the DSN is unset).
+    # Postgres for the storage and keystorage database tests (skipped when the DSN is unset).
     services:
       postgres:
         image: postgres:15
@@ -28,7 +28,7 @@ jobs:
       TAGONA_TEST_PG_DSN: postgres://tagona:tagona@localhost:5432/tagona?sslmode=disable
     strategy:
       matrix:
-        module: [api, storage, tagger]
+        module: [api, keystorage, storage, tagger]
     defaults:
       run:
         working-directory: ${{ matrix.module }}

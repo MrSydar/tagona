@@ -1,11 +1,11 @@
 name: Release
 
-# Publishes the api, storage and tagger images to GHCR (ghcr.io/<owner>/tagona-<service>)
-# when a v* tag is pushed. All three services are released together under one version.
+# Publishes the api, keystorage, storage and tagger images to GHCR (ghcr.io/<owner>/tagona-<service>)
+# when a v* tag is pushed. All four services are released together under one version.
 # See RELEASING.md for the full flow, the one-time GitHub setup and how to cut a release.
 #
 #   verify  -> tag is on main, valid version, CHANGELOG has the section
-#   build   -> 3 images (amd64 + arm64) pushed as :sha-<commit>, with provenance and SBOM
+#   build   -> 4 images (amd64 + arm64) pushed as :sha-<commit>, with provenance and SBOM
 #   e2e     -> the compose stack runs those exact images and `make e2e` passes
 #   promote -> (approval) the tested image is re-tagged X.Y.Z / X.Y / X / latest and signed
 #   release -> GitHub Release with the changelog notes and the image digests
@@ -57,7 +57,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [api, storage, tagger]
+        service: [api, keystorage, storage, tagger]
     permissions:
       contents: read
       packages: write
@@ -128,7 +128,7 @@ jobs:
       - name: Start the stack from the pushed images (no local build)
         run: |
           cp tagger/.env.example .env
-          docker compose pull api storage tagger
+          docker compose pull api keystorage storage tagger
           # api depends on storage, which depends on the tagger, postgres and
           # garage; --wait blocks until all of them are healthy.
           docker compose up -d --no-build --wait --wait-timeout 240 api
@@ -159,7 +159,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [api, storage, tagger]
+        service: [api, keystorage, storage, tagger]
     permissions:
       contents: read
       packages: write
@@ -255,7 +255,7 @@ jobs:
             echo
             echo "| Service | Image | Digest |"
             echo "|---|---|---|"
-            for service in api storage tagger; do
+            for service in api keystorage storage tagger; do
               image="ghcr.io/${owner}/tagona-${service}"
               digest="$(docker buildx imagetools inspect "${image}:${VERSION}" --format '{{json .Manifest}}' | jq -r .digest)"
               echo "| ${service} | \`${image}:${VERSION}\` | \`${digest}\` |"
@@ -266,7 +266,7 @@ jobs:
             echo "## Run it"
             echo
             echo '```bash'
-            echo "TAGONA_VERSION=${VERSION} docker compose pull api storage tagger"
+            echo "TAGONA_VERSION=${VERSION} docker compose pull api keystorage storage tagger"
             echo "TAGONA_VERSION=${VERSION} docker compose up -d --no-build"
             echo '```'
             echo

@@ -1,11 +1,11 @@
 # AGENTS.md
 
-Tagona is a Go monorepo with three workspace modules. The key mental model: all modules exist, `tagger` imports `mrsydar/tagona/storage/pkg/client`, and `api` is a standalone thin gateway — all resolved by the workspace, not by `go.mod`.
+Tagona is a Go monorepo with four workspace modules. The key mental model: all modules exist, `tagger` imports `mrsydar/tagona/storage/pkg/client`, and `api` is a standalone thin gateway — all resolved by the workspace, not by `go.mod`.
 
 ## Monorepo layout
 
 - Root uses `go.work` with Go 1.26.4.
-- Modules: `api/` (`mrsydar/tagona/api`), `storage/` (`mrsydar/tagona/storage`) and `tagger/` (`mrsydar/tagona/tagger`).
+- Modules: `api/` (`mrsydar/tagona/api`), `keystorage/` (`mrsydar/tagona/keystorage`), `storage/` (`mrsydar/tagona/storage`) and `tagger/` (`mrsydar/tagona/tagger`).
 - Cross-module dependencies:
   - `tagger` imports `mrsydar/tagona/storage/pkg/client` — both the storage-API Go client it uses to fetch object metadata/data, and the `Tagger` interface it implements (the cross-module contract the storage service uses to call the tagger).
   - `api` has no cross-module imports; it is a standalone thin gateway. The reference CLI client lives in the storage module (`storage/cmd/client`).
@@ -20,11 +20,11 @@ make docker-up
 # or: docker compose up --build -d
 ```
 
-- Postgres (`:5432`), Garage (`:3900` S3 API, `:3903` admin API), tagger (`:8081`), storage (`:8082`, internal — not exposed on the host), and api (`:8080`, the public entrypoint) all come up.
+- Postgres (`:5432`), Garage (`:3900` S3 API, `:3903` admin API), tagger (`:8081`), storage (`:8082`, internal — not exposed on the host), keystorage (`:8083`, internal), and api (`:8080`, the public entrypoint) all come up. A one-shot `db-init` service runs first and creates the per-service database roles (`postgres/roles.sql`).
 - All services expose Prometheus metrics at `GET /metrics`.
 - `compose.yaml` reads an **optional** `.env` for the tagger service (`required: false`; the stack starts without it and the tagger defaults to `grep`). Set `TAGGER_EVALUATOR_IMPL` there (`grep` works offline; `openai`/`systemone` need a valid API key — current local keys are expired, so use `grep`). `systemone` (backend `vercel`) additionally uses `TAGGER_VERCEL_API_KEY`, `TAGGER_VERCEL_MODEL`, `TAGGER_VERCEL_THRESHOLD`. Running tagger standalone without `.env` defaults to `grep`.
 - The public entrypoint is the **api** service on `:8080` (plain HTTP; `/v1/*` including the docs, `/healthz`, `/readyz`, `/metrics`). TLS, edge rate limiting and similar concerns are left to whatever you put in front of it.
-- Startup ordering: postgres/garage → tagger → storage → api. Storage waits for tagger to be healthy and api waits for storage (`depends_on` with `condition: service_healthy`).
+- Startup ordering: postgres → db-init (completes) → keystorage / storage; garage → tagger → storage; api waits for storage and keystorage (`depends_on` with `condition: service_healthy`, or `service_completed_successfully` for db-init).
 - Storage fails fast on startup if it cannot fetch supported types from tagger.
 - Wait for healthy; then test via `README.md` Quick Start curl commands (public API on `:8080`).
 
@@ -48,6 +48,13 @@ go mod download
 go run ./cmd/storage
 ```
 
+**Keystorage service** (needs Postgres with the keys schema and role; see `keystorage/README.md`):
+
+```bash
+cd keystorage
+go run ./cmd/keystorage
+```
+
 **Tagger service:**
 
 ```bash
@@ -59,7 +66,7 @@ go run ./cmd/tagger
 **Build binaries:**
 
 ```bash
-make all              # builds bin/api, bin/storage, bin/tagger, bin/tagona
+make all              # builds bin/api, bin/keystorage, bin/storage, bin/tagger, bin/tagona
 cd api && go build -o /tmp/api ./cmd/api
 cd storage && go build -o /tmp/storage ./cmd/storage
 cd tagger && go build -o /tmp/tagger ./cmd/tagger
@@ -79,7 +86,7 @@ See `storage/cmd/client/main.go` for available commands.
 
 ## Testing
 
-**Unit tests:** standard Go `*_test.go` files in each module (`go test ./...`). The database tests in `storage/internal/db` need Postgres and are skipped unless `TAGONA_TEST_PG_DSN` is set (they run the real migrations in a throwaway schema; CI provides a Postgres service).
+**Unit tests:** standard Go `*_test.go` files in each module (`go test ./...`). The database tests in `storage/internal/db` and `keystorage/internal/db` need Postgres and are skipped unless `TAGONA_TEST_PG_DSN` is set (they run the real migrations in a throwaway schema; CI provides a Postgres service).
 
 **Release script tests:** `.github/scripts/test-release-scripts.sh` tests the version, tag and changelog logic of the release workflow (CI job `release-scripts`). Change `release-meta.sh` / `release-notes.sh` and their tests together.
 
@@ -92,26 +99,29 @@ make e2e
 
 - `GOWORK=off` is required because the root `go.work` file would otherwise be picked up from the parent directory, interfering with the e2e module.
 - Requires the Docker Compose stack running and `http://localhost:8080/readyz` returning `200`.
+- `TAGONA_URL` points the tests at another api (default `http://localhost:8080`) and `TAGONA_E2E_PG_ADDR` at the stack's Postgres (default `localhost:5432`, used by the database-role isolation test).
 - Tests authenticate with admin HTTP Basic auth (`API_ADMIN_USERNAME`/`API_ADMIN_PASSWORD`, defaults `admin`/`tagona` matching compose) to mint an API key via `POST /v1/admin/api-keys`, then send `Authorization: Bearer <key>` on every `/v1/*` request.
 
 ## Important quirks
 
-- **Auth:** the api service requires `Authorization: Bearer <api key>` on every `/v1/*` request (401 `missing_api_key` when missing/malformed, 401 `invalid_api_key` when unknown, 503 `not_ready` if storage is unreachable during validation). Key management lives under `/v1/admin/api-keys` (create/list/delete) and uses admin HTTP Basic auth from `API_ADMIN_USERNAME`/`API_ADMIN_PASSWORD` (403 `admin_disabled` when unset); presenting an API key there returns 403 `forbidden`. Keys are stored in the storage DB (`api_keys` table, migration `000002`) and exposed via storage's unauthenticated INTERNAL endpoints (`/internal/v1/api-keys*`) — storage and tagger remain auth-free because they are internal-only. `/healthz`, `/readyz`, `/metrics` stay unauthenticated on the api service for Docker healthchecks and Prometheus scraping.
-- **Custom migrations runner:** Storage applies migrations on startup by executing all `*.up.sql` files in `storage/migrations/` in lexicographic order, **on every startup**, each file as one transaction. It is not using `golang-migrate`, so migrations must be idempotent (`IF NOT EXISTS`, `CREATE OR REPLACE`, guarded one-off backfills like `000003`).
+- **Auth:** the api service requires `Authorization: Bearer <api key>` on every `/v1/*` request (401 `missing_api_key` when missing/malformed, 401 `invalid_api_key` when unknown, 503 `not_ready` if keystorage is unreachable during validation). **API keys belong to the `keystorage` service**, the only one whose database role (`tagona_keys`) can open the `keys` schema where the `api_keys` table lives; storage's role (`tagona_storage`) has no access to it, and keystorage cannot read the data tables. Keystorage serves `POST /internal/v1/api-keys/validate` (open to anything on the compose network: the api, and in Tagona Plus the translator) and key management at `/v1/admin/api-keys` (create/list/delete), which **authenticates the admin HTTP Basic credentials itself** (`KEYSTORAGE_ADMIN_USERNAME`/`KEYSTORAGE_ADMIN_PASSWORD`; 403 `admin_disabled` when unset, 403 `forbidden` for an API key). The public api exposes `/v1/admin/api-keys` only as an allowlisting **proxy** to keystorage (`adminRoutes` in `api/cmd/api/gateway.go`, three routes, the `Authorization` header forwarded untouched, ids must be UUIDs); keystorage's validation endpoint is never reachable through it, and `TestAdminSurfaceIsStrictlyAllowlisted` plus the e2e `TestKeyValidationAndOtherRoutesAreNotExposed` guard that. Storage and tagger remain auth-free because they are internal-only. `/healthz`, `/readyz`, `/metrics` stay unauthenticated on the api service for Docker healthchecks and Prometheus scraping.
+- **Custom migrations runner:** Storage applies migrations on startup by executing all `*.up.sql` files in `storage/migrations/` in lexicographic order, **on every startup**, each file as one transaction. It is not using `golang-migrate`, so migrations must be idempotent (`IF NOT EXISTS`, `CREATE OR REPLACE`, guarded one-off backfills like `000003`). There is no `000002`: it created `api_keys`, which moved to keystorage. Keystorage does the same with its embedded `keystorage/migrations/` in the `keys` schema (its connection's `search_path` is that schema only, so names are unqualified).
+- **Database roles:** each service connects with its own Postgres role, created by `postgres/roles.sql`, which the one-shot `db-init` compose service runs as the bootstrap superuser before the services start and on every `up` (idempotent). `tagona_storage` owns the `public` schema's objects (storage migrates its own tables, so it must own them); `tagona_keys` owns the `keys` schema and nothing else. The script also upgrades a database created earlier: it moves `public.api_keys` to `keys` and re-owns the storage tables, so existing keys keep working. New objects storage creates need no changes here, but a new service touching the database needs its own role in that file. The compose passwords are demo defaults (`TAGONA_STORAGE_DB_PASSWORD`, `TAGONA_KEYS_DB_PASSWORD`). The e2e `TestDatabaseRolesAreIsolated` asserts the boundary.
 - **Collection tag statistics:** `collections.object_count` and `collection_tags` (per-tag true/false counters, exposed at `GET /v1/collections/{collection}/tags`) are maintained by database triggers, not application code — do not update them from Go. Any code path that writes `object_tags` must go through `UpsertTags` (it keeps the lock order that prevents deadlocks; see `storage/README.md`).
 - **Tagger talks to storage directly:** The tagger fetches object metadata and payloads from the internal storage service (`:8082`) via the `storage/pkg/client` HTTP client (no DB access). Storage's `readyz` checks DB + S3; api's `readyz` checks storage readiness; tagger's `readyz` always returns 200.
-- **Startup ordering matters:** Storage must reach tagger on startup to fetch supported types; api must reach storage (its `readyz` reports storage availability). In Docker Compose this is enforced by `depends_on` + healthchecks: tagger → storage → api. Running storage standalone without tagger causes a fatal error.
-- **api is a thin reverse proxy:** It owns no DB, no S3, no validation, no tagger access. It proxies an explicit **allowlist** of storage routes (`proxiedRoutes` in `api/cmd/api/gateway.go`) to storage on `:8082` without path rewriting, and serves `/healthz`, `/readyz`, `/metrics` locally. A new storage route stays private until it is added to that list. Unsafe paths (`..`, `//`, encoded slashes) get 400, bodies over `API_MAX_BODY_BYTES` get 413, the `Authorization` and `X-Forwarded-*` headers are not forwarded and key validation is cached (`API_KEY_CACHE_TTL`).
+- **Startup ordering matters:** Storage must reach tagger on startup to fetch supported types; api must reach storage and keystorage (its `readyz` reports both). In Docker Compose this is enforced by `depends_on` + healthchecks: db-init → keystorage and storage; tagger → storage; storage + keystorage → api. Running storage standalone without tagger causes a fatal error.
+- **api is a thin reverse proxy:** It owns no DB, no S3, no validation, no tagger access. It proxies an explicit **allowlist** of storage routes (`proxiedRoutes` in `api/cmd/api/gateway.go`) to storage on `:8082` without path rewriting, an explicit allowlist of three key-management routes to keystorage on `:8083`, and serves `/healthz`, `/readyz`, `/metrics` locally. A new storage or keystorage route stays private until it is added to the matching list. Unsafe paths (`..`, `//`, encoded slashes) get 400, bodies over `API_MAX_BODY_BYTES` get 413 (4 KiB on key management), the `Authorization` and `X-Forwarded-*` headers are not forwarded to storage (the admin proxy forwards only `Authorization` and `Content-Type` to keystorage, and no query string), and key validation is cached (`API_KEY_CACHE_TTL`; a successful delete through the proxy purges it).
 - **API docs / OpenAPI:** `api/openapi/v1.yaml` is the hand-written contract of the `/v1` API, embedded in the api binary and served publicly (no key needed) at `GET /v1/openapi.json`, `/v1/openapi.yaml` and `/v1/docs` (Swagger UI from a pinned, SRI-protected CDN URL). Any route you add to `proxiedRoutes` or the admin routes must also be added to the spec — `TestOpenAPIMatchesRoutes` fails otherwise — and `info.version` should be bumped for contract changes. The spec is YAML, so quote descriptions that contain `: `. Lint with `npx @redocly/cli lint api/openapi/v1.yaml` (CI does this).
-- **Docker images:** `api`, `storage` and `tagger` each have a `Dockerfile` that builds from the **repo root** (they need `go.work` and every module). The Go build stage runs on `$BUILDPLATFORM` and cross-compiles (`GOOS/GOARCH=$TARGETOS/$TARGETARCH`), and the runtime stage is `debian:12-slim` plus `curl` (used by the compose healthchecks) running as **uid 10001**, not root. Keep the `org.opencontainers.image.source` label: it links the GHCR package to this repo. The `docker-build` CI job builds all three and fails if an image runs as root or lacks the label.
+- **Docker images:** `api`, `keystorage`, `storage` and `tagger` each have a `Dockerfile` that builds from the **repo root** (they need `go.work` and every module, so each Dockerfile copies every module's `go.mod`; add a new module to all of them). The Go build stage runs on `$BUILDPLATFORM` and cross-compiles (`GOOS/GOARCH=$TARGETOS/$TARGETARCH`), and the runtime stage is `debian:12-slim` plus `curl` (used by the compose healthchecks) running as **uid 10001**, not root. Keep the `org.opencontainers.image.source` label: it links the GHCR package to this repo. The `docker-build` CI job builds all four and fails if an image runs as root or lacks the label.
 - **Compose image names:** the compose services have `image: ghcr.io/mrsydar/tagona-<service>:${TAGONA_VERSION:-dev}` **and** `build:`. `docker compose up --build` builds from source and tags `:dev`; to run a published version use `TAGONA_VERSION=<version> docker compose pull ... && docker compose up -d --no-build`.
-- **Releases:** pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml` (verify → build ×3 for amd64+arm64 as `:sha-<commit>` → e2e against those pushed images → approval on the `release` environment → retag `X.Y.Z`/`X.Y`/`X`/`latest` without rebuilding + cosign signature → GitHub Release). All three services share one version. **Never push a release tag unless the user asks for a release.** Full flow, one-time setup and rollback notes are in `RELEASING.md`; a manual run of the workflow is a dry run that never pushes.
+- **Releases:** pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml` (verify → build ×4 for amd64+arm64 as `:sha-<commit>` → e2e against those pushed images → approval on the `release` environment → retag `X.Y.Z`/`X.Y`/`X`/`latest` without rebuilding + cosign signature → GitHub Release). All four services share one version. **Never push a release tag unless the user asks for a release.** Full flow, one-time setup and rollback notes are in `RELEASING.md`; a manual run of the workflow is a dry run that never pushes.
   - Third-party actions in `release.yml` are pinned to commit SHAs (version in a comment); bump them deliberately and run `actionlint`.
   - To read an image digest use `docker buildx imagetools inspect <ref> --format '{{json .Manifest}}' | jq -r .digest`; `{{.Manifest.Digest}}` prints the whole descriptor block.
   - The registry, signing and GitHub Release steps only run on GitHub, so they are first exercised by a release candidate (`v0.1.0-rc.1`).
 - **Hash-based idempotency:** Object upload computes SHA-256 over raw bytes. Duplicate uploads in the same collection return the existing object; the newly uploaded S3 object is not retained.
 - **Prometheus metrics:** All services expose metrics at `GET /metrics` via `github.com/prometheus/client_golang`.
   - Storage metrics: `storage_requests_total`, `storage_errors_total`, `storage_tagger_latency_seconds`.
+  - Keystorage metrics: `keystorage_requests_total`, `keystorage_errors_total`.
   - API metrics: `api_requests_total`, `api_errors_total`.
   - Tagger metrics: `tagger_requests_total`, `tagger_errors_total`, `tagger_evaluator_latency_seconds`.
 
@@ -125,5 +135,6 @@ make e2e
 - `README.md` — architecture, API shapes, quick start curls
 - `api/README.md` — public API docs, env vars
 - `storage/README.md` — internal data service env vars, CLI client usage, migrations, design decisions
+- `keystorage/README.md` — API key service: endpoints, database role and schema, env vars
 - `tagger/README.md` — tag evaluation logic, env vars
 - `RELEASING.md` — how the Docker images are released: flow, one-time GitHub setup, verification, rollback

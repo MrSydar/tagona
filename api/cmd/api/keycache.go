@@ -16,7 +16,7 @@ const (
 	negativeKeyTTL = 5 * time.Second
 )
 
-// keyValidator reports whether a raw API key is valid. *storageapi.Client
+// keyValidator reports whether a raw API key is valid. *keystorageapi.Client
 // implements it.
 type keyValidator interface {
 	ValidateKey(ctx context.Context, rawKey string) (bool, error)

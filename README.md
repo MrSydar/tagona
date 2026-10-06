@@ -154,15 +154,15 @@ curl -s -H "$AUTH" "$API/v1/collections/jobs/tags"                              
 | Service | Address | Notes |
 |---------|---------|-------|
 | API | `http://localhost:8080` | The public entrypoint (plain HTTP), with docs at `/v1/docs`. |
-| Prometheus | `http://localhost:9090` | Scrapes `api`, `storage` and `tagger`. |
+| Prometheus | `http://localhost:9090` | Scrapes `api`, `keystorage`, `storage` and `tagger`. |
 | Grafana | `http://localhost:3000` | `admin` / `admin`, with the provisioned **Tagona** dashboard. |
 | Postgres, Garage (S3), tagger | `:5432`, `:3900` / `:3903`, `:8081` | Published for development only. See [Security](#security). |
 
-**Run a released version.** The `api`, `storage` and `tagger` images are published to GHCR (`ghcr.io/mrsydar/tagona-api`, `-storage`, `-tagger`) for `linux/amd64` and `linux/arm64`. Instead of building from source, pull a version and start it without building:
+**Run a released version.** The `api`, `keystorage`, `storage` and `tagger` images are published to GHCR (`ghcr.io/mrsydar/tagona-api`, `-keystorage`, `-storage`, `-tagger`) for `linux/amd64` and `linux/arm64`. Instead of building from source, pull a version and start it without building:
 
 ```bash
 export TAGONA_VERSION=<version>     # for example 1.2.3; see the Releases page. Or put it in .env
-docker compose pull api storage tagger
+docker compose pull api keystorage storage tagger
 docker compose up -d --no-build
 ```
 
@@ -177,7 +177,7 @@ bin/tagona --url $API --token "$KEY" query --collection jobs --tag golang --eval
 
 make e2e                                            # end-to-end tests against the running stack
 make all                                            # build every binary into bin/
-for m in api storage tagger; do (cd $m && go test ./...); done   # unit tests (see CONTRIBUTING.md for the full checks)
+for m in api keystorage storage tagger; do (cd $m && go test ./...); done   # unit tests (see CONTRIBUTING.md for the full checks)
 ```
 
 ## Configuration
@@ -249,9 +249,9 @@ Evaluators: `grep` is a case-sensitive substring match on text and needs no netw
 Tagona is meant to run behind your own edge proxy, with the internal services kept off the network. Before you expose it:
 
 - **Change every development default.** `compose.yaml` ships credentials that are public in this repository: admin `admin` / `tagona`, Postgres `tagona` / `tagona`, Garage `tagonadev` / `tagona-dev-secret`, Grafana `admin` / `admin`. Set your own.
-- **Only the API entrypoint is meant to be reachable.** `storage` and `tagger` have **no authentication**, because they are internal by design. Compose publishes Postgres, Garage, the tagger, Prometheus and Grafana on the host for convenience; remove those `ports:` entries (or firewall them) outside local development.
+- **Only the API entrypoint is meant to be reachable.** `storage` and `tagger` have **no authentication**, because they are internal by design; `keystorage` has none on key validation (its callers hold the key they check) but checks the admin credentials itself on key management. Compose publishes Postgres, Garage, the tagger, Prometheus and Grafana on the host for convenience; remove those `ports:` entries (or firewall them) outside local development.
 - **Use TLS.** The API listens on plain HTTP and sends API keys in cleartext, so terminate TLS in a reverse proxy or load balancer in front of it, and keep `:8080` on loopback or an internal network.
-- **API keys and roles.** `/v1` requires a Bearer API key. Keys are stored hashed, shown once at creation, and can be revoked. Key management requires the admin Basic credentials, and an API key is rejected there. There is no RBAC yet: every key can access every collection.
+- **API keys and roles.** `/v1` requires a Bearer API key. Keys are stored hashed, shown once at creation, and can be revoked. Key management requires the admin Basic credentials, and an API key is rejected there. Keys live in their own database schema, reachable only by the `keystorage` service under its own Postgres role; the `storage` role cannot read them, and `keystorage` cannot read your data. The API proxies key management to `keystorage` through an allowlist of three routes, and key validation is never exposed. There is no RBAC yet: every key can access every collection.
 - **The API docs are public by design.** `/v1/docs`, `/v1/openapi.json` and `/v1/openapi.yaml` need no key: they describe the API and contain no data.
 - **Released images** run as an unprivileged user (uid 10001), are built for amd64 and arm64, and are signed with cosign (keyless) and published with provenance and an SBOM. See [RELEASING.md](RELEASING.md) to verify one.
 - **Built-in protections.** The gateway forwards an explicit allowlist of routes only, rejects path-traversal tricks, caps request bodies, and strips the `Authorization` header before a request reaches storage.
@@ -266,7 +266,12 @@ tagona/
 ├── api/                  Public API gateway: API-key auth, route allowlist, reverse proxy
 │   ├── cmd/api/            entry point, router, auth, proxy, docs endpoints
 │   ├── openapi/            v1.yaml, the OpenAPI 3 contract of /v1 (embedded, served at /v1/docs)
-│   └── internal/           metrics, storage key client
+│   └── internal/           metrics, keystorage client (key validation)
+├── keystorage/           API key service: stores keys (hashed) and validates them, under its own database role
+│   ├── cmd/keystorage/     service entry point
+│   ├── internal/           db, http server, config, key generation
+│   └── migrations/         api_keys table (embedded; applied on startup)
+├── postgres/             roles.sql: the per-service database roles (run by the db-init compose service)
 ├── storage/              Data service: collections, objects, tags, queries, retention
 │   ├── cmd/storage/        service entry point
 │   ├── cmd/client/         reference CLI (builds to bin/tagona)
@@ -285,10 +290,10 @@ tagona/
 ├── compose.yaml          Full local stack
 ├── Makefile              build, e2e, docker shortcuts
 ├── RELEASING.md          how the Docker images are released (flow, setup, verify, rollback)
-└── go.work               Go workspace tying the three service modules together
+└── go.work               Go workspace tying the four service modules together
 ```
 
-`api`, `storage` and `tagger` are separate Go modules in one workspace; `tagger` imports `storage/pkg/client`, and the workspace (not `go.mod`) resolves it. `AGENTS.md` and `CONTRIBUTING.md` have the details.
+`api`, `keystorage`, `storage` and `tagger` are separate Go modules in one workspace; `tagger` imports `storage/pkg/client`, and the workspace (not `go.mod`) resolves it. `AGENTS.md` and `CONTRIBUTING.md` have the details.
 
 ## Architecture
 

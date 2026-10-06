@@ -63,22 +63,6 @@ func ValidateTags(tags map[string]bool, maxCount int) error {
 	return nil
 }
 
-// ValidateAPIKeyName checks if an API key name is valid.
-func ValidateAPIKeyName(name string) error {
-	slog.Debug("ValidateAPIKeyName", "name", name)
-	if len(name) == 0 {
-		return fmt.Errorf("api key name cannot be empty")
-	}
-	if !utf8.ValidString(name) {
-		return fmt.Errorf("api key name must be valid UTF-8")
-	}
-	if len(name) > 128 {
-		// byte length check
-		return fmt.Errorf("api key name exceeds 128 bytes")
-	}
-	return nil
-}
-
 // ValidateDateFilter checks the date filter shape.
 func ValidateDateFilter(df *models.DateFilter) error {
 	slog.Debug("ValidateDateFilter: called")

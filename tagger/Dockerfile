@@ -8,12 +8,14 @@ ARG TARGETARCH
 WORKDIR /app
 COPY go.work ./
 COPY api/go.mod api/go.sum api/
+COPY keystorage/go.mod keystorage/go.sum keystorage/
 COPY tagger/go.mod tagger/go.sum tagger/
 COPY storage/go.mod storage/go.sum storage/
 WORKDIR /app/tagger
 RUN go mod download
 WORKDIR /app
 COPY api ./api
+COPY keystorage ./keystorage
 COPY tagger ./tagger
 COPY storage ./storage
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /bin/tagger ./tagger/cmd/tagger

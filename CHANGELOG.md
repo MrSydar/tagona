@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `keystorage` service: stores and validates API keys, with its own Postgres role that can open only the `keys` schema. `POST /internal/v1/api-keys/validate` is open to the compose network (the api, and Tagona Plus's translator); key management at `/v1/admin/api-keys` checks the admin Basic credentials itself (`KEYSTORAGE_ADMIN_USERNAME`/`KEYSTORAGE_ADMIN_PASSWORD`). Published as `ghcr.io/mrsydar/tagona-keystorage`.
+- Database roles per service (`postgres/roles.sql`, run by the one-shot `db-init` compose service): `tagona_storage` for the data tables and `tagona_keys` for the keys schema, neither able to read the other's. It upgrades an existing database in place: `api_keys` moves to the `keys` schema and existing keys keep working.
+- e2e tests for the key lifecycle through the admin proxy, for the closed validation endpoint, and for the database role isolation (`TAGONA_URL`, `TAGONA_E2E_PG_ADDR`).
+
+### Changed
+
+- **Breaking, internal:** the storage service no longer stores, validates or manages API keys (its `/internal/v1/api-keys*` endpoints and migration `000002` are gone). The api validates keys against keystorage (`API_KEYSTORAGE_BASE_URL`, required) and no longer has `API_ADMIN_USERNAME`/`API_ADMIN_PASSWORD`: `/v1/admin/api-keys` is now an allowlisting proxy to keystorage that forwards the caller's credentials. The public API contract is unchanged. The api's `/readyz` also requires keystorage.
+- The storage service connects as `tagona_storage` instead of the Postgres superuser (`TAGONA_PG_DSN` in `compose.yaml`).
+- Storage no longer logs its database DSN, which carries the password.
+
+### Added
+
 - Initial open-source release preparation (LICENSE, CONTRIBUTING.md, CI, issue templates).
 - API gateway hardening: cached key validation, request body limit (`API_MAX_BODY_BYTES`).
 - `GET /v1/collections/{collection}/tags`: object count of a collection plus every registered tag with true/false/unknown object counts (prefix filter, keyset pagination). Backed by trigger-maintained counters (migration `000003`) and available in the Go client and CLI (`collection-tags`).
