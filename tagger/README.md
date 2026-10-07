@@ -72,21 +72,56 @@ The evaluator is selected via `TAGGER_EVALUATOR_IMPL`:
 |-----------|----------------------|-------|
 | `grep`    | `txt`                | Tag is `true` if the payload (UTF-8 text) contains the tag string as a substring. Case-sensitive. |
 | `false`   | `txt`, `png`         | All tags evaluate to `false`. |
-| `openai`  | `txt`                | An LLM classifies the payload against the requested tags via an OpenAI-compatible chat completions API; missing tags default to `false`. |
-| `systemone` | `txt`              | Pluggable-backend evaluator, selected via `TAGGER_SYSTEMONE_BACKEND` (default `vercel`). See [Systemone](#systemone) below. |
+| `completions/openai` | `txt` | An LLM classifies the payload against the requested tags through a chat completions API in the OpenAI dialect; missing tags default to `false`. |
+| `decisions/openai` | `txt` | One yes/no question per tag through OpenAI's [Decisions API](https://developers.openai.com/api/docs/guides/decisions) (`POST /decisions`). A tag is `true` when the returned probability is at least the threshold. |
+| `decisions/vercel` | `txt` | The same idea through the Vercel AI Gateway's evaluate endpoint (`POST /evaluate`), which has a different wire format. |
+
+The part after the slash names the **API dialect**, not the vendor: any vendor that speaks it is used with its own base URL (and path, key header and extra parameters, below). The `completions/openai` evaluator replaces the former `openai`, and `decisions/vercel` the former `systemone` with its `vercel` backend.
 
 The storage service validates that `data_type` is in the supported-types set (reported by the evaluator) before creating a collection.
 
 ---
 
-## Systemone
+## LLM-backed evaluators
 
-`TAGGER_EVALUATOR_IMPL=systemone` selects a pluggable-backend evaluator. The backend is chosen via `TAGGER_SYSTEMONE_BACKEND`:
+`completions/openai`, `decisions/openai` and `decisions/vercel` share one configuration scheme. Each reads the settings named after it: the prefix is `TAGGER_<KIND>_<DIALECT>_`, for example `TAGGER_DECISIONS_OPENAI_`. Bad values stop the tagger at startup with a message that names the setting.
 
-- Default: `vercel` (currently the only backend; more LLM gateway backends will be added later).
-- The `vercel` backend sends one boolean question per tag to the Vercel AI Gateway `evaluate` endpoint and marks a tag `true` when the returned probability meets `TAGGER_VERCEL_THRESHOLD`.
+| Setting (after the prefix) | Default | Description |
+|----------------------------|---------|-------------|
+| `API_KEY` | — | Key sent to the vendor. Empty sends no credentials (local servers) |
+| `BASE_URL` | per dialect | Scheme, host and any path prefix: `https://api.openai.com/v1`, `https://ai-gateway.vercel.sh/v1` |
+| `PATH` | per dialect | The endpoint below the base URL: `/chat/completions`, `/decisions`, `/evaluate` |
+| `MODEL` | per dialect | `gpt-4o-mini`, `gpt-6-luna` (the only model the Decisions API accepts today), `typesafe-ai/jev` |
+| `TIMEOUT` | `60s` | Per-request timeout |
+| `AUTH_HEADER` | `Authorization` | Header that carries the key; vendors with e.g. an `api-key` header set it here |
+| `AUTH_SCHEME` | `Bearer` | Prefix of the header value. **Set it empty to send the bare key** |
+| `HEADERS` | — | Extra request headers, a JSON object: `{"OpenAI-Organization":"org-1"}` |
+| `QUERY` | — | Extra query parameters, as a query string: `api-version=2024-10-21` |
+| `PARAMS` | — | Extra top-level fields of the request body, a JSON object. They override the evaluator's own fields of the same name, and `null` removes one: `{"max_completion_tokens":50,"temperature":null}` (the second drops the `temperature` that `completions/openai` sends, for models that reject it) |
 
-The `vercel` backend keeps using the same env vars with unchanged behavior and threshold semantics: `TAGGER_VERCEL_API_KEY`, `TAGGER_VERCEL_BASE_URL`, `TAGGER_VERCEL_MODEL`, `TAGGER_VERCEL_THRESHOLD`, `TAGGER_VERCEL_TIMEOUT`.
+Specific to `completions/openai`: `SYSTEM_PROMPT` (default: "You are a tag evaluation engine that responds only with JSON.").
+
+Specific to the decisions evaluators:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `THRESHOLD` | `0.5` | A tag is `true` when the probability is at least this value (0 to 1). A tag the vendor does not answer, or refuses, is `false` |
+| `BATCH_SIZE` | `50` | Questions per request; more tags are sent in several requests, and one failing request fails the evaluation. `0` sends everything at once |
+| `INSTRUCTIONS` | *Analyze the text and determine whether the tag "{tag}" applies...* | The question put for each tag; `{tag}` is replaced by the tag |
+
+**How the dialects differ.** `decisions/openai` sends `{"model","input","questions":[{"type":"predicate","name":"q0","instructions":"..."}]}` and reads `answers[]` (`predicate` answers carry `probability`; `refusal` answers count as false). Question names are positional (`q0`, `q1`, ...) so any tag text is safe. `decisions/vercel` sends `{"model","state","questions":{"<tag>":{"type":"boolean","instructions":"..."}}}` and reads `answers.<tag>.probability`. `completions/openai` reads the JSON object the model writes in `choices[0].message.content` and tolerates code fences and reasoning preambles.
+
+**A compatible vendor under another URL.** Point the evaluator at it and adjust only what differs:
+
+```bash
+TAGGER_EVALUATOR_IMPL=completions/openai
+TAGGER_COMPLETIONS_OPENAI_BASE_URL=https://llm.internal.example/openai/deployments/d1
+TAGGER_COMPLETIONS_OPENAI_MODEL=d1
+TAGGER_COMPLETIONS_OPENAI_AUTH_HEADER=api-key
+TAGGER_COMPLETIONS_OPENAI_AUTH_SCHEME=
+TAGGER_COMPLETIONS_OPENAI_QUERY=api-version=2024-10-21
+TAGGER_COMPLETIONS_OPENAI_PARAMS='{"temperature":null,"max_completion_tokens":64}'
+```
 
 ---
 
@@ -96,17 +131,8 @@ The `vercel` backend keeps using the same env vars with unchanged behavior and t
 |---------|----------|---------|-------------|
 | `TAGGER_HTTP_ADDR` | No | `:8081` | HTTP listen address |
 | `TAGGER_STORAGE_BASE_URL` | Yes | `http://localhost:8082` | Base URL of the storage service to fetch objects from |
-| `TAGGER_EVALUATOR_IMPL` | No | `grep` | Evaluator to use: `grep`, `false`, `openai`, or `systemone` |
-| `TAGGER_SYSTEMONE_BACKEND` | No | `vercel` | Systemone backend to use (only `vercel` for now) |
-| `TAGGER_OPENAI_API_KEY` | No | — | OpenAI API key (required when `TAGGER_EVALUATOR_IMPL=openai`) |
-| `TAGGER_OPENAI_BASE_URL` | No | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
-| `TAGGER_OPENAI_MODEL` | No | `gpt-4o-mini` | Model name for chat completions |
-| `TAGGER_OPENAI_TIMEOUT` | No | `60s` | HTTP timeout for OpenAI API requests |
-| `TAGGER_VERCEL_API_KEY` | No | — | Vercel AI Gateway token (required for the systemone `vercel` backend) |
-| `TAGGER_VERCEL_BASE_URL` | No | `https://ai-gateway.vercel.sh/v1` | Vercel AI Gateway base URL |
-| `TAGGER_VERCEL_MODEL` | No | `typesafe-ai/jev` | Model name sent to the evaluate endpoint |
-| `TAGGER_VERCEL_THRESHOLD` | No | `0.5` | Probability threshold: tag is `true` when probability ≥ threshold |
-| `TAGGER_VERCEL_TIMEOUT` | No | `60s` | HTTP timeout for Vercel AI Gateway requests |
+| `TAGGER_EVALUATOR_IMPL` | No | `grep` | Evaluator to use: `grep`, `false`, `completions/openai`, `decisions/openai` or `decisions/vercel` |
+| `TAGGER_<KIND>_<DIALECT>_*` | No | per evaluator | Settings of the LLM-backed evaluators, listed under [LLM-backed evaluators](#llm-backed-evaluators); `tagger/.env.example` lists them all |
 
 ---
 

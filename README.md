@@ -37,7 +37,7 @@ Tagona stores collections of objects and lets you query them by **yes/no tags yo
 
 - **Ask for any tag, any time.** Tags are not declared up front; a query is the only thing that creates them. Your query can contain existing tags already queried in the past, completely new ones never seen before and yet to be evaluated once the query is running, or a mix of both.
 - **Labeled on demand, remembered for next time.** Each tag is evaluated for an object only when a query needs it, and the answer is stored for future use.
-- **Pluggable evaluators.** Ships with System One (`systemone`, through the Vercel AI Gateway today, with Jev, OpenAI's Decision API and more to be added), any OpenAI-compatible LLM (`openai`), and an offline substring matcher (`grep`). Add your own by implementing one Go interface.
+- **Pluggable evaluators.** Ships with yes/no *decisions* evaluators (`decisions/openai` for OpenAI's Decisions API, `decisions/vercel` for the Vercel AI Gateway), any OpenAI-compatible chat LLM (`completions/openai`), and an offline substring matcher (`grep`). The part after the slash is the API dialect, so any compatible vendor works with its own base URL, endpoint path, key header and extra parameters. Add your own by implementing one Go interface.
 - **Know what you have.** Per-collection object counts and per-tag true / false / unknown counts, maintained transactionally by Postgres.
 - **Documented API.** The gateway serves interactive docs (Swagger UI) and an OpenAPI 3 contract, so you can try every endpoint and generate clients without reading source.
 - **Operable by default.** API keys, TTL retention, content-hash de-duplication, Prometheus metrics and a Grafana dashboard.
@@ -234,13 +234,10 @@ Every service is configured with environment variables. In Docker Compose they a
 |----------|---------|-------------|
 | `TAGGER_HTTP_ADDR` | `:8081` | Listen address. |
 | `TAGGER_STORAGE_BASE_URL` | `http://localhost:8082` | Storage URL the tagger reads object data from. |
-| `TAGGER_EVALUATOR_IMPL` | `grep` | `grep`, `false`, `openai`, or `systemone`. |
-| `TAGGER_OPENAI_API_KEY` / `TAGGER_OPENAI_BASE_URL` / `TAGGER_OPENAI_MODEL` / `TAGGER_OPENAI_TIMEOUT` | — / `https://api.openai.com/v1` / `gpt-4o-mini` / `60s` | `openai` evaluator: any OpenAI-compatible chat completions API. |
-| `TAGGER_SYSTEMONE_BACKEND` | `vercel` | `systemone` backend (only `vercel` for now). |
-| `TAGGER_VERCEL_API_KEY` / `TAGGER_VERCEL_BASE_URL` / `TAGGER_VERCEL_MODEL` / `TAGGER_VERCEL_TIMEOUT` | — / `https://ai-gateway.vercel.sh/v1` / `typesafe-ai/jev` / `60s` | Vercel AI Gateway settings. |
-| `TAGGER_VERCEL_THRESHOLD` | `0.5` | A tag is `true` when the returned probability is at least this value. |
+| `TAGGER_EVALUATOR_IMPL` | `grep` | `grep`, `false`, `completions/openai`, `decisions/openai` or `decisions/vercel`. |
+| `TAGGER_<KIND>_<DIALECT>_*` | per evaluator | Settings of the LLM-backed evaluators, named after the evaluator (`TAGGER_COMPLETIONS_OPENAI_*`, `TAGGER_DECISIONS_OPENAI_*`, `TAGGER_DECISIONS_VERCEL_*`): `API_KEY`, `BASE_URL`, `PATH`, `MODEL`, `TIMEOUT`, `AUTH_HEADER`, `AUTH_SCHEME`, `HEADERS`, `QUERY`, `PARAMS`, and for the decisions evaluators `THRESHOLD`, `BATCH_SIZE`, `INSTRUCTIONS`. See [`tagger/README.md`](tagger/README.md#llm-backed-evaluators). |
 
-Evaluators: `grep` is a case-sensitive substring match on text and needs no network. `false` marks every tag `false` (for testing). `openai` and `systemone` ask an LLM one question per tag.
+Evaluators: `grep` is a case-sensitive substring match on text and needs no network. `false` marks every tag `false` (for testing). `completions/openai` asks a chat LLM about all tags at once; `decisions/openai` and `decisions/vercel` ask one yes/no question per tag and compare the returned probability with a threshold.
 
 </details>
 
@@ -255,7 +252,7 @@ Tagona is meant to run behind your own edge proxy, with the internal services ke
 - **The API docs are public by design.** `/v1/docs`, `/v1/openapi.json` and `/v1/openapi.yaml` need no key: they describe the API and contain no data.
 - **Released images** run as an unprivileged user (uid 10001), are built for amd64 and arm64, and are signed with cosign (keyless) and published with provenance and an SBOM. See [RELEASING.md](RELEASING.md) to verify one.
 - **Built-in protections.** The gateway serves an explicit list of routes only, validates every request against what its route takes (unknown query parameters, repeated parameters, unknown JSON fields and unexpected bodies are refused with `400`), rejects path-traversal tricks, caps request bodies, and never forwards a client request: it builds a new, clean one for the internal service, so no client header, parameter or field reaches storage unless the gateway put it there.
-- **LLM evaluators send your data to a third party.** With `openai` or `systemone`, object content is sent to the configured API for evaluation. Use `grep`, or a model endpoint you control, for sensitive data.
+- **LLM evaluators send your data to a third party.** With `completions/openai`, `decisions/openai` or `decisions/vercel`, object content is sent to the configured API for evaluation. Use `grep`, or a model endpoint you control, for sensitive data.
 
 Found a vulnerability? Please follow [SECURITY.md](SECURITY.md) and do not open a public issue.
 
@@ -280,7 +277,7 @@ tagona/
 │   └── migrations/         SQL migrations, applied on startup (idempotent)
 ├── tagger/               Tag evaluation service
 │   ├── cmd/tagger/         entry point
-│   ├── pkg/evaluator/      evaluators: grep, false, openai, systemone (implement your own here)
+│   ├── pkg/evaluator/      evaluators: grep, false, completions/openai, decisions/openai, decisions/vercel (implement your own here)
 │   └── pkg/client/         HTTP client that implements storage's Tagger interface
 ├── e2e/                  End-to-end tests against the running stack (separate Go module)
 ├── prometheus/ grafana/  Metrics scrape config and the Tagona dashboard
@@ -309,7 +306,7 @@ flowchart LR
 
     pg[("Postgres<br/>metadata · tags · API keys")]
     s3[("S3-compatible store<br/>object payloads")]
-    evaluator{{"Evaluator<br/>grep · OpenAI-compatible · systemone"}}
+    evaluator{{"Evaluator<br/>grep · completions/openai · decisions/openai · decisions/vercel"}}
 
     client -->|":8080"| api
     api -->|"/v1 allowlist"| storage

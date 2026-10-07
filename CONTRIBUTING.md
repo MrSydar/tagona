@@ -29,7 +29,7 @@ make docker-down         # tears everything down
 
 The public entrypoint is the api on `http://localhost:8080` (plain HTTP). The `storage` container does not publish a host port.
 
-Optionally create a `.env` in the repo root to configure the tagger (compose reads it if present; without it the tagger uses the `grep` evaluator). Use `TAGGER_EVALUATOR_IMPL=grep`, which works offline; `openai` and `systemone` need a valid API key. See `tagger/.env.example`.
+Optionally create a `.env` in the repo root to configure the tagger (compose reads it if present; without it the tagger uses the `grep` evaluator). Use `TAGGER_EVALUATOR_IMPL=grep`, which works offline; `completions/openai`, `decisions/openai` and `decisions/vercel` need a valid API key. See `tagger/.env.example`.
 
 ## Project Layout
 
