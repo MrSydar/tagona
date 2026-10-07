@@ -34,45 +34,9 @@ func main() {
 		evaluatorImpl = "grep"
 	}
 
-	var ev evaluator.Evaluator
-	switch evaluatorImpl {
-	case "grep":
-		ev = evaluator.NewGrepEvaluator()
-	case "false":
-		ev = evaluator.NewFalseEvaluator()
-	case "openai":
-		openaiAPIKey := os.Getenv("TAGGER_OPENAI_API_KEY")
-		openaiBaseURL := os.Getenv("TAGGER_OPENAI_BASE_URL")
-		if openaiBaseURL == "" {
-			openaiBaseURL = "https://api.openai.com/v1"
-		}
-		openaiModel := os.Getenv("TAGGER_OPENAI_MODEL")
-		if openaiModel == "" {
-			openaiModel = "gpt-4o-mini"
-		}
-		openaiTimeoutStr := os.Getenv("TAGGER_OPENAI_TIMEOUT")
-		openaiTimeout := 60 * time.Second
-		if openaiTimeoutStr != "" {
-			if d, err := time.ParseDuration(openaiTimeoutStr); err == nil {
-				openaiTimeout = d
-			} else {
-				slog.Warn("invalid TAGGER_OPENAI_TIMEOUT, using default", "default", openaiTimeout, "error", err)
-			}
-		}
-		ev = evaluator.NewOpenAIEvaluator(openaiAPIKey, openaiBaseURL, openaiModel, openaiTimeout)
-	case "systemone":
-		backend := os.Getenv("TAGGER_SYSTEMONE_BACKEND")
-		if backend == "" {
-			backend = "vercel"
-		}
-		sone, err := evaluator.NewSystemoneEvaluator(backend)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to create systemone evaluator: %v\n", err)
-			os.Exit(1)
-		}
-		ev = sone
-	default:
-		fmt.Fprintf(os.Stderr, "unknown evaluator implementation: %s\n", evaluatorImpl)
+	ev, err := evaluator.New(evaluatorImpl, os.LookupEnv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "evaluator configuration error: %v\n", err)
 		os.Exit(1)
 	}
 

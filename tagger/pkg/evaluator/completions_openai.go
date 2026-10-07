@@ -1,42 +1,58 @@
 package evaluator
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 )
 
-// OpenAIEvaluator evaluates tags using an OpenAI-compatible chat completions API.
-type OpenAIEvaluator struct {
-	apiKey     string
-	baseURL    string
-	model      string
-	httpClient *http.Client
+// CompletionsOpenAI is the "completions/openai" evaluator: an LLM classifies the text against the
+// requested tags through a chat completions API in the OpenAI dialect (POST {base}{path} with
+// model/messages, answer in choices[0].message.content). Any vendor that speaks it works with its
+// own base URL; see httpconfig.go for everything that can be configured.
+type CompletionsOpenAI struct {
+	cfg          HTTPConfig
+	systemPrompt string
+	client       *http.Client
 }
 
-// NewOpenAIEvaluator creates an evaluator backed by an OpenAI-compatible API.
-func NewOpenAIEvaluator(apiKey, baseURL, model string, timeout time.Duration) *OpenAIEvaluator {
-	slog.Debug("NewOpenAIEvaluator called", "base_url", baseURL, "model", model, "timeout", timeout)
-	return &OpenAIEvaluator{
-		apiKey:  apiKey,
-		baseURL: baseURL,
-		model:   model,
-		httpClient: &http.Client{
-			Timeout: timeout,
-		},
+// Defaults of the "completions/openai" evaluator.
+var completionsOpenAIDefaults = HTTPDefaults{
+	BaseURL: "https://api.openai.com/v1",
+	Path:    "/chat/completions",
+	Model:   "gpt-4o-mini",
+}
+
+// DefaultCompletionsSystemPrompt is the system message unless TAGGER_COMPLETIONS_OPENAI_SYSTEM_PROMPT is set.
+const DefaultCompletionsSystemPrompt = "You are a tag evaluation engine that responds only with JSON."
+
+// NewCompletionsOpenAI creates the evaluator from the TAGGER_COMPLETIONS_OPENAI_* settings (see
+// httpconfig.go), plus TAGGER_COMPLETIONS_OPENAI_SYSTEM_PROMPT.
+func NewCompletionsOpenAI(lookup LookupFunc) (*CompletionsOpenAI, error) {
+	const prefix = "TAGGER_COMPLETIONS_OPENAI_"
+	cfg, err := LoadHTTPConfig(lookup, prefix, completionsOpenAIDefaults)
+	if err != nil {
+		return nil, err
 	}
+	prompt := DefaultCompletionsSystemPrompt
+	if v, _ := lookup(prefix + "SYSTEM_PROMPT"); v != "" {
+		prompt = v
+	}
+	return newCompletionsOpenAI(cfg, prompt), nil
+}
+
+func newCompletionsOpenAI(cfg HTTPConfig, systemPrompt string) *CompletionsOpenAI {
+	slog.Debug("completions/openai evaluator", "base_url", cfg.BaseURL, "path", cfg.Path, "model", cfg.Model, "timeout", cfg.Timeout)
+	return &CompletionsOpenAI{cfg: cfg, systemPrompt: systemPrompt, client: &http.Client{Timeout: cfg.Timeout}}
 }
 
 // Evaluate evaluates tags for the given content using an LLM.
 // For now, only txt data type is supported.
-func (e *OpenAIEvaluator) Evaluate(ctx context.Context, dataType DataType, content []byte, tags []string) (map[string]bool, error) {
-	slog.Debug("OpenAIEvaluator.Evaluate", "data_type", dataType, "tags_count", len(tags))
+func (e *CompletionsOpenAI) Evaluate(ctx context.Context, dataType DataType, content []byte, tags []string) (map[string]bool, error) {
+	slog.Debug("CompletionsOpenAI.Evaluate", "data_type", dataType, "tags_count", len(tags))
 	result := make(map[string]bool, len(tags))
 	if dataType != DataTypeTxt {
 		slog.Debug("non-txt data type, returning false for all tags")
@@ -45,24 +61,25 @@ func (e *OpenAIEvaluator) Evaluate(ctx context.Context, dataType DataType, conte
 		}
 		return result, nil
 	}
-
 	if len(tags) == 0 {
 		slog.Debug("no tags provided, returning empty result")
 		return result, nil
 	}
 
-	prompt := buildPrompt(string(content), tags)
-	respBody, err := e.callChatCompletions(ctx, prompt)
+	// temperature 0 keeps the answers stable; vendors and models that reject it (reasoning models)
+	// remove it with TAGGER_COMPLETIONS_OPENAI_PARAMS='{"temperature":null}'.
+	respBody, err := e.cfg.post(ctx, e.client, map[string]any{
+		"model": e.cfg.Model,
+		"messages": []map[string]string{
+			{"role": "system", "content": e.systemPrompt},
+			{"role": "user", "content": buildPrompt(string(content), tags)},
+		},
+		"temperature": 0,
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("completions/openai: %w", err)
 	}
-
-	llmResult, err := parseTagResponse(respBody, tags)
-	if err != nil {
-		return nil, err
-	}
-
-	return llmResult, nil
+	return parseTagResponse(respBody, tags)
 }
 
 func buildPrompt(text string, tags []string) string {
@@ -93,49 +110,6 @@ Tags: %s`,
 		text,
 		string(t),
 	)
-}
-
-func (e *OpenAIEvaluator) callChatCompletions(ctx context.Context, prompt string) ([]byte, error) {
-	slog.Debug("callChatCompletions called")
-	payload := map[string]any{
-		"model": e.model,
-		"messages": []map[string]string{
-			{"role": "system", "content": "You are a tag evaluation engine that responds only with JSON."},
-			{"role": "user", "content": prompt},
-		},
-		"temperature": 0,
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal chat completion request: %w", err)
-	}
-
-	url := e.baseURL + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("create chat completion request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if e.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+e.apiKey)
-	}
-
-	resp, err := e.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("chat completion request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read chat completion response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("chat completion returned status %d: %s", resp.StatusCode, string(respBytes))
-	}
-
-	return respBytes, nil
 }
 
 func parseTagResponse(respBody []byte, expectedTags []string) (map[string]bool, error) {
@@ -213,7 +187,7 @@ populate:
 }
 
 // GetSupportedDataTypes returns the data types supported by this evaluator.
-func (e *OpenAIEvaluator) GetSupportedDataTypes() []string {
-	slog.Debug("OpenAIEvaluator.GetSupportedDataTypes called")
+func (e *CompletionsOpenAI) GetSupportedDataTypes() []string {
+	slog.Debug("CompletionsOpenAI.GetSupportedDataTypes called")
 	return []string{string(DataTypeTxt)}
 }
