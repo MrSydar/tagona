@@ -19,15 +19,15 @@ func TestListCollectionTagsValidation(t *testing.T) {
 		target   string
 		wantCode string
 	}{
-		{"bad collection name", "/v1/collections/Bad_Name/tags", "invalid_collection_name"},
-		{"zero limit", "/v1/collections/jobs/tags?limit=0", "invalid_limit"},
-		{"negative limit", "/v1/collections/jobs/tags?limit=-1", "invalid_limit"},
-		{"non-numeric limit", "/v1/collections/jobs/tags?limit=abc", "invalid_limit"},
-		{"limit over max", "/v1/collections/jobs/tags?limit=1001", "invalid_limit"},
-		{"prefix too long", "/v1/collections/jobs/tags?prefix=" + strings.Repeat("a", 129), "invalid_prefix"},
-		{"prefix not utf-8", "/v1/collections/jobs/tags?prefix=" + url.QueryEscape("\xff"), "invalid_prefix"},
-		{"cursor not base64", "/v1/collections/jobs/tags?cursor=!!!", "invalid_cursor"},
-		{"cursor not utf-8", "/v1/collections/jobs/tags?cursor=_w", "invalid_cursor"}, // base64url of 0xff
+		{"bad collection name", "/collections/Bad_Name/tags", "invalid_collection_name"},
+		{"zero limit", "/collections/jobs/tags?limit=0", "invalid_limit"},
+		{"negative limit", "/collections/jobs/tags?limit=-1", "invalid_limit"},
+		{"non-numeric limit", "/collections/jobs/tags?limit=abc", "invalid_limit"},
+		{"limit over max", "/collections/jobs/tags?limit=1001", "invalid_limit"},
+		{"prefix too long", "/collections/jobs/tags?prefix=" + strings.Repeat("a", 129), "invalid_prefix"},
+		{"prefix not utf-8", "/collections/jobs/tags?prefix=" + url.QueryEscape("\xff"), "invalid_prefix"},
+		{"cursor not base64", "/collections/jobs/tags?cursor=!!!", "invalid_cursor"},
+		{"cursor not utf-8", "/collections/jobs/tags?cursor=_w", "invalid_cursor"}, // base64url of 0xff
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -55,7 +55,7 @@ func TestListCollectionTagsValidation(t *testing.T) {
 func TestGetObjectTagsEvaluateValidation(t *testing.T) {
 	router := (&Server{}).Router()
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/collections/jobs/objects/abc/tags?evaluate=maybe", nil))
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/collections/jobs/objects/abc/tags?evaluate=maybe", nil))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}

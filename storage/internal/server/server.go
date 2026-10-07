@@ -66,16 +66,16 @@ func (s *Server) Router() chi.Router {
 	r.Get("/readyz", s.readyz)
 	r.Get("/metrics", promhttp.Handler().ServeHTTP)
 
-	r.Get("/v1/collections", s.listCollections)
-	r.Post("/v1/collections", s.createCollection)
-	r.Delete("/v1/collections/{collection}", s.deleteCollection)
-	r.Get("/v1/collections/{collection}/tags", s.listCollectionTags)
-	r.Post("/v1/collections/{collection}/objects", s.putObject)
-	r.Get("/v1/collections/{collection}/objects/{id}", s.getObjectMetadata)
-	r.Get("/v1/collections/{collection}/objects/{id}/data", s.getObjectData)
-	r.Get("/v1/collections/{collection}/objects/{id}/tags", s.getObjectTags)
-	r.Post("/v1/collections/{collection}/objects/query", s.queryObjects)
-	r.Delete("/v1/collections/{collection}/objects/{id}", s.deleteObject)
+	r.Get("/collections", s.listCollections)
+	r.Post("/collections", s.createCollection)
+	r.Delete("/collections/{collection}", s.deleteCollection)
+	r.Get("/collections/{collection}/tags", s.listCollectionTags)
+	r.Post("/collections/{collection}/objects", s.putObject)
+	r.Get("/collections/{collection}/objects/{id}", s.getObjectMetadata)
+	r.Get("/collections/{collection}/objects/{id}/data", s.getObjectData)
+	r.Get("/collections/{collection}/objects/{id}/tags", s.getObjectTags)
+	r.Post("/collections/{collection}/objects/query", s.queryObjects)
+	r.Delete("/collections/{collection}/objects/{id}", s.deleteObject)
 
 	return r
 }

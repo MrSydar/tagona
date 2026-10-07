@@ -95,7 +95,7 @@ func TestAdminValidationOfRequests(t *testing.T) {
 	}
 }
 
-// keystorage's validation endpoint must not be reachable from outside, with or without credentials,
+// keystorage's validation endpoint, and the internal routes of storage and the tagger, must not be reachable from outside, with or without credentials,
 // and the admin proxy serves exactly create, list and delete.
 func TestKeyValidationAndOtherRoutesAreNotExposed(t *testing.T) {
 	creds := createAPIKey(t)
@@ -106,9 +106,12 @@ func TestKeyValidationAndOtherRoutesAreNotExposed(t *testing.T) {
 		method, path string
 		want         int
 	}{
+		{http.MethodPost, "/api-keys/validate", http.StatusNotFound},
 		{http.MethodPost, "/internal/v1/api-keys/validate", http.StatusNotFound},
 		{http.MethodPost, "/v1/admin/api-keys/validate", http.StatusMethodNotAllowed},
-		{http.MethodGet, "/internal/v1/api-keys", http.StatusNotFound},
+		{http.MethodGet, "/api-keys", http.StatusNotFound},
+		{http.MethodGet, "/collections", http.StatusNotFound}, // storage's own routes are not the public ones
+		{http.MethodPost, "/tag", http.StatusNotFound},        // nor is the tagger reachable
 		{http.MethodGet, "/v1/admin/api-keys/" + creds.ID, http.StatusMethodNotAllowed},
 		{http.MethodPut, "/v1/admin/api-keys", http.StatusMethodNotAllowed},
 		{http.MethodGet, "/v1/admin/metrics", http.StatusNotFound},

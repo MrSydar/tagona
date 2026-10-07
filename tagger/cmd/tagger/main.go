@@ -76,7 +76,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	storageClient := storageclient.New(storageBaseURL)
+	storageClient := storageclient.NewInternal(storageBaseURL)
 	srv := server.NewServer(storageClient, ev, evaluatorImpl)
 
 	httpServer := &http.Server{

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -60,31 +59,34 @@ func main() {
 	// One connection pool shared by the proxies, the key client and readyz.
 	transport := newStorageTransport()
 
-	storageTarget, err := url.Parse(storageBaseURL)
+	storage, err := newUpstream("storage", storageBaseURL, transport,
+		http.StatusBadGateway, "bad_gateway", "storage service not available")
 	if err != nil {
 		slog.Error("invalid API_STORAGE_BASE_URL", "error", err)
 		os.Exit(1)
 	}
-	keystorageTarget, err := url.Parse(keystorageBaseURL)
+	keystorage, err := newUpstream("keystorage", keystorageBaseURL, transport,
+		http.StatusServiceUnavailable, "not_ready", "key service not available",
+		"WWW-Authenticate") // the admin 401 tells clients to use Basic auth
 	if err != nil {
 		slog.Error("invalid API_KEYSTORAGE_BASE_URL", "error", err)
 		os.Exit(1)
 	}
 
-	// Keys are validated by keystorage, which is also what the admin proxy forwards to.
+	// Keys are validated by keystorage, which is also where key management is sent.
 	slog.Debug("initializing keystorage client", "url", keystorageBaseURL)
 	keyClient := keystorageapi.New(keystorageBaseURL, keystorageapi.WithTransport(transport))
 
 	cfg := gatewayConfig{
-		maxBodyBytes: maxBodyBytes,
-		validator:    keyClient,
-		httpClient:   &http.Client{Transport: transport},
+		validator:  keyClient,
+		httpClient: &http.Client{Transport: transport},
 	}
 	if keyCacheTTL > 0 {
 		cache := newCachedValidator(keyClient, keyCacheTTL)
 		cfg.validator = cache
 		cfg.onKeyDeleted = cache.Purge
 	}
+	gw := &gateway{storage: storage, keystorage: keystorage, maxBodyBytes: maxBodyBytes, onKeyDeleted: cfg.onKeyDeleted}
 
 	docs, err := newDocsHandlers(openapi.V1)
 	if err != nil {
@@ -93,12 +95,7 @@ func main() {
 	}
 	cfg.docs = docs
 
-	r := newRouter(
-		[]string{storageBaseURL, keystorageBaseURL},
-		newProxy(storageTarget, transport),
-		newKeystorageProxy(keystorageTarget, transport, cfg.onKeyDeleted),
-		cfg,
-	)
+	r := newRouter([]string{storageBaseURL, keystorageBaseURL}, gw, cfg)
 
 	// HTTP server.
 	slog.Debug("starting HTTP server", "addr", httpAddr)
@@ -130,12 +127,11 @@ func main() {
 	slog.Info("shutdown complete")
 }
 
-// gatewayConfig holds the tunables of the proxied /v1/* surface.
+// gatewayConfig holds the router's collaborators.
 type gatewayConfig struct {
-	maxBodyBytes int64
 	// validator checks Bearer keys.
 	validator keyValidator
-	// onKeyDeleted runs after a key is deleted through the admin proxy.
+	// onKeyDeleted runs after a key is deleted through the admin routes.
 	onKeyDeleted func()
 	// httpClient is used for the readiness probes; nil uses the default.
 	httpClient *http.Client
@@ -143,10 +139,11 @@ type gatewayConfig struct {
 	docs *docsHandlers
 }
 
-// newRouter builds the chi router. Both the storage routes and the key-management routes are
-// explicit allowlists forwarded to a proxy (see proxiedRoutes and adminRoutes), so anything else
-// under /v1/ is a 404. upstreams are the services whose readiness /readyz reports.
-func newRouter(upstreams []string, storageProxy, keystorageProxy http.Handler, cfg gatewayConfig) http.Handler {
+// newRouter builds the chi router. Every route below is a handler that checks the request and
+// builds a new one for the internal service (see handlers.go); nothing is forwarded as it came in,
+// and anything not listed under /v1/ is a 404. upstreams are the services whose readiness /readyz
+// reports.
+func newRouter(upstreams []string, g *gateway, cfg gatewayConfig) http.Handler {
 	slog.Debug("creating router")
 	httpClient := cfg.httpClient
 	if httpClient == nil {
@@ -166,14 +163,32 @@ func newRouter(upstreams []string, storageProxy, keystorageProxy http.Handler, c
 		cfg.docs.register(r)
 	}
 
-	// Key management is forwarded to keystorage, which authenticates the admin credentials itself.
-	registerAdminRoutes(r, keystorageProxy)
+	// Key management: keystorage checks the admin credentials, which the handlers pass on.
+	r.Group(func(r chi.Router) {
+		r.Use(limitBody(adminMaxBodyBytes))
+		r.Post("/v1/admin/api-keys", g.createKey)
+		r.Get("/v1/admin/api-keys", g.listKeys)
+		r.Delete("/v1/admin/api-keys/{id}", g.deleteKey)
+	})
 
-	// Allowlisted storage routes require a Bearer API key before proxying.
-	registerProxiedRoutes(r, storageProxy,
-		func(next http.Handler) http.Handler { return apiKeyAuth(cfg.validator, next) },
-		limitBody(cfg.maxBodyBytes),
-	)
+	// Everything else requires a Bearer API key.
+	r.Group(func(r chi.Router) {
+		r.Use(func(next http.Handler) http.Handler { return apiKeyAuth(cfg.validator, next) })
+
+		r.Group(func(r chi.Router) {
+			r.Use(limitBody(maxJSONBodyBytes))
+			r.Get("/v1/collections", g.listCollections)
+			r.Post("/v1/collections", g.createCollection)
+			r.Delete("/v1/collections/{collection}", g.deleteCollection)
+			r.Get("/v1/collections/{collection}/tags", g.listCollectionTags)
+			r.Post("/v1/collections/{collection}/objects/query", g.queryObjects)
+			r.Get("/v1/collections/{collection}/objects/{id}", g.getObject)
+			r.Get("/v1/collections/{collection}/objects/{id}/data", g.getObjectData)
+			r.Get("/v1/collections/{collection}/objects/{id}/tags", g.getObjectTags)
+			r.Delete("/v1/collections/{collection}/objects/{id}", g.deleteObject)
+		})
+		r.With(limitBody(g.maxBodyBytes)).Post("/v1/collections/{collection}/objects", g.putObject)
+	})
 	r.NotFound(notFound)
 	r.MethodNotAllowed(methodNotAllowed)
 	return r

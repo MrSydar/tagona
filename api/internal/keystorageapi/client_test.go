@@ -25,7 +25,7 @@ func TestValidateKey(t *testing.T) {
 	if err != nil || !valid {
 		t.Fatalf("valid key: %v, %v", valid, err)
 	}
-	if gotPath != "POST /internal/v1/api-keys/validate" || gotKey != "tagona_abc" {
+	if gotPath != "POST /api-keys/validate" || gotKey != "tagona_abc" {
 		t.Fatalf("request = %s with key %q", gotPath, gotKey)
 	}
 

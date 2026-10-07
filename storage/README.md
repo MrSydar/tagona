@@ -4,7 +4,7 @@ Go module: `mrsydar/tagona/storage`
 
 The internal data service for Tagona, listening on `:8082`. It handles collections, object upload/download, metadata, tag queries, and on-demand tag evaluation via the tagging engine.
 
-It is not exposed to the public: the [api service](../api/) (port `:8080`) is the public gateway and reverse-proxies all `/v1/*` requests verbatim to this service. The routes served here are identical to the public API paths — see [`api/README.md`](../api/) for the full API documentation.
+It is not exposed to the public: the [api service](../api/) (port `:8080`) is the public gateway and validates every public `/v1/*` request and makes a new request to this service from the validated values (it does not forward the client's request). The routes served here are the public ones without the `/v1` prefix — see [`api/README.md`](../api/) for the full API documentation.
 
 ---
 
@@ -20,23 +20,23 @@ It is not exposed to the public: the [api service](../api/) (port `:8080`) is th
 
 ## API
 
-The storage service answers the same routes it serves to the api gateway (no path rewriting happens in the proxy):
+This API is internal and has no version prefix: the api gateway maps each public `/v1/...` route to the path below, after validating the request.
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/healthz` | Liveness (always `200` if up) |
 | `GET` | `/readyz` | Readiness (checks DB + S3 connectivity) |
 | `GET` | `/metrics` | Prometheus metrics (`storage_*`) |
-| `GET` | `/v1/collections` | List all collections |
-| `POST` | `/v1/collections` | Create a collection |
-| `DELETE` | `/v1/collections/{collection}` | Delete a collection |
-| `GET` | `/v1/collections/{collection}/tags` | Object count and registered tags with per-tag counts (`?prefix=&limit=&cursor=`; see [`api/README.md`](../api/README.md#public-api)) |
-| `POST` | `/v1/collections/{collection}/objects` | Upload an object |
-| `GET` | `/v1/collections/{collection}/objects/{id}` | Get metadata |
-| `GET` | `/v1/collections/{collection}/objects/{id}/data` | Download payload |
-| `GET` | `/v1/collections/{collection}/objects/{id}/tags` | Get tags |
-| `POST` | `/v1/collections/{collection}/objects/query` | Query by tags |
-| `DELETE` | `/v1/collections/{collection}/objects/{id}` | Hard delete |
+| `GET` | `/collections` | List all collections |
+| `POST` | `/collections` | Create a collection |
+| `DELETE` | `/collections/{collection}` | Delete a collection |
+| `GET` | `/collections/{collection}/tags` | Object count and registered tags with per-tag counts (`?prefix=&limit=&cursor=`; see [`api/README.md`](../api/README.md#public-api)) |
+| `POST` | `/collections/{collection}/objects` | Upload an object |
+| `GET` | `/collections/{collection}/objects/{id}` | Get metadata |
+| `GET` | `/collections/{collection}/objects/{id}/data` | Download payload |
+| `GET` | `/collections/{collection}/objects/{id}/tags` | Get tags |
+| `POST` | `/collections/{collection}/objects/query` | Query by tags |
+| `DELETE` | `/collections/{collection}/objects/{id}` | Hard delete |
 
 API keys are not stored here: the [keystorage](../keystorage/README.md) service owns them, under its own database role. This service's role has no access to the keys schema, and it neither validates nor manages keys.
 

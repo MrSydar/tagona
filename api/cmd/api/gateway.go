@@ -1,18 +1,12 @@
 package main
 
 import (
-	"errors"
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
-	"regexp"
 	"strings"
 	"time"
-
-	"github.com/go-chi/chi/v5"
 )
 
 // defaultMaxBodyBytes is the default request body cap enforced by the gateway.
@@ -20,93 +14,8 @@ import (
 // friendlier payload_too_large error for normal uploads.
 const defaultMaxBodyBytes int64 = 32 << 20
 
-// proxiedRoutes is the allowlist of storage routes the gateway forwards. A
-// route added to storage stays private until it is listed here.
-var proxiedRoutes = []struct{ method, pattern string }{
-	{http.MethodGet, "/v1/collections"},
-	{http.MethodPost, "/v1/collections"},
-	{http.MethodDelete, "/v1/collections/{collection}"},
-	{http.MethodGet, "/v1/collections/{collection}/tags"},
-	{http.MethodPost, "/v1/collections/{collection}/objects"},
-	{http.MethodPost, "/v1/collections/{collection}/objects/query"},
-	{http.MethodGet, "/v1/collections/{collection}/objects/{id}"},
-	{http.MethodGet, "/v1/collections/{collection}/objects/{id}/data"},
-	{http.MethodGet, "/v1/collections/{collection}/objects/{id}/tags"},
-	{http.MethodDelete, "/v1/collections/{collection}/objects/{id}"},
-}
-
-// adminRoutes is the allowlist of key-management routes the gateway forwards to keystorage. These
-// three are the whole surface: keystorage's validation endpoint and anything else it serves are
-// never reachable through the gateway.
-var adminRoutes = []struct{ method, pattern string }{
-	{http.MethodPost, "/v1/admin/api-keys"},
-	{http.MethodGet, "/v1/admin/api-keys"},
-	{http.MethodDelete, "/v1/admin/api-keys/{id}"},
-}
-
 // adminMaxBodyBytes caps key-management request bodies, which are tiny.
 const adminMaxBodyBytes int64 = 4 << 10
-
-// newProxy builds the reverse proxy to the storage service. The Authorization
-// header is stripped (storage is auth-free and must never see API keys), and
-// ReverseProxy drops inbound Forwarded/X-Forwarded-* headers when Rewrite is
-// used, so clients cannot spoof them towards storage.
-func newProxy(target *url.URL, rt http.RoundTripper) *httputil.ReverseProxy {
-	return &httputil.ReverseProxy{
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(target)
-			pr.Out.Header.Del("Authorization")
-		},
-		Transport:    rt,
-		ErrorHandler: proxyError,
-	}
-}
-
-// newKeystorageProxy builds the reverse proxy for the key-management routes. Unlike the storage
-// proxy it forwards the Authorization header, because keystorage authenticates the admin
-// credentials itself; everything else about the request is rebuilt, so only the header
-// and content type reach it. onKeyDeleted runs after a key was deleted successfully, to drop the
-// gateway's cached verdicts.
-func newKeystorageProxy(target *url.URL, rt http.RoundTripper, onKeyDeleted func()) *httputil.ReverseProxy {
-	return &httputil.ReverseProxy{
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(target)
-			pr.Out.URL.RawQuery = ""
-			pr.Out.Header = http.Header{}
-			for _, name := range []string{"Authorization", "Content-Type"} {
-				if v := pr.In.Header.Values(name); len(v) > 0 {
-					pr.Out.Header[name] = v
-				}
-			}
-		},
-		Transport: rt,
-		ModifyResponse: func(resp *http.Response) error {
-			if onKeyDeleted != nil && resp.Request.Method == http.MethodDelete && resp.StatusCode == http.StatusNoContent {
-				onKeyDeleted()
-			}
-			return nil
-		},
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			var maxErr *http.MaxBytesError
-			if errors.As(err, &maxErr) {
-				writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body too large")
-				return
-			}
-			slog.Error("keystorage proxy request failed", "path", r.URL.Path, "error", err)
-			writeError(w, http.StatusServiceUnavailable, "not_ready", "key service not available")
-		},
-	}
-}
-
-func proxyError(w http.ResponseWriter, r *http.Request, err error) {
-	var maxErr *http.MaxBytesError
-	if errors.As(err, &maxErr) {
-		writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body too large")
-		return
-	}
-	slog.Error("proxy request failed", "path", r.URL.Path, "error", err)
-	writeError(w, http.StatusBadGateway, "bad_gateway", "storage service not available")
-}
 
 // safePath rejects paths that could be used to escape the allowlisted route
 // space once forwarded: dot segments, empty segments, backslashes, NUL bytes
@@ -164,50 +73,12 @@ func methodNotAllowed(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 }
 
-// registerProxiedRoutes mounts the allowlist behind the given middlewares.
-func registerProxiedRoutes(r chi.Router, proxy http.Handler, mw ...func(http.Handler) http.Handler) {
-	r.Group(func(r chi.Router) {
-		r.Use(mw...)
-		for _, route := range proxiedRoutes {
-			r.Method(route.method, route.pattern, proxy)
-		}
-	})
-}
-
-// registerAdminRoutes mounts the key-management allowlist. No credentials are checked here: the
-// request, Authorization header included, is forwarded and keystorage decides.
-func registerAdminRoutes(r chi.Router, proxy http.Handler) {
-	r.Group(func(r chi.Router) {
-		r.Use(limitBody(adminMaxBodyBytes))
-		for _, route := range adminRoutes {
-			var h http.Handler = proxy
-			if strings.Contains(route.pattern, "{id}") {
-				h = requireUUID("id", proxy)
-			}
-			r.Method(route.method, route.pattern, h)
-		}
-	})
-}
-
-var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-
-// requireUUID answers 404 for a path parameter that is not a UUID, so nothing else is ever
-// interpolated into the path forwarded to keystorage.
-func requireUUID(param string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !uuidRe.MatchString(chi.URLParam(r, param)) {
-			writeError(w, http.StatusNotFound, "not_found", "api key not found")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-// newStorageTransport returns the transport shared by every storage-bound
-// caller, with a pool sized for a gateway that talks to a single host.
+// newStorageTransport returns the transport shared by every internal-service caller, with a pool
+// sized for a gateway that talks to a few hosts.
 func newStorageTransport() *http.Transport {
 	return &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy:              http.ProxyFromEnvironment,
+		DisableCompression: true, // answers are relayed as they are, and no Accept-Encoding is sent
 		DialContext: (&net.Dialer{
 			Timeout:   5 * time.Second,
 			KeepAlive: 30 * time.Second,

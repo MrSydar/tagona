@@ -20,8 +20,8 @@ A standalone HTTP service that evaluates boolean tags for objects stored in the 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/v1/supported-types` | Return supported data types |
-| `POST` | `/v1/tag` | Evaluate tags for an object |
+| `GET` | `/supported-types` | Return supported data types |
+| `POST` | `/tag` | Evaluate tags for an object |
 | `GET` | `/healthz` | Liveness |
 | `GET` | `/readyz` | Readiness |
 
@@ -29,7 +29,7 @@ A standalone HTTP service that evaluates boolean tags for objects stored in the 
 
 **Request**
 ```bash
-curl http://localhost:8081/v1/supported-types
+curl http://localhost:8081/supported-types
 ```
 
 **Response `200 OK`**
@@ -41,7 +41,7 @@ curl http://localhost:8081/v1/supported-types
 
 **Request**
 ```bash
-curl -X POST http://localhost:8081/v1/tag \
+curl -X POST http://localhost:8081/tag \
   -H "Content-Type: application/json" \
   -d '{
     "collection": "jobs",

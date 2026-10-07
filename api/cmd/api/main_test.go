@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
@@ -43,7 +42,7 @@ func newStorageStub(t *testing.T, validKey string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/internal/v1/api-keys/validate":
+		case r.Method == http.MethodPost && r.URL.Path == "/api-keys/validate":
 			var req struct {
 				Key string `json:"key"`
 			}
@@ -57,9 +56,9 @@ func newStorageStub(t *testing.T, validKey string) *httptest.Server {
 				return
 			}
 			writeError(w, http.StatusUnauthorized, "invalid_api_key", "invalid or unknown api key")
-		case r.Method == http.MethodDelete && r.URL.Path == "/v1/admin/api-keys/"+knownKeyID:
+		case r.Method == http.MethodDelete && r.URL.Path == "/api-keys/"+knownKeyID:
 			w.WriteHeader(http.StatusNoContent)
-		case r.URL.Path == "/v1/collections":
+		case r.URL.Path == "/collections":
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{"collections": []any{}})
 		default:
@@ -73,12 +72,11 @@ func TestAPIKeyAuth(t *testing.T) {
 	backend := newStorageStub(t, validKey)
 	defer backend.Close()
 
-	target, err := url.Parse(backend.URL)
-	if err != nil {
-		t.Fatalf("parse stub url: %v", err)
-	}
-	proxy := newProxy(target, nil)
-	h := apiKeyAuth(keystorageapi.New(backend.URL), proxy)
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"collections": []any{}})
+	})
+	h := apiKeyAuth(keystorageapi.New(backend.URL), next)
 
 	t.Run("no token rejected", func(t *testing.T) {
 		w := httptest.NewRecorder()

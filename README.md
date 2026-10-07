@@ -254,7 +254,7 @@ Tagona is meant to run behind your own edge proxy, with the internal services ke
 - **API keys and roles.** `/v1` requires a Bearer API key. Keys are stored hashed, shown once at creation, and can be revoked. Key management requires the admin Basic credentials, and an API key is rejected there. Keys live in their own database schema, reachable only by the `keystorage` service under its own Postgres role; the `storage` role cannot read them, and `keystorage` cannot read your data. The API proxies key management to `keystorage` through an allowlist of three routes, and key validation is never exposed. There is no RBAC yet: every key can access every collection.
 - **The API docs are public by design.** `/v1/docs`, `/v1/openapi.json` and `/v1/openapi.yaml` need no key: they describe the API and contain no data.
 - **Released images** run as an unprivileged user (uid 10001), are built for amd64 and arm64, and are signed with cosign (keyless) and published with provenance and an SBOM. See [RELEASING.md](RELEASING.md) to verify one.
-- **Built-in protections.** The gateway forwards an explicit allowlist of routes only, rejects path-traversal tricks, caps request bodies, and strips the `Authorization` header before a request reaches storage.
+- **Built-in protections.** The gateway serves an explicit list of routes only, validates every request against what its route takes (unknown query parameters, repeated parameters, unknown JSON fields and unexpected bodies are refused with `400`), rejects path-traversal tricks, caps request bodies, and never forwards a client request: it builds a new, clean one for the internal service, so no client header, parameter or field reaches storage unless the gateway put it there.
 - **LLM evaluators send your data to a third party.** With `openai` or `systemone`, object content is sent to the configured API for evaluation. Use `grep`, or a model endpoint you control, for sensitive data.
 
 Found a vulnerability? Please follow [SECURITY.md](SECURITY.md) and do not open a public issue.
@@ -263,8 +263,8 @@ Found a vulnerability? Please follow [SECURITY.md](SECURITY.md) and do not open 
 
 ```
 tagona/
-├── api/                  Public API gateway: API-key auth, route allowlist, reverse proxy
-│   ├── cmd/api/            entry point, router, auth, proxy, docs endpoints
+├── api/                  Public API gateway: API-key auth, strict request validation, rebuilds every request for the internal services
+│   ├── cmd/api/            entry point, router, auth, request validation, upstream calls, docs endpoints
 │   ├── openapi/            v1.yaml, the OpenAPI 3 contract of /v1 (embedded, served at /v1/docs)
 │   └── internal/           metrics, keystorage client (key validation)
 ├── keystorage/           API key service: stores keys (hashed) and validates them, under its own database role
@@ -313,7 +313,7 @@ flowchart LR
 
     client -->|":8080"| api
     api -->|"/v1 allowlist"| storage
-    storage -->|"POST /v1/tag"| tagger
+    storage -->|"POST /tag"| tagger
     tagger -->|"read object data"| storage
     storage --> pg
     storage --> s3
@@ -335,7 +335,7 @@ sequenceDiagram
     C->>S: POST …/objects/query {"tags": {"golang": true}}
     S->>D: tags already known for the candidate objects
     loop each candidate where "golang" is unknown
-        S->>T: POST /v1/tag (object, ["golang"])
+        S->>T: POST /tag (object, ["golang"])
         T->>S: read the object's data
         T-->>S: {"golang": true}
         S->>D: store the tag (counters update in the same transaction)

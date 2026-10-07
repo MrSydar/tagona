@@ -2,10 +2,10 @@
 //
 // Two surfaces share one listener, which is reachable only on the internal compose network:
 //
-//   - POST /internal/v1/api-keys/validate checks a raw key. It needs no credentials: its callers
+//   - POST /api-keys/validate checks a raw key. It needs no credentials: its callers
 //     (the api gateway, and other services such as the Plus translator) hold the key they are
 //     checking, not a service credential.
-//   - /v1/admin/api-keys manages keys and authenticates the admin credentials itself (HTTP Basic),
+//   - /api-keys (create, list) and /api-keys/{id} (delete) manage keys and authenticate the admin credentials itself (HTTP Basic),
 //     so reaching the network is not enough to mint, list or delete a key. The public api exposes
 //     only this surface, as a strict allowlisting proxy; the validate route is never forwarded.
 package server
@@ -68,13 +68,13 @@ func (s *Server) Router() http.Handler {
 	r.Get("/readyz", s.readyz)
 	r.Get("/metrics", promhttp.Handler().ServeHTTP)
 
-	r.Post("/internal/v1/api-keys/validate", s.validate)
+	r.Post("/api-keys/validate", s.validate)
 
 	r.Group(func(r chi.Router) {
 		r.Use(s.adminAuth)
-		r.Post("/v1/admin/api-keys", s.create)
-		r.Get("/v1/admin/api-keys", s.list)
-		r.Delete("/v1/admin/api-keys/{id}", s.delete)
+		r.Post("/api-keys", s.create)
+		r.Get("/api-keys", s.list)
+		r.Delete("/api-keys/{id}", s.delete)
 	})
 
 	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
