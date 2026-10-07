@@ -13,29 +13,31 @@ import (
 )
 
 type countingValidator struct {
-	calls atomic.Int32
-	valid map[string]bool
-	err   error
+	calls   atomic.Int32
+	results map[string]keystorageapi.Result
+	err     error
 }
 
-func (c *countingValidator) ValidateKey(ctx context.Context, key string) (bool, error) {
+func (c *countingValidator) ValidateKey(ctx context.Context, key string) (keystorageapi.Result, error) {
 	c.calls.Add(1)
 	if c.err != nil {
-		return false, c.err
+		return keystorageapi.Result{}, c.err
 	}
-	return c.valid[key], nil
+	return c.results[key], nil // an absent key is Unknown
 }
+
+func valid() keystorageapi.Result { return keystorageapi.Result{Verdict: keystorageapi.Valid} }
 
 func TestCachedValidator(t *testing.T) {
 	now := time.Unix(1000, 0)
-	next := &countingValidator{valid: map[string]bool{"good": true}}
+	next := &countingValidator{results: map[string]keystorageapi.Result{"good": valid()}}
 	c := newCachedValidator(next, 30*time.Second)
 	c.now = func() time.Time { return now }
 	ctx := context.Background()
 
 	for i := 0; i < 3; i++ {
-		if ok, err := c.ValidateKey(ctx, "good"); err != nil || !ok {
-			t.Fatalf("good key: ok=%v err=%v", ok, err)
+		if res, err := c.ValidateKey(ctx, "good"); err != nil || res.Verdict != keystorageapi.Valid {
+			t.Fatalf("good key: %+v err=%v", res, err)
 		}
 	}
 	if got := next.calls.Load(); got != 1 {
@@ -63,6 +65,70 @@ func TestCachedValidator(t *testing.T) {
 	c.ValidateKey(ctx, "good")
 	if got := next.calls.Load(); got != 5 {
 		t.Errorf("expected upstream call after Purge, got %d", got)
+	}
+}
+
+// A cached "valid" must not outlive the key: expiry takes effect when it happens, not when the cache
+// entry would have run out.
+func TestCachedValidatorStopsAtTheKeysExpiry(t *testing.T) {
+	now := time.Unix(1000, 0)
+	expires := now.Add(3 * time.Second)
+	next := &countingValidator{results: map[string]keystorageapi.Result{
+		"short": {Verdict: keystorageapi.Valid, ExpiresAt: &expires},
+		"long":  {Verdict: keystorageapi.Valid, ExpiresAt: ptrTime(now.Add(time.Hour))},
+	}}
+	c := newCachedValidator(next, 30*time.Second)
+	c.now = func() time.Time { return now }
+	ctx := context.Background()
+
+	c.ValidateKey(ctx, "short")
+	now = now.Add(2 * time.Second)
+	c.ValidateKey(ctx, "short")
+	if got := next.calls.Load(); got != 1 {
+		t.Fatalf("still cached before the expiry: %d calls", got)
+	}
+
+	// The key expires at 3s. Keystorage now says so, and the cache must ask again.
+	now = now.Add(time.Second)
+	next.results["short"] = keystorageapi.Result{Verdict: keystorageapi.Expired}
+	res, _ := c.ValidateKey(ctx, "short")
+	if res.Verdict != keystorageapi.Expired || next.calls.Load() != 2 {
+		t.Fatalf("at the expiry the cached verdict must be gone: %+v after %d calls", res, next.calls.Load())
+	}
+
+	// A key that lives longer than the cache is cached for the cache's ttl only.
+	c.ValidateKey(ctx, "long")
+	now = now.Add(31 * time.Second)
+	c.ValidateKey(ctx, "long")
+	if next.calls.Load() != 4 {
+		t.Fatalf("a long-lived key is revalidated after the ttl: %d calls", next.calls.Load())
+	}
+
+	// A verdict whose expiry has already passed is not cached at all.
+	past := now.Add(-time.Second)
+	next.results["stale"] = keystorageapi.Result{Verdict: keystorageapi.Valid, ExpiresAt: &past}
+	before := next.calls.Load()
+	c.ValidateKey(ctx, "stale")
+	c.ValidateKey(ctx, "stale")
+	if next.calls.Load() != before+2 {
+		t.Fatalf("a verdict past its expiry must not be cached")
+	}
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }
+
+func TestCachedValidatorRemembersExpiredKeys(t *testing.T) {
+	now := time.Unix(1000, 0)
+	next := &countingValidator{results: map[string]keystorageapi.Result{"old": {Verdict: keystorageapi.Expired}}}
+	c := newCachedValidator(next, 30*time.Second)
+	c.now = func() time.Time { return now }
+	for i := 0; i < 3; i++ {
+		if res, _ := c.ValidateKey(context.Background(), "old"); res.Verdict != keystorageapi.Expired {
+			t.Fatalf("verdict %+v", res)
+		}
+	}
+	if next.calls.Load() != 1 {
+		t.Fatalf("an expired key cannot come back, so the verdict is cached: %d calls", next.calls.Load())
 	}
 }
 

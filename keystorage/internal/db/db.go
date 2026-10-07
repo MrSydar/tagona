@@ -13,8 +13,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// ErrNotFound is returned when no key matches.
-var ErrNotFound = errors.New("api key not found")
+var (
+	// ErrNotFound is returned when no key matches.
+	ErrNotFound = errors.New("api key not found")
+	// ErrExpired is returned together with the key when it exists but its expiry has passed.
+	ErrExpired = errors.New("api key expired")
+)
 
 // APIKey describes a stored key. The raw key is never stored, only its hash.
 type APIKey struct {
@@ -22,6 +26,8 @@ type APIKey struct {
 	Name      string    `json:"name"`
 	KeyPrefix string    `json:"key_prefix"`
 	CreatedAt time.Time `json:"created_at"`
+	// ExpiresAt is when the key stops working; nil for a key that never expires.
+	ExpiresAt *time.Time `json:"expires_at"`
 }
 
 // DB wraps a pool whose search_path is the keys schema.
@@ -69,22 +75,25 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) error {
 // Ping checks the database connection.
 func (d *DB) Ping(ctx context.Context) error { return d.pool.Ping(ctx) }
 
-// Create inserts a key by its hash.
-func (d *DB) Create(ctx context.Context, keyHash, keyPrefix, name string) (*APIKey, error) {
+// Create inserts a key by its hash. A ttlSeconds above zero makes it expire that many seconds from
+// now, by the database's clock, which is also the one that judges expiry.
+func (d *DB) Create(ctx context.Context, keyHash, keyPrefix, name string, ttlSeconds int64) (*APIKey, error) {
 	var k APIKey
 	err := d.pool.QueryRow(ctx,
-		`INSERT INTO api_keys (key_hash, key_prefix, name) VALUES ($1, $2, $3) RETURNING id, name, key_prefix, created_at`,
-		keyHash, keyPrefix, name,
-	).Scan(&k.ID, &k.Name, &k.KeyPrefix, &k.CreatedAt)
+		`INSERT INTO api_keys (key_hash, key_prefix, name, expires_at)
+		 VALUES ($1, $2, $3, CASE WHEN $4::bigint > 0 THEN now() + $4::bigint * interval '1 second' END)
+		 RETURNING id, name, key_prefix, created_at, expires_at`,
+		keyHash, keyPrefix, name, ttlSeconds,
+	).Scan(&k.ID, &k.Name, &k.KeyPrefix, &k.CreatedAt, &k.ExpiresAt)
 	if err != nil {
 		return nil, fmt.Errorf("insert api key: %w", err)
 	}
 	return &k, nil
 }
 
-// List returns all keys, newest first.
+// List returns all keys, newest first, expired ones included until they are swept.
 func (d *DB) List(ctx context.Context) ([]APIKey, error) {
-	rows, err := d.pool.Query(ctx, `SELECT id, name, key_prefix, created_at FROM api_keys ORDER BY created_at DESC`)
+	rows, err := d.pool.Query(ctx, `SELECT id, name, key_prefix, created_at, expires_at FROM api_keys ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list api keys: %w", err)
 	}
@@ -92,7 +101,7 @@ func (d *DB) List(ctx context.Context) ([]APIKey, error) {
 	var keys []APIKey
 	for rows.Next() {
 		var k APIKey
-		if err := rows.Scan(&k.ID, &k.Name, &k.KeyPrefix, &k.CreatedAt); err != nil {
+		if err := rows.Scan(&k.ID, &k.Name, &k.KeyPrefix, &k.CreatedAt, &k.ExpiresAt); err != nil {
 			return nil, fmt.Errorf("scan api key: %w", err)
 		}
 		keys = append(keys, k)
@@ -100,19 +109,36 @@ func (d *DB) List(ctx context.Context) ([]APIKey, error) {
 	return keys, rows.Err()
 }
 
-// GetByHash returns the key with the given hash, or ErrNotFound.
+// GetByHash returns the key with the given hash. It returns ErrNotFound when there is none, and
+// the key together with ErrExpired when its expiry has passed.
 func (d *DB) GetByHash(ctx context.Context, keyHash string) (*APIKey, error) {
 	var k APIKey
+	var expired bool
 	err := d.pool.QueryRow(ctx,
-		`SELECT id, name, key_prefix, created_at FROM api_keys WHERE key_hash = $1`, keyHash,
-	).Scan(&k.ID, &k.Name, &k.KeyPrefix, &k.CreatedAt)
+		`SELECT id, name, key_prefix, created_at, expires_at, (expires_at IS NOT NULL AND expires_at <= now())
+		 FROM api_keys WHERE key_hash = $1`, keyHash,
+	).Scan(&k.ID, &k.Name, &k.KeyPrefix, &k.CreatedAt, &k.ExpiresAt, &expired)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get api key: %w", err)
 	}
+	if expired {
+		return &k, ErrExpired
+	}
 	return &k, nil
+}
+
+// DeleteExpired removes the keys that expired more than retention ago and returns how many.
+func (d *DB) DeleteExpired(ctx context.Context, retention time.Duration) (int64, error) {
+	tag, err := d.pool.Exec(ctx,
+		`DELETE FROM api_keys WHERE expires_at IS NOT NULL AND expires_at < now() - $1::bigint * interval '1 second'`,
+		int64(retention.Seconds()))
+	if err != nil {
+		return 0, fmt.Errorf("delete expired api keys: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // Delete removes a key and reports whether one existed. id must be a UUID.

@@ -41,29 +41,64 @@ func New(baseURL string, opts ...Option) *Client {
 	return c
 }
 
-// ValidateKey reports whether rawKey is a known API key. It returns true for a valid key, false
-// for an unknown one, and an error when keystorage could not give an answer.
-func (c *Client) ValidateKey(ctx context.Context, rawKey string) (bool, error) {
+// Verdict is what keystorage says about a raw key.
+type Verdict int
+
+const (
+	// Unknown means keystorage has no such key.
+	Unknown Verdict = iota
+	// Valid means the key exists and has not expired.
+	Valid
+	// Expired means the key exists but its expiry has passed.
+	Expired
+)
+
+// Result is the answer to a validation.
+type Result struct {
+	Verdict Verdict
+	// ExpiresAt is when a valid key stops working; nil when it never expires.
+	ExpiresAt *time.Time
+}
+
+// ValidateKey asks keystorage about rawKey. An error means no answer could be obtained, which is
+// never to be read as a verdict.
+func (c *Client) ValidateKey(ctx context.Context, rawKey string) (Result, error) {
 	body, err := json.Marshal(map[string]string{"key": rawKey})
 	if err != nil {
-		return false, err
+		return Result{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api-keys/validate", bytes.NewReader(body))
 	if err != nil {
-		return false, err
+		return Result{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("validate api key: %w", err)
+		return Result{}, fmt.Errorf("validate api key: %w", err)
 	}
 	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return true, nil
+		var ok struct {
+			ExpiresAt *time.Time `json:"expires_at"`
+		}
+		if err := json.Unmarshal(raw, &ok); err != nil {
+			return Result{}, fmt.Errorf("validate api key: unreadable answer: %w", err)
+		}
+		return Result{Verdict: Valid, ExpiresAt: ok.ExpiresAt}, nil
 	case http.StatusUnauthorized:
-		return false, nil
+		var e struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(raw, &e)
+		if e.Error.Code == "expired_api_key" {
+			return Result{Verdict: Expired}, nil
+		}
+		return Result{Verdict: Unknown}, nil
 	}
-	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-	return false, fmt.Errorf("validate api key: status %d: %s", resp.StatusCode, bytes.TrimSpace(msg))
+	return Result{}, fmt.Errorf("validate api key: status %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
 }

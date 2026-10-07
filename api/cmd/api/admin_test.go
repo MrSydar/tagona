@@ -231,3 +231,41 @@ func TestAdminDeletePurgesVerdictCache(t *testing.T) {
 		t.Fatal("a successful delete did not purge the cache")
 	}
 }
+
+func TestAdminCreateForwardsTTLStrictly(t *testing.T) {
+	status := http.StatusCreated
+	ks, seen := recordingKeystorage(t, &status)
+	router := newTestRouter(t, ks.URL, gatewayConfig{})
+
+	forwarded := func(body string) (int, string) {
+		before := len(seen())
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, adminRequest(http.MethodPost, "/v1/admin/api-keys", body))
+		got := seen()
+		if len(got) == before {
+			return w.Code, ""
+		}
+		return w.Code, got[len(got)-1].body
+	}
+
+	if code, body := forwarded(`{"name":"ui","ttl_seconds":14400}`); code != http.StatusCreated || body != `{"name":"ui","ttl_seconds":14400}` {
+		t.Fatalf("with a ttl: %d %q", code, body)
+	}
+	if code, body := forwarded(`{"name":"ui"}`); code != http.StatusCreated || body != `{"name":"ui"}` {
+		t.Fatalf("without one the field is left out so keystorage applies its default: %d %q", code, body)
+	}
+	// Values keystorage must judge (the limits are its policy) are passed on.
+	if code, body := forwarded(`{"name":"ui","ttl_seconds":-5}`); code != http.StatusCreated || body != `{"name":"ui","ttl_seconds":-5}` {
+		t.Fatalf("a negative ttl is keystorage's to refuse: %d %q", code, body)
+	}
+	// What is not an integer never reaches it.
+	before := len(seen())
+	for _, bad := range []string{`{"name":"ui","ttl_seconds":"60"}`, `{"name":"ui","ttl_seconds":1.5}`, `{"name":"ui","ttl_seconds":[]}`, `{"name":"ui","ttl":60}`} {
+		if code, _ := forwarded(bad); code != http.StatusBadRequest {
+			t.Errorf("%s: %d, want 400", bad, code)
+		}
+	}
+	if len(seen()) != before {
+		t.Fatal("a malformed ttl reached keystorage")
+	}
+}

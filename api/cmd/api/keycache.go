@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"sync"
 	"time"
+
+	"mrsydar/tagona/api/internal/keystorageapi"
 )
 
 const (
@@ -16,14 +18,13 @@ const (
 	negativeKeyTTL = 5 * time.Second
 )
 
-// keyValidator reports whether a raw API key is valid. *keystorageapi.Client
-// implements it.
+// keyValidator asks about a raw API key. *keystorageapi.Client implements it.
 type keyValidator interface {
-	ValidateKey(ctx context.Context, rawKey string) (bool, error)
+	ValidateKey(ctx context.Context, rawKey string) (keystorageapi.Result, error)
 }
 
 type cachedVerdict struct {
-	valid   bool
+	result  keystorageapi.Result
 	expires time.Time
 }
 
@@ -49,25 +50,35 @@ func keyDigest(rawKey string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (c *cachedValidator) ValidateKey(ctx context.Context, rawKey string) (bool, error) {
+func (c *cachedValidator) ValidateKey(ctx context.Context, rawKey string) (keystorageapi.Result, error) {
 	digest := keyDigest(rawKey)
 	now := c.now()
 
 	c.mu.Lock()
 	if e, ok := c.entries[digest]; ok && now.Before(e.expires) {
 		c.mu.Unlock()
-		return e.valid, nil
+		return e.result, nil
 	}
 	c.mu.Unlock()
 
-	valid, err := c.next.ValidateKey(ctx, rawKey)
+	res, err := c.next.ValidateKey(ctx, rawKey)
 	if err != nil {
-		return false, err
+		return keystorageapi.Result{}, err
 	}
 
 	ttl := c.ttl
-	if !valid && ttl > negativeKeyTTL {
+	if res.Verdict == keystorageapi.Unknown && ttl > negativeKeyTTL {
 		ttl = negativeKeyTTL
+	}
+	// A verdict never outlives the key: a key that expires in 3 seconds is not remembered as valid
+	// for 30, so expiry takes effect when it happens, not when the cache entry would have.
+	if res.Verdict == keystorageapi.Valid && res.ExpiresAt != nil {
+		if left := res.ExpiresAt.Sub(now); left < ttl {
+			ttl = left
+		}
+	}
+	if ttl <= 0 {
+		return res, nil
 	}
 	c.mu.Lock()
 	if len(c.entries) >= keyCacheMaxEntries {
@@ -80,9 +91,9 @@ func (c *cachedValidator) ValidateKey(ctx context.Context, rawKey string) (bool,
 			c.entries = make(map[string]cachedVerdict)
 		}
 	}
-	c.entries[digest] = cachedVerdict{valid: valid, expires: now.Add(ttl)}
+	c.entries[digest] = cachedVerdict{result: res, expires: now.Add(ttl)}
 	c.mu.Unlock()
-	return valid, nil
+	return res, nil
 }
 
 // Purge drops every cached verdict. Called after a key is deleted through the

@@ -55,6 +55,10 @@ func newStorageStub(t *testing.T, validKey string) *httptest.Server {
 				json.NewEncoder(w).Encode(map[string]string{"id": "key-id", "name": "test"})
 				return
 			}
+			if req.Key == "tagona_expired" {
+				writeError(w, http.StatusUnauthorized, "expired_api_key", "api key has expired")
+				return
+			}
 			writeError(w, http.StatusUnauthorized, "invalid_api_key", "invalid or unknown api key")
 		case r.Method == http.MethodDelete && r.URL.Path == "/api-keys/"+knownKeyID:
 			w.WriteHeader(http.StatusNoContent)
@@ -99,6 +103,19 @@ func TestAPIKeyAuth(t *testing.T) {
 		}
 		if code := decodeErrorCode(t, w.Body.Bytes()); code != "missing_api_key" {
 			t.Errorf("expected missing_api_key, got %q", code)
+		}
+	})
+
+	t.Run("expired key gets its own code", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, newRequest(t, http.MethodGet, "/v1/collections", func(r *http.Request) {
+			r.Header.Set("Authorization", "Bearer tagona_expired")
+		}))
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
+		}
+		if code := decodeErrorCode(t, w.Body.Bytes()); code != "expired_api_key" {
+			t.Errorf("expected expired_api_key, got %q", code)
 		}
 	})
 

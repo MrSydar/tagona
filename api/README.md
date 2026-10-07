@@ -48,6 +48,7 @@ Authorization: Bearer <api key>
 
 - Missing or malformed header → `401` `{"error":{"code":"missing_api_key","message":"authorization header with bearer api key is required"}}`
 - Unknown key → `401` `{"error":{"code":"invalid_api_key","message":"invalid or unknown api key"}}`
+- An expired key → `401` `{"error":{"code":"expired_api_key","message":"api key has expired"}}`: unlike `invalid_api_key` (unknown or malformed), it tells the client to get a new key
 - Keystorage unreachable during validation → `503` `{"error":{"code":"not_ready","message":"key service not available"}}`
 
 There is no RBAC: every valid API key grants complete access to all `/v1/*` endpoints. Keys are minted via the admin endpoints below and stored (hashed) by the keystorage service in its own database schema — the api service owns no database. The Bearer header is stripped before the request is forwarded to the internal storage service.
@@ -60,7 +61,7 @@ There is no RBAC: every valid API key grants complete access to all `/v1/*` endp
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/v1/admin/api-keys` | Create an API key |
+| `POST` | `/v1/admin/api-keys` | Create an API key, optionally with a lifetime: `{"name":"...","ttl_seconds":14400}` |
 | `GET` | `/v1/admin/api-keys` | List API keys |
 | `DELETE` | `/v1/admin/api-keys/{id}` | Delete an API key |
 
@@ -134,7 +135,7 @@ curl -s -X POST http://localhost:8080/v1/collections \
 | `API_HTTP_ADDR` | No | `:8080` | HTTP listen address |
 | `API_STORAGE_BASE_URL` | Yes | — | Base URL of the internal storage service (e.g. `http://storage:8082`) |
 | `API_KEYSTORAGE_BASE_URL` | Yes | — | Base URL of the internal keystorage service (e.g. `http://keystorage:8083`) |
-| `API_KEY_CACHE_TTL` | No | `30s` | How long key validation verdicts are cached (Go duration); `0` disables. Unknown keys are cached for at most 5s. Deleting a key through the gateway purges the cache; deletes made directly in keystorage take effect after the TTL |
+| `API_KEY_CACHE_TTL` | No | `30s` | How long key validation verdicts are cached (Go duration); `0` disables. A verdict never outlives the key itself: it is capped at the key's `expires_at`. Unknown keys are cached for at most 5s. Deleting a key through the gateway purges the cache; deletes made directly in keystorage take effect after the TTL |
 | `API_MAX_BODY_BYTES` | No | `33554432` (32 MiB) | Maximum request body size; `0` disables. A backstop above storage's own per-object limit |
 
 ---

@@ -8,9 +8,9 @@ Keystorage listens on `:8083` on the compose network and is not published on the
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| `POST` | `/api-keys/validate` | none | Body `{"key":"..."}`. Known key → `200` `{"id","name"}`; unknown → `401` `invalid_api_key`; empty → `400` `missing_key` |
-| `POST` | `/api-keys` | admin Basic | Create a key. Body `{"name":"..."}` (1–128 bytes of valid UTF-8). `201` `{"id","name","key","created_at"}` |
-| `GET` | `/api-keys` | admin Basic | List keys (never the raw key): `200` `{"keys":[{"id","name","key_prefix","created_at"}]}` |
+| `POST` | `/api-keys/validate` | none | Body `{"key":"..."}`. Valid → `200` `{"id","name","expires_at"}` (`expires_at` is `null` for a key that never expires); unknown → `401` `invalid_api_key`; **expired → `401` `expired_api_key`**; empty → `400` `missing_key` |
+| `POST` | `/api-keys` | admin Basic | Create a key. Body `{"name":"...","ttl_seconds":14400}`: `name` is 1–128 bytes of valid UTF-8, `ttl_seconds` is optional (see [Expiry](#expiry)). `201` `{"id","name","key","created_at","expires_at"}` |
+| `GET` | `/api-keys` | admin Basic | List keys (never the raw key), expired ones included until swept: `200` `{"keys":[{"id","name","key_prefix","created_at","expires_at"}]}` |
 | `DELETE` | `/api-keys/{id}` | admin Basic | `204`; `404` for an unknown id or one that is not a UUID |
 | `GET` | `/healthz`, `/readyz`, `/metrics` | none | Liveness; readiness (database ping); Prometheus metrics |
 
@@ -27,6 +27,19 @@ The public api exposes the three management routes only (as `/v1/admin/api-keys`
 | `KEYSTORAGE_HTTP_ADDR` | No | `:8083` | Listen address |
 | `KEYSTORAGE_ADMIN_USERNAME` | No | — | Admin username for key management; both admin variables must be set |
 | `KEYSTORAGE_ADMIN_PASSWORD` | No | — | Admin password for key management |
+| `KEYSTORAGE_DEFAULT_KEY_TTL` | No | `0` | Lifetime of a key created without `ttl_seconds`; `0` means it never expires (unless a maximum is set). A Go duration, e.g. `24h` |
+| `KEYSTORAGE_MAX_KEY_TTL` | No | `0` | Largest `ttl_seconds` that may be asked for; `0` means no cap. With a cap and no default, an omitted `ttl_seconds` gets the cap, so no key outlives it |
+| `KEYSTORAGE_EXPIRED_KEY_RETENTION` | No | `24h` | How long an expired key stays in the list before the sweeper deletes it |
+| `KEYSTORAGE_SWEEP_INTERVAL` | No | `1m` | How often expired keys past their retention are deleted (at least `1s`) |
+
+## Expiry
+
+A key may expire. `ttl_seconds` on creation makes it stop working that many seconds from now (at least 1; at most the configured cap, and never more than 100 years). Leaving it out uses `KEYSTORAGE_DEFAULT_KEY_TTL`, which is no expiry unless configured. `0` is refused (`invalid_ttl`): it is not a way to say "never".
+
+- **Judged by the database's clock**, in the validation query itself, so there is one clock and the API cannot disagree with it. The key stops working at `expires_at`, exactly.
+- **An expired key is not an unknown one:** validation answers `401 expired_api_key`, so a client that holds one knows to get a new key. Unknown and malformed keys keep `invalid_api_key`.
+- **Cached verdicts never outlive the key.** The api caches validation answers briefly; `expires_at` in the answer caps each cached verdict, so an expiry takes effect when it happens and not when a cache entry would have run out.
+- **Expired keys are swept:** they stay listed (with `expires_at`) for `KEYSTORAGE_EXPIRED_KEY_RETENTION`, then a background sweeper deletes them. It also runs at start, for keys that expired while the service was down.
 
 ## Database
 

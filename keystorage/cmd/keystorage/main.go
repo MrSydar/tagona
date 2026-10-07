@@ -16,6 +16,7 @@ import (
 	"mrsydar/tagona/keystorage/internal/config"
 	"mrsydar/tagona/keystorage/internal/db"
 	"mrsydar/tagona/keystorage/internal/server"
+	"mrsydar/tagona/keystorage/internal/sweeper"
 	"mrsydar/tagona/keystorage/migrations"
 )
 
@@ -46,14 +47,21 @@ func main() {
 	}
 	cancel()
 
+	store := db.New(pool)
+	sweepCtx, stopSweeping := context.WithCancel(context.Background())
+	defer stopSweeping()
+	go sweeper.Run(sweepCtx, store, cfg.ExpiredKeyRetention, cfg.SweepInterval)
+
 	httpServer := &http.Server{
-		Addr:         cfg.HTTPAddr,
-		Handler:      server.New(db.New(pool), cfg.AdminUsername, cfg.AdminPassword).Router(),
+		Addr: cfg.HTTPAddr,
+		Handler: server.New(store, cfg.AdminUsername, cfg.AdminPassword,
+			server.WithKeyTTL(cfg.DefaultKeyTTL, cfg.MaxKeyTTL)).Router(),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
 	go func() {
-		slog.Info("starting keystorage", "addr", cfg.HTTPAddr, "schema", cfg.PGSchema)
+		slog.Info("starting keystorage", "addr", cfg.HTTPAddr, "schema", cfg.PGSchema,
+			"default_key_ttl", cfg.DefaultKeyTTL, "max_key_ttl", cfg.MaxKeyTTL, "expired_key_retention", cfg.ExpiredKeyRetention)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("http server error", "error", err)
 			os.Exit(1)
@@ -66,5 +74,6 @@ func main() {
 	slog.Info("shutting down")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
+	stopSweeping()
 	_ = httpServer.Shutdown(shutdownCtx)
 }
