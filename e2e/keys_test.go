@@ -169,3 +169,96 @@ func TestDatabaseRolesAreIsolated(t *testing.T) {
 		assert.Contains(t, err.Error(), "permission denied", "%s: %s", q.who, q.sql)
 	}
 }
+
+type expiringKey struct {
+	ID        string  `json:"id"`
+	Key       string  `json:"key"`
+	ExpiresAt *string `json:"expires_at"`
+}
+
+// A key created with ttl_seconds works until it expires, and then gets its own error code at once:
+// the gateway does not keep believing a cached verdict past the key's expiry.
+func TestKeyExpiry(t *testing.T) {
+	status, body := do(t, http.MethodPost, "/v1/admin/api-keys", `{"name":"e2e-expiry","ttl_seconds":3}`, asAdmin)
+	require.Equal(t, http.StatusCreated, status, string(body))
+	var k expiringKey
+	require.NoError(t, json.Unmarshal(body, &k))
+	t.Cleanup(func() { do(t, http.MethodDelete, "/v1/admin/api-keys/"+k.ID, "", asAdmin) })
+	require.NotNil(t, k.ExpiresAt, "a key created with a ttl reports when it expires: %s", body)
+	expires, err := time.Parse(time.RFC3339Nano, *k.ExpiresAt)
+	require.NoError(t, err)
+	assert.WithinDuration(t, time.Now().Add(3*time.Second), expires, 2*time.Second)
+
+	// It works, which also caches a verdict in the gateway.
+	status, body = do(t, http.MethodGet, "/v1/collections", "", asKey(k.Key))
+	require.Equal(t, http.StatusOK, status, string(body))
+
+	// The list shows the expiry too.
+	status, body = do(t, http.MethodGet, "/v1/admin/api-keys", "", asAdmin)
+	require.Equal(t, http.StatusOK, status)
+	var list struct {
+		Keys []expiringKey `json:"keys"`
+	}
+	require.NoError(t, json.Unmarshal(body, &list))
+	found := false
+	for _, listed := range list.Keys {
+		if listed.ID == k.ID {
+			found = true
+			require.NotNil(t, listed.ExpiresAt)
+			assert.Equal(t, expires.UTC().Truncate(time.Millisecond), mustParse(t, *listed.ExpiresAt).UTC().Truncate(time.Millisecond))
+		}
+	}
+	assert.True(t, found, "the key is listed")
+
+	// Just after the expiry it is refused with the dedicated code, not after the cache would run out.
+	time.Sleep(time.Until(expires) + 300*time.Millisecond)
+	status, body = do(t, http.MethodGet, "/v1/collections", "", asKey(k.Key))
+	require.Equal(t, http.StatusUnauthorized, status, string(body))
+	assert.Equal(t, "expired_api_key", errorCode(t, body))
+
+	// An expired key is not an unknown one: an unknown key keeps invalid_api_key.
+	status, body = do(t, http.MethodGet, "/v1/collections", "", asKey("tagona_"+strings.Repeat("0", 64)))
+	require.Equal(t, http.StatusUnauthorized, status)
+	assert.Equal(t, "invalid_api_key", errorCode(t, body))
+
+	// It is still listed (until swept), and can be deleted like any key.
+	status, _ = do(t, http.MethodDelete, "/v1/admin/api-keys/"+k.ID, "", asAdmin)
+	assert.Equal(t, http.StatusNoContent, status)
+}
+
+func mustParse(t *testing.T, s string) time.Time {
+	t.Helper()
+	v, err := time.Parse(time.RFC3339Nano, s)
+	require.NoError(t, err)
+	return v
+}
+
+func TestKeyWithoutTTLNeverExpires(t *testing.T) {
+	status, body := do(t, http.MethodPost, "/v1/admin/api-keys", `{"name":"e2e-forever"}`, asAdmin)
+	require.Equal(t, http.StatusCreated, status, string(body))
+	var k expiringKey
+	require.NoError(t, json.Unmarshal(body, &k))
+	t.Cleanup(func() { do(t, http.MethodDelete, "/v1/admin/api-keys/"+k.ID, "", asAdmin) })
+	assert.Nil(t, k.ExpiresAt, "no ttl_seconds, no expiry (the default configuration): %s", body)
+	assert.Contains(t, string(body), `"expires_at":null`, "an explicit null, not a missing field")
+}
+
+func TestKeyTTLValidation(t *testing.T) {
+	tests := []struct {
+		name, body, code string
+	}{
+		{"zero is not no-expiry", `{"name":"x","ttl_seconds":0}`, "invalid_ttl"},
+		{"negative", `{"name":"x","ttl_seconds":-1}`, "invalid_ttl"},
+		{"absurdly large", `{"name":"x","ttl_seconds":1000000000000000000}`, "invalid_ttl"},
+		{"a string", `{"name":"x","ttl_seconds":"60"}`, "invalid_json"},
+		{"a fraction", `{"name":"x","ttl_seconds":1.5}`, "invalid_json"},
+		{"misspelled", `{"name":"x","ttl":60}`, "invalid_json"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, body := do(t, http.MethodPost, "/v1/admin/api-keys", tt.body, asAdmin)
+			assert.Equal(t, http.StatusBadRequest, status, string(body))
+			assert.Equal(t, tt.code, errorCode(t, body))
+		})
+	}
+}

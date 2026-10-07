@@ -22,22 +22,30 @@ type memStore struct {
 	next    int
 	pingErr error
 	failOn  string // method name that returns an error
+	now     time.Time
 }
 
 func newMemStore() *memStore {
-	return &memStore{keys: map[string]db.APIKey{}, hashes: map[string]string{}}
+	return &memStore{keys: map[string]db.APIKey{}, hashes: map[string]string{}, now: time.Now()}
 }
+
+// advance moves the store's clock forward.
+func (m *memStore) advance(d time.Duration) { m.now = m.now.Add(d) }
 
 func (m *memStore) Ping(context.Context) error { return m.pingErr }
 
-func (m *memStore) Create(_ context.Context, hash, prefix, name string) (*db.APIKey, error) {
+func (m *memStore) Create(_ context.Context, hash, prefix, name string, ttlSeconds int64) (*db.APIKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failOn == "Create" {
 		return nil, errors.New("boom")
 	}
 	m.next++
-	k := db.APIKey{ID: fakeUUID(m.next), Name: name, KeyPrefix: prefix, CreatedAt: time.Now()}
+	k := db.APIKey{ID: fakeUUID(m.next), Name: name, KeyPrefix: prefix, CreatedAt: m.now}
+	if ttlSeconds > 0 {
+		exp := m.now.Add(time.Duration(ttlSeconds) * time.Second)
+		k.ExpiresAt = &exp
+	}
 	m.keys[k.ID] = k
 	m.hashes[hash] = k.ID
 	return &k, nil
@@ -67,6 +75,9 @@ func (m *memStore) GetByHash(_ context.Context, hash string) (*db.APIKey, error)
 		return nil, db.ErrNotFound
 	}
 	k := m.keys[id]
+	if k.ExpiresAt != nil && !k.ExpiresAt.After(m.now) {
+		return &k, db.ErrExpired
+	}
 	return &k, nil
 }
 
@@ -317,5 +328,172 @@ func TestUnknownRoutes(t *testing.T) {
 	// The management paths are admin-only even for methods that are not routed.
 	if rec := do(h, http.MethodPut, "/api-keys", "", admin); rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("PUT: %d", rec.Code)
+	}
+}
+
+func createWith(t *testing.T, h http.Handler, body string) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+	rec := do(h, http.MethodPost, "/api-keys", body, admin)
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	return rec, out
+}
+
+func TestCreateWithTTL(t *testing.T) {
+	store := newMemStore()
+	h := newTestServer(store)
+
+	t.Run("without ttl_seconds the key never expires", func(t *testing.T) {
+		rec, out := createWith(t, h, `{"name":"a"}`)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("%d %s", rec.Code, rec.Body)
+		}
+		if v, present := out["expires_at"]; !present || v != nil {
+			t.Fatalf("expires_at = %v (present %v), want an explicit null", v, present)
+		}
+	})
+
+	t.Run("ttl_seconds sets the expiry", func(t *testing.T) {
+		rec, out := createWith(t, h, `{"name":"b","ttl_seconds":14400}`)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("%d %s", rec.Code, rec.Body)
+		}
+		exp, err := time.Parse(time.RFC3339Nano, out["expires_at"].(string))
+		if err != nil || !exp.Equal(store.now.Add(4*time.Hour)) {
+			t.Fatalf("expires_at = %v (%v), want 4h after creation", out["expires_at"], err)
+		}
+	})
+
+	for name, body := range map[string]string{
+		"zero":      `{"name":"c","ttl_seconds":0}`,
+		"negative":  `{"name":"c","ttl_seconds":-5}`,
+		"fractions": `{"name":"c","ttl_seconds":1.5}`,
+		"a string":  `{"name":"c","ttl_seconds":"60"}`,
+		"absurd":    `{"name":"c","ttl_seconds":1000000000000000000}`,
+		"just over": `{"name":"c","ttl_seconds":3153600001}`,
+	} {
+		t.Run("rejects "+name, func(t *testing.T) {
+			rec, _ := createWith(t, h, body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%d %s", rec.Code, rec.Body)
+			}
+			if code := errCode(t, rec); code != "invalid_ttl" && code != "invalid_json" {
+				t.Fatalf("code = %q", code)
+			}
+		})
+	}
+	if rec, _ := createWith(t, h, `{"name":"c","ttl_seconds":0}`); errCode(t, rec) != "invalid_ttl" {
+		t.Fatal("ttl_seconds 0 must be invalid_ttl: it is not a way to say \"no expiry\", omit it")
+	}
+}
+
+func TestKeyTTLDefaultAndCap(t *testing.T) {
+	newServer := func(def, max time.Duration) (http.Handler, *memStore) {
+		store := newMemStore()
+		return New(store, "admin", "secret", WithKeyTTL(def, max)).Router(), store
+	}
+	expiryOf := func(t *testing.T, h http.Handler, store *memStore, body string) (time.Duration, int) {
+		t.Helper()
+		rec, out := createWith(t, h, body)
+		if rec.Code != http.StatusCreated {
+			return 0, rec.Code
+		}
+		if out["expires_at"] == nil {
+			return 0, rec.Code
+		}
+		exp, _ := time.Parse(time.RFC3339Nano, out["expires_at"].(string))
+		return exp.Sub(store.now), rec.Code
+	}
+
+	t.Run("default applies when ttl_seconds is omitted", func(t *testing.T) {
+		h, store := newServer(time.Hour, 0)
+		if d, code := expiryOf(t, h, store, `{"name":"a"}`); code != 201 || d != time.Hour {
+			t.Fatalf("ttl %v (%d), want 1h", d, code)
+		}
+		if d, _ := expiryOf(t, h, store, `{"name":"a","ttl_seconds":10}`); d != 10*time.Second {
+			t.Fatalf("an explicit ttl_seconds must win over the default: %v", d)
+		}
+	})
+
+	t.Run("the cap rejects a longer ttl and applies when nothing else is set", func(t *testing.T) {
+		h, store := newServer(0, 2*time.Hour)
+		if _, code := expiryOf(t, h, store, `{"name":"a","ttl_seconds":7201}`); code != 400 {
+			t.Fatalf("a ttl above the cap: %d", code)
+		}
+		if d, code := expiryOf(t, h, store, `{"name":"a","ttl_seconds":7200}`); code != 201 || d != 2*time.Hour {
+			t.Fatalf("a ttl at the cap: %v (%d)", d, code)
+		}
+		if d, code := expiryOf(t, h, store, `{"name":"a"}`); code != 201 || d != 2*time.Hour {
+			t.Fatalf("with a cap and no default, an omitted ttl gets the cap so no key outlives it: %v (%d)", d, code)
+		}
+	})
+
+	t.Run("a default below the cap wins over the cap when omitted", func(t *testing.T) {
+		h, store := newServer(time.Hour, 4*time.Hour)
+		if d, _ := expiryOf(t, h, store, `{"name":"a"}`); d != time.Hour {
+			t.Fatalf("ttl %v, want 1h", d)
+		}
+	})
+}
+
+func TestValidateDistinguishesExpiredFromUnknown(t *testing.T) {
+	store := newMemStore()
+	h := newTestServer(store)
+	_, out := createWith(t, h, `{"name":"short","ttl_seconds":60}`)
+	raw := out["key"].(string)
+	_, forever := createWith(t, h, `{"name":"forever"}`)
+
+	validate := func(key string) *httptest.ResponseRecorder {
+		return do(h, http.MethodPost, "/api-keys/validate", `{"key":"`+key+`"}`, nil)
+	}
+
+	rec := validate(raw)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"expires_at":"`) {
+		t.Fatalf("valid key: %d %s (the answer must carry expires_at)", rec.Code, rec.Body)
+	}
+	if rec := validate(forever["key"].(string)); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"expires_at":null`) {
+		t.Fatalf("a key without expiry: %d %s", rec.Code, rec.Body)
+	}
+
+	store.advance(59 * time.Second)
+	if rec := validate(raw); rec.Code != 200 {
+		t.Fatalf("one second before expiry: %d", rec.Code)
+	}
+	store.advance(time.Second) // exactly at expiry: expired
+	rec = validate(raw)
+	if rec.Code != http.StatusUnauthorized || errCode(t, rec) != "expired_api_key" {
+		t.Fatalf("at expiry: %d %s", rec.Code, rec.Body)
+	}
+	if rec := validate("tagona_never_existed"); rec.Code != 401 || errCode(t, rec) != "invalid_api_key" {
+		t.Fatalf("an unknown key keeps invalid_api_key: %d %s", rec.Code, rec.Body)
+	}
+	// The key that never expires is unaffected.
+	store.advance(100 * 24 * time.Hour)
+	if rec := validate(forever["key"].(string)); rec.Code != 200 {
+		t.Fatalf("a key without expiry: %d", rec.Code)
+	}
+}
+
+func TestListShowsExpiry(t *testing.T) {
+	h := newTestServer(newMemStore())
+	createWith(t, h, `{"name":"short","ttl_seconds":60}`)
+	createWith(t, h, `{"name":"forever"}`)
+	rec := do(h, http.MethodGet, "/api-keys", "", admin)
+	var list struct {
+		Keys []struct {
+			Name      string
+			ExpiresAt *time.Time `json:"expires_at"`
+		}
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &list)
+	byName := map[string]*time.Time{}
+	for _, k := range list.Keys {
+		byName[k.Name] = k.ExpiresAt
+	}
+	if len(byName) != 2 || byName["short"] == nil || byName["forever"] != nil {
+		t.Fatalf("list = %s", rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"expires_at":null`) {
+		t.Fatalf("a key without expiry must show an explicit null: %s", rec.Body)
 	}
 }

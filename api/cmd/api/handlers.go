@@ -294,8 +294,11 @@ func (g *gateway) createKey(w http.ResponseWriter, r *http.Request) {
 		reject(w, e)
 		return
 	}
+	// ttl_seconds is forwarded as is: keystorage owns the limits (at least 1, at most the configured
+	// maximum, and the default when it is left out).
 	var req struct {
-		Name string `json:"name"`
+		Name       string `json:"name"`
+		TTLSeconds *int64 `json:"ttl_seconds,omitempty"`
 	}
 	if e := decodeJSON(w, r, &req, adminMaxBodyBytes); e != nil {
 		reject(w, e)

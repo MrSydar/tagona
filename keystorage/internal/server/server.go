@@ -15,6 +15,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -33,6 +34,9 @@ import (
 const (
 	maxBodyBytes = 4 << 10
 	maxNameBytes = 128
+	// hardMaxTTLSeconds bounds ttl_seconds whatever the configuration says (100 years), so that an
+	// absurd value is a 400 and not an out-of-range timestamp in the database.
+	hardMaxTTLSeconds = 100 * 365 * 24 * 3600
 )
 
 var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
@@ -40,8 +44,10 @@ var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[
 // Store is the persistence the server needs; *db.DB implements it.
 type Store interface {
 	Ping(ctx context.Context) error
-	Create(ctx context.Context, keyHash, keyPrefix, name string) (*db.APIKey, error)
+	Create(ctx context.Context, keyHash, keyPrefix, name string, ttlSeconds int64) (*db.APIKey, error)
 	List(ctx context.Context) ([]db.APIKey, error)
+	// GetByHash returns db.ErrNotFound for an unknown key, and the key with db.ErrExpired for one
+	// whose expiry has passed.
 	GetByHash(ctx context.Context, keyHash string) (*db.APIKey, error)
 	Delete(ctx context.Context, id string) (bool, error)
 }
@@ -51,12 +57,53 @@ type Server struct {
 	store         Store
 	adminUsername string
 	adminPassword string
+	defaultTTL    time.Duration
+	maxTTL        time.Duration
+}
+
+// Option customizes a Server.
+type Option func(*Server)
+
+// WithKeyTTL sets the lifetime of a key created without ttl_seconds (0: it never expires) and the
+// largest ttl_seconds that may be asked for (0: no cap). With a cap but no default, a key created
+// without ttl_seconds gets the cap, so that no key outlives it.
+func WithKeyTTL(defaultTTL, maxTTL time.Duration) Option {
+	return func(s *Server) { s.defaultTTL, s.maxTTL = defaultTTL, maxTTL }
 }
 
 // New creates a server. Empty admin credentials disable key management.
-func New(store Store, adminUsername, adminPassword string) *Server {
-	return &Server{store: store, adminUsername: adminUsername, adminPassword: adminPassword}
+func New(store Store, adminUsername, adminPassword string, opts ...Option) *Server {
+	s := &Server{store: store, adminUsername: adminUsername, adminPassword: adminPassword}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
+
+// ttlSeconds is the lifetime to give a new key: the requested one, or the default, or 0 for none.
+func (s *Server) ttlSeconds(requested *int64) (int64, *requestProblem) {
+	if requested == nil {
+		switch {
+		case s.defaultTTL > 0:
+			return int64(s.defaultTTL.Seconds()), nil
+		case s.maxTTL > 0:
+			return int64(s.maxTTL.Seconds()), nil
+		}
+		return 0, nil
+	}
+	if *requested < 1 {
+		return 0, &requestProblem{"invalid_ttl", "ttl_seconds must be at least 1"}
+	}
+	if *requested > hardMaxTTLSeconds {
+		return 0, &requestProblem{"invalid_ttl", fmt.Sprintf("ttl_seconds must be at most %d", hardMaxTTLSeconds)}
+	}
+	if s.maxTTL > 0 && time.Duration(*requested)*time.Second > s.maxTTL {
+		return 0, &requestProblem{"invalid_ttl", fmt.Sprintf("ttl_seconds must be at most %d", int64(s.maxTTL.Seconds()))}
+	}
+	return *requested, nil
+}
+
+type requestProblem struct{ code, message string }
 
 // Router builds the routes.
 func (s *Server) Router() http.Handler {
@@ -124,7 +171,8 @@ func (s *Server) adminAuth(next http.Handler) http.Handler {
 
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name string `json:"name"`
+		Name       string `json:"name"`
+		TTLSeconds *int64 `json:"ttl_seconds"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -133,13 +181,18 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_name", "api key name must be 1-128 bytes of valid UTF-8")
 		return
 	}
+	ttl, problem := s.ttlSeconds(req.TTLSeconds)
+	if problem != nil {
+		writeError(w, http.StatusBadRequest, problem.code, problem.message)
+		return
+	}
 	raw, hash, prefix, err := keys.Generate()
 	if err != nil {
 		slog.Error("generate api key failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to generate api key")
 		return
 	}
-	key, err := s.store.Create(r.Context(), hash, prefix, req.Name)
+	key, err := s.store.Create(r.Context(), hash, prefix, req.Name, ttl)
 	if err != nil {
 		slog.Error("create api key failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to create api key")
@@ -147,7 +200,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	}
 	// The raw key appears only in this response; only its hash is stored.
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"id": key.ID, "name": key.Name, "key": raw, "created_at": key.CreatedAt,
+		"id": key.ID, "name": key.Name, "key": raw, "created_at": key.CreatedAt, "expires_at": key.ExpiresAt,
 	})
 }
 
@@ -183,7 +236,9 @@ func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// validate answers 200 with the key's id and name when the raw key is known, and 401 otherwise.
+// validate answers 200 with the key's id, name and expiry when the raw key is valid. Otherwise it
+// answers 401: invalid_api_key for a key it does not know, expired_api_key for one that has expired,
+// so that a client holding an expired key knows to get a new one.
 func (s *Server) validate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Key string `json:"key"`
@@ -200,12 +255,16 @@ func (s *Server) validate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid_api_key", "invalid or unknown api key")
 		return
 	}
+	if errors.Is(err, db.ErrExpired) {
+		writeError(w, http.StatusUnauthorized, "expired_api_key", "api key has expired")
+		return
+	}
 	if err != nil {
 		slog.Error("validate api key failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to validate api key")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"id": key.ID, "name": key.Name})
+	writeJSON(w, http.StatusOK, map[string]any{"id": key.ID, "name": key.Name, "expires_at": key.ExpiresAt})
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {

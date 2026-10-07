@@ -248,13 +248,20 @@ func apiKeyAuth(keyClient keyValidator, next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "missing_api_key", "authorization header with bearer api key is required")
 			return
 		}
-		valid, err := keyClient.ValidateKey(r.Context(), key)
+		res, err := keyClient.ValidateKey(r.Context(), key)
 		if err != nil {
 			slog.Error("api key validation failed", "error", err)
 			writeError(w, http.StatusServiceUnavailable, "not_ready", "key service not available")
 			return
 		}
-		if !valid {
+		switch res.Verdict {
+		case keystorageapi.Valid:
+		case keystorageapi.Expired:
+			// Its own code, so a client that holds an expired key knows to get a new one.
+			slog.Debug("apiKeyAuth rejected: expired api key")
+			writeError(w, http.StatusUnauthorized, "expired_api_key", "api key has expired")
+			return
+		default:
 			slog.Debug("apiKeyAuth rejected: invalid or unknown api key")
 			writeError(w, http.StatusUnauthorized, "invalid_api_key", "invalid or unknown api key")
 			return
