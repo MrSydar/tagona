@@ -37,12 +37,12 @@ This is a **Go workspace monorepo** (`go.work` at the root).
 
 | Directory | Module | Description |
 |-----------|--------|-------------|
-| `api/` | `mrsydar/tagona/api` | Public API gateway: auth, allowlisted reverse proxy to storage |
+| `api/` | `mrsydar/tagona/api` | Public API gateway: auth, strict request validation, rebuilds requests for storage and keystorage |
 | `storage/` | `mrsydar/tagona/storage` | Internal data service, DB migrations, S3 client, Go client (`pkg/client`) and CLI |
 | `tagger/` | `mrsydar/tagona/tagger` | Tag-evaluation engine |
 | `e2e/` | standalone module | End-to-end tests (run with `GOWORK=off`) |
 
-> **Adding a public route:** the api service proxies an explicit allowlist. A new storage route is **not** reachable publicly until you add it to `proxiedRoutes` in `api/cmd/api/gateway.go`. Also document it in `api/openapi/v1.yaml` (the OpenAPI contract served at `/v1/docs`) and `api/README.md`; `go test ./api/...` fails if the spec and the routes disagree, and CI lints the spec (`npx @redocly/cli lint api/openapi/v1.yaml`).
+> **Adding a public route:** the api service does not forward requests; every public route is a handler (`api/cmd/api/handlers.go`) that validates the request against what the route accepts (`sanitize.go`) and builds a new one for the internal service. A new storage route is **not** reachable publicly until you add a handler and register it in `newRouter` (`main.go`), with a test for what it must reject. Internal services have no `/v1` prefix. Also document the route in `api/openapi/v1.yaml` (the OpenAPI contract served at `/v1/docs`) and `api/README.md`; `go test ./api/...` fails if the spec and the routes disagree, and CI lints the spec (`npx @redocly/cli lint api/openapi/v1.yaml`).
 
 > **Important:** `tagger` imports `mrsydar/tagona/storage/pkg/client`. This is resolved by the Go workspace, **not** by listing `storage` in `tagger/go.mod`. Building from a module directory works because Go automatically resolves sibling workspace modules.
 

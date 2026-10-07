@@ -48,7 +48,7 @@ func (c *Client) ValidateKey(ctx context.Context, rawKey string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/internal/v1/api-keys/validate", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api-keys/validate", bytes.NewReader(body))
 	if err != nil {
 		return false, err
 	}

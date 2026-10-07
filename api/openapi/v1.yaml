@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Tagona API
-  version: 1.2.0
+  version: 1.3.0
   description: |
     Storage for collections of objects with sparse boolean tags that are evaluated on demand.
 
@@ -24,6 +24,13 @@ info:
     (by a query or a tags request). A tag that was not evaluated is *unknown*. Both tag-aware
     endpoints accept `evaluate=false` to answer from known tags only, without calling the
     tagging engine.
+
+    **Strict requests.** The gateway checks every request against what its endpoint accepts and refuses
+    anything else with `400` before it reaches an internal service: a query parameter the endpoint does not
+    define (`invalid_parameter`), a parameter given more than once (`invalid_parameter`), a JSON field it
+    does not define or data after the JSON object (`invalid_json`), and a body on an endpoint that takes none
+    (`unexpected_body`). Values are checked for their form (numbers, timestamps, booleans, identifiers); limits
+    that are configured in the service, such as the maximum page size, are enforced by the service.
 
     **Errors** always have the shape `{"error": {"code": "...", "message": "..."}}`.
   license:
@@ -85,7 +92,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/CollectionCreate"
         "400":
-          description: "`invalid_json`, `invalid_name` or `unsupported_data_type`."
+          description: "`invalid_json`, `invalid_parameter`, `invalid_name`, `invalid_data_type` or `unsupported_data_type`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -144,7 +151,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/CollectionTags"
         "400":
-          description: "`invalid_collection_name`, `invalid_limit`, `invalid_prefix` or `invalid_cursor`."
+          description: "`invalid_collection_name`, `invalid_parameter`, `unexpected_body`, `invalid_limit`, `invalid_prefix` or `invalid_cursor`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -222,7 +229,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ObjectUploadResponse" }
         "400":
-          description: "`missing_data_type`, `invalid_data_type`, `invalid_ttl` or `invalid_date`."
+          description: "`missing_data_type`, `invalid_data_type`, `invalid_ttl`, `invalid_date`, `invalid_parameter` or `invalid_collection_name`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -263,8 +270,8 @@ paths:
               schema: { $ref: "#/components/schemas/TagsQueryResponse" }
         "400":
           description: >-
-            `invalid_json`, `invalid_limit`, `invalid_tags`, `invalid_date_filter`, `invalid_timeout`
-            or `invalid_collection_name`.
+            `invalid_json`, `invalid_parameter`, `invalid_limit`, `invalid_cursor`, `invalid_tags`,
+            `invalid_date_filter`, `invalid_timeout` or `invalid_collection_name`.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -365,7 +372,7 @@ paths:
                   summary: evaluate=false, "java" never evaluated
                   value: { id: 3ab1b6e0-a179-424b-9825-2d2817c761ae, tags: { golang: true, java: null } }
         "400":
-          description: "`invalid_tags`, `invalid_tag` or `invalid_evaluate`."
+          description: "`invalid_tags`, `invalid_tag`, `invalid_evaluate`, `invalid_parameter`, `unexpected_body` or `invalid_collection_name`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -401,7 +408,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ApiKeyCreated" }
         "400":
-          description: "`invalid_json` or `invalid_name`."
+          description: "`invalid_json`, `invalid_parameter` or `invalid_name`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -476,7 +483,7 @@ components:
 
   responses:
     InvalidRequest:
-      description: "`invalid_collection_name`."
+      description: "`invalid_collection_name`, `invalid_parameter` or `unexpected_body`."
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking, internal:** the api no longer reverse-proxies. Each public route validates the request against what the endpoint accepts and makes a new, clean request to storage or keystorage from the validated values: no inbound header is copied, query parameters and JSON bodies are rebuilt, and only `Content-Type`/`Content-Length` (plus keystorage's `WWW-Authenticate`) come back. Requests with an unknown or repeated query parameter, an unknown JSON field, data after the JSON object or a body on a bodiless route are now refused with `400` (`invalid_parameter`, `invalid_json`, `unexpected_body`); key and object ids that are not UUIDs get `404`. OpenAPI `info.version` is now 1.3.0.
+- **Breaking, internal:** the storage, tagger and keystorage services no longer use a `/v1` prefix (`/collections/...`, `/supported-types`, `/tag`, `/api-keys...`, `/api-keys/validate`). The public API keeps `/v1`. The storage Go client talks to the public API by default (`New`, `NewWithToken`) and to the storage service with `NewInternal`; Prometheus path labels change accordingly.
+
 - **Breaking, internal:** the storage service no longer stores, validates or manages API keys (its `/internal/v1/api-keys*` endpoints and migration `000002` are gone). The api validates keys against keystorage (`API_KEYSTORAGE_BASE_URL`, required) and no longer has `API_ADMIN_USERNAME`/`API_ADMIN_PASSWORD`: `/v1/admin/api-keys` is now an allowlisting proxy to keystorage that forwards the caller's credentials. The public API contract is unchanged. The api's `/readyz` also requires keystorage.
 - The storage service connects as `tagona_storage` instead of the Postgres superuser (`TAGONA_PG_DSN` in `compose.yaml`).
 - Storage no longer logs its database DSN, which carries the password.

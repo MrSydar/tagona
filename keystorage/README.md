@@ -8,15 +8,15 @@ Keystorage listens on `:8083` on the compose network and is not published on the
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| `POST` | `/internal/v1/api-keys/validate` | none | Body `{"key":"..."}`. Known key → `200` `{"id","name"}`; unknown → `401` `invalid_api_key`; empty → `400` `missing_key` |
-| `POST` | `/v1/admin/api-keys` | admin Basic | Create a key. Body `{"name":"..."}` (1–128 bytes of valid UTF-8). `201` `{"id","name","key","created_at"}` |
-| `GET` | `/v1/admin/api-keys` | admin Basic | List keys (never the raw key): `200` `{"keys":[{"id","name","key_prefix","created_at"}]}` |
-| `DELETE` | `/v1/admin/api-keys/{id}` | admin Basic | `204`; `404` for an unknown id or one that is not a UUID |
+| `POST` | `/api-keys/validate` | none | Body `{"key":"..."}`. Known key → `200` `{"id","name"}`; unknown → `401` `invalid_api_key`; empty → `400` `missing_key` |
+| `POST` | `/api-keys` | admin Basic | Create a key. Body `{"name":"..."}` (1–128 bytes of valid UTF-8). `201` `{"id","name","key","created_at"}` |
+| `GET` | `/api-keys` | admin Basic | List keys (never the raw key): `200` `{"keys":[{"id","name","key_prefix","created_at"}]}` |
+| `DELETE` | `/api-keys/{id}` | admin Basic | `204`; `404` for an unknown id or one that is not a UUID |
 | `GET` | `/healthz`, `/readyz`, `/metrics` | none | Liveness; readiness (database ping); Prometheus metrics |
 
 **Validation is open to the network on purpose.** Its callers (the api gateway, and in Tagona Plus the translator) hold the key they check, not a service credential, so there is nothing to authenticate with. It can only answer yes or no for a key the caller already has. **Key management checks the admin credentials itself**, so reaching the network is not enough to mint, list or delete a key: a request without valid Basic credentials gets `401 invalid_admin_credentials` (with `WWW-Authenticate`), an API key in the `Authorization` header gets `403 forbidden`, and unset admin credentials disable the endpoints with `403 admin_disabled`.
 
-The public api exposes the three management routes only, as a proxy that forwards the caller's `Authorization` header. The validation endpoint is not reachable through it.
+The public api exposes the three management routes only (as `/v1/admin/api-keys`...). It validates each request and makes a new one to keystorage, passing on only the caller's `Authorization` header. The validation endpoint is not reachable through it. Like the other internal services, keystorage's own routes have no `/v1` prefix.
 
 ## Configuration
 

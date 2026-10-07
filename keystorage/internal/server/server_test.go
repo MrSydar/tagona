@@ -122,7 +122,7 @@ func errCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 
 func createKey(t *testing.T, h http.Handler, name string) (id, raw string) {
 	t.Helper()
-	rec := do(h, http.MethodPost, "/v1/admin/api-keys", `{"name":"`+name+`"}`, admin)
+	rec := do(h, http.MethodPost, "/api-keys", `{"name":"`+name+`"}`, admin)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", rec.Code, rec.Body)
 	}
@@ -136,9 +136,9 @@ func createKey(t *testing.T, h http.Handler, name string) (id, raw string) {
 func TestAdminAuth(t *testing.T) {
 	h := newTestServer(newMemStore())
 	routes := []struct{ method, path string }{
-		{http.MethodPost, "/v1/admin/api-keys"},
-		{http.MethodGet, "/v1/admin/api-keys"},
-		{http.MethodDelete, "/v1/admin/api-keys/" + fakeUUID(1)},
+		{http.MethodPost, "/api-keys"},
+		{http.MethodGet, "/api-keys"},
+		{http.MethodDelete, "/api-keys/" + fakeUUID(1)},
 	}
 	for _, rt := range routes {
 		t.Run(rt.method+" "+rt.path, func(t *testing.T) {
@@ -170,13 +170,13 @@ func TestAdminAuth(t *testing.T) {
 func TestAdminDisabledWithoutCredentials(t *testing.T) {
 	store := newMemStore()
 	h := New(store, "", "").Router()
-	rec := do(h, http.MethodGet, "/v1/admin/api-keys", "", admin)
+	rec := do(h, http.MethodGet, "/api-keys", "", admin)
 	if rec.Code != http.StatusForbidden || errCode(t, rec) != "admin_disabled" {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 	// Validation keeps working.
 	store.hashes["x"] = "id"
-	if rec := do(h, http.MethodPost, "/internal/v1/api-keys/validate", `{"key":"nope"}`, nil); rec.Code != http.StatusUnauthorized {
+	if rec := do(h, http.MethodPost, "/api-keys/validate", `{"key":"nope"}`, nil); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("validate: %d", rec.Code)
 	}
 }
@@ -189,7 +189,7 @@ func TestCreateListValidateDelete(t *testing.T) {
 		t.Fatalf("raw key = %q", raw)
 	}
 
-	rec := do(h, http.MethodGet, "/v1/admin/api-keys", "", admin)
+	rec := do(h, http.MethodGet, "/api-keys", "", admin)
 	if rec.Code != 200 || strings.Contains(rec.Body.String(), raw) {
 		t.Fatalf("list: %d (must never contain the raw key) %s", rec.Code, rec.Body)
 	}
@@ -200,22 +200,22 @@ func TestCreateListValidateDelete(t *testing.T) {
 	}
 
 	// Validation needs no credentials and reports id and name.
-	rec = do(h, http.MethodPost, "/internal/v1/api-keys/validate", `{"key":"`+raw+`"}`, nil)
+	rec = do(h, http.MethodPost, "/api-keys/validate", `{"key":"`+raw+`"}`, nil)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"name":"dev"`) || !strings.Contains(rec.Body.String(), id) {
 		t.Fatalf("validate: %d %s", rec.Code, rec.Body)
 	}
 
-	if rec := do(h, http.MethodDelete, "/v1/admin/api-keys/"+id, "", admin); rec.Code != http.StatusNoContent {
+	if rec := do(h, http.MethodDelete, "/api-keys/"+id, "", admin); rec.Code != http.StatusNoContent {
 		t.Fatalf("delete: %d %s", rec.Code, rec.Body)
 	}
-	rec = do(h, http.MethodPost, "/internal/v1/api-keys/validate", `{"key":"`+raw+`"}`, nil)
+	rec = do(h, http.MethodPost, "/api-keys/validate", `{"key":"`+raw+`"}`, nil)
 	if rec.Code != http.StatusUnauthorized || errCode(t, rec) != "invalid_api_key" {
 		t.Fatalf("deleted key still validates: %d %s", rec.Code, rec.Body)
 	}
 }
 
 func TestListEmptyIsArray(t *testing.T) {
-	rec := do(newTestServer(newMemStore()), http.MethodGet, "/v1/admin/api-keys", "", admin)
+	rec := do(newTestServer(newMemStore()), http.MethodGet, "/api-keys", "", admin)
 	if strings.TrimSpace(rec.Body.String()) != `{"keys":[]}` {
 		t.Fatalf("body = %s", rec.Body)
 	}
@@ -235,7 +235,7 @@ func TestCreateValidation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rec := do(h, http.MethodPost, "/v1/admin/api-keys", tt.body, admin)
+			rec := do(h, http.MethodPost, "/api-keys", tt.body, admin)
 			if rec.Code != tt.status || errCode(t, rec) != tt.code {
 				t.Fatalf("%d %s", rec.Code, rec.Body)
 			}
@@ -245,10 +245,10 @@ func TestCreateValidation(t *testing.T) {
 
 func TestValidateInput(t *testing.T) {
 	h := newTestServer(newMemStore())
-	if rec := do(h, http.MethodPost, "/internal/v1/api-keys/validate", `nope`, nil); rec.Code != 400 || errCode(t, rec) != "invalid_json" {
+	if rec := do(h, http.MethodPost, "/api-keys/validate", `nope`, nil); rec.Code != 400 || errCode(t, rec) != "invalid_json" {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
-	if rec := do(h, http.MethodPost, "/internal/v1/api-keys/validate", `{"key":""}`, nil); rec.Code != 400 || errCode(t, rec) != "missing_key" {
+	if rec := do(h, http.MethodPost, "/api-keys/validate", `{"key":""}`, nil); rec.Code != 400 || errCode(t, rec) != "missing_key" {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 }
@@ -256,7 +256,7 @@ func TestValidateInput(t *testing.T) {
 func TestDeleteUnknownAndMalformedID(t *testing.T) {
 	h := newTestServer(newMemStore())
 	for _, id := range []string{fakeUUID(99), "not-a-uuid", "..", "1"} {
-		rec := do(h, http.MethodDelete, "/v1/admin/api-keys/"+id, "", admin)
+		rec := do(h, http.MethodDelete, "/api-keys/"+id, "", admin)
 		if rec.Code != http.StatusNotFound || errCode(t, rec) != "not_found" {
 			t.Errorf("id %q: %d %s", id, rec.Code, rec.Body)
 		}
@@ -273,13 +273,13 @@ func TestStoreFailuresAre500(t *testing.T) {
 			var rec *httptest.ResponseRecorder
 			switch method {
 			case "Create":
-				rec = do(h, http.MethodPost, "/v1/admin/api-keys", `{"name":"x"}`, admin)
+				rec = do(h, http.MethodPost, "/api-keys", `{"name":"x"}`, admin)
 			case "List":
-				rec = do(h, http.MethodGet, "/v1/admin/api-keys", "", admin)
+				rec = do(h, http.MethodGet, "/api-keys", "", admin)
 			case "GetByHash":
-				rec = do(h, http.MethodPost, "/internal/v1/api-keys/validate", `{"key":"`+raw+`"}`, nil)
+				rec = do(h, http.MethodPost, "/api-keys/validate", `{"key":"`+raw+`"}`, nil)
 			case "Delete":
-				rec = do(h, http.MethodDelete, "/v1/admin/api-keys/"+id, "", admin)
+				rec = do(h, http.MethodDelete, "/api-keys/"+id, "", admin)
 			}
 			if rec.Code != http.StatusInternalServerError || errCode(t, rec) != "internal_error" {
 				t.Fatalf("%d %s", rec.Code, rec.Body)
@@ -308,14 +308,14 @@ func TestHealthAndReadiness(t *testing.T) {
 
 func TestUnknownRoutes(t *testing.T) {
 	h := newTestServer(newMemStore())
-	if rec := do(h, http.MethodGet, "/internal/v1/api-keys/validate", "", nil); rec.Code != http.StatusMethodNotAllowed {
+	if rec := do(h, http.MethodGet, "/api-keys/validate", "", nil); rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET validate: %d", rec.Code)
 	}
-	if rec := do(h, http.MethodGet, "/v1/collections", "", nil); rec.Code != http.StatusNotFound {
+	if rec := do(h, http.MethodGet, "/collections", "", nil); rec.Code != http.StatusNotFound {
 		t.Errorf("unknown path: %d", rec.Code)
 	}
 	// The management paths are admin-only even for methods that are not routed.
-	if rec := do(h, http.MethodPut, "/v1/admin/api-keys", "", admin); rec.Code != http.StatusMethodNotAllowed {
+	if rec := do(h, http.MethodPut, "/api-keys", "", admin); rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("PUT: %d", rec.Code)
 	}
 }

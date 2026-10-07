@@ -39,8 +39,8 @@ func (s *Server) Router() chi.Router {
 
 	r.Get("/healthz", s.healthz)
 	r.Get("/readyz", s.readyz)
-	r.Get("/v1/supported-types", s.supportedTypes)
-	r.Post("/v1/tag", s.tag)
+	r.Get("/supported-types", s.supportedTypes)
+	r.Post("/tag", s.tag)
 	r.Get("/metrics", promhttp.Handler().ServeHTTP)
 	return r
 }

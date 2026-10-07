@@ -33,19 +33,19 @@ func New(baseURL string, timeout time.Duration) *Client {
 	}
 }
 
-// supportedTypesResponse matches the /v1/supported-types response shape.
+// supportedTypesResponse matches the /supported-types response shape.
 type supportedTypesResponse struct {
 	Types []string `json:"types"`
 }
 
-// tagRequest is the request body for /v1/tag.
+// tagRequest is the request body for /tag.
 type tagRequest struct {
 	Collection string   `json:"collection"`
 	ObjectID   string   `json:"object_id"`
 	Tags       []string `json:"tags"`
 }
 
-// tagResponse is the response body for /v1/tag.
+// tagResponse is the response body for /tag.
 type tagResponse struct {
 	Tags map[string]bool `json:"tags"`
 }
@@ -53,7 +53,7 @@ type tagResponse struct {
 // GetSupportedTypes fetches supported data types from the tagging engine.
 func (c *Client) GetSupportedTypes(ctx context.Context) ([]string, error) {
 	slog.Debug("tagger client GetSupportedTypes")
-	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/v1/supported-types", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/supported-types", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +100,7 @@ func (c *Client) Tag(ctx context.Context, collection, objectID string, tags []st
 			}
 		}
 
-		req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/tag", bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/tag", bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
