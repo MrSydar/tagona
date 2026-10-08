@@ -17,10 +17,10 @@ func NewInstrumentedTagger(inner Tagger) Tagger {
 	return &InstrumentedTagger{inner: inner}
 }
 
-// Version fetches the version of the tagging engine.
-func (t *InstrumentedTagger) Version(ctx context.Context) (string, error) {
+// Versions fetches the versions the tagging engine serves.
+func (t *InstrumentedTagger) Versions(ctx context.Context) ([]string, error) {
 	start := time.Now()
-	result, err := t.inner.Version(ctx)
+	result, err := t.inner.Versions(ctx)
 	metrics.RecordTaggerLatency("version", start)
 	return result, err
 }

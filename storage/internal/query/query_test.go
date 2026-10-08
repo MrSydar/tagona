@@ -14,20 +14,20 @@ import (
 	"mrsydar/tagona/storage/pkg/client"
 )
 
-// fakeTagger counts calls and evaluates every requested tag as true. It runs version "grep": a request that
+// fakeTagger counts calls and evaluates every requested tag as true. It serves version "grep": a request that
 // asks for another is refused, like the real engine does.
 type fakeTagger struct {
 	calls    atomic.Int32
 	lastSeen atomic.Value // the tagger version of the last request
 }
 
-func (f *fakeTagger) Version(ctx context.Context) (string, error) { return "grep", nil }
+func (f *fakeTagger) Versions(ctx context.Context) ([]string, error) { return []string{"grep"}, nil }
 
 func (f *fakeTagger) Tag(ctx context.Context, collection, objectID, taggerVersion string, tags []string) (map[string]bool, error) {
 	f.calls.Add(1)
 	f.lastSeen.Store(taggerVersion)
 	if taggerVersion != "" && taggerVersion != "grep" {
-		return nil, &client.VersionMismatchError{Expected: taggerVersion, Running: "grep"}
+		return nil, &client.VersionMismatchError{Expected: taggerVersion, Running: []string{"grep"}}
 	}
 	out := make(map[string]bool, len(tags))
 	for _, tag := range tags {

@@ -135,3 +135,21 @@ func TestUploadAndMetadataRequests(t *testing.T) {
 		t.Fatalf("merge: %+v", got[3])
 	}
 }
+
+func TestListTaggers(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Write([]byte(`{"taggers":["grep","decisions/openai:m"]}`))
+	}))
+	defer srv.Close()
+	for _, c := range []*Client{New(srv.URL), NewInternal(srv.URL)} {
+		got, err := c.ListTaggers(context.Background())
+		if err != nil || len(got) != 2 || got[1] != "decisions/openai:m" {
+			t.Fatalf("%v, %v", got, err)
+		}
+	}
+	if paths[0] != "/v1/taggers" || paths[1] != "/taggers" {
+		t.Fatalf("paths = %v", paths)
+	}
+}

@@ -133,6 +133,7 @@ func TestRoutesBuildCleanRequests(t *testing.T) {
 		wantMethod, wantURI, wantBody string // wantBody "" means none; JSON compared structurally
 	}{
 		{call{name: "list collections", method: "GET", target: "/v1/collections"}, "GET", "/collections", ""},
+		{call{name: "list taggers", method: "GET", target: "/v1/taggers"}, "GET", "/taggers", ""},
 		{call{name: "list collections, paged", method: "GET", target: "/v1/collections?limit=007&cursor=abc_-"},
 			"GET", "/collections?cursor=abc_-&limit=7", ""},
 		{call{name: "list collections, empty params dropped", method: "GET", target: "/v1/collections?limit=&cursor="}, "GET", "/collections", ""},
@@ -205,6 +206,8 @@ func TestUnexpectedInputIsRejected(t *testing.T) {
 	}{
 		// query parameters
 		{call{name: "unknown parameter", method: "GET", target: "/v1/collections?admin=true"}, 400, "invalid_parameter"},
+		{call{name: "parameter on taggers", method: "GET", target: "/v1/taggers?all=1"}, 400, "invalid_parameter"},
+		{call{name: "body on taggers", method: "GET", target: "/v1/taggers", body: `{"x":1}`}, 400, "unexpected_body"},
 		{call{name: "parameter on delete", method: "DELETE", target: "/v1/collections/jobs?force=1"}, 400, "invalid_parameter"},
 		{call{name: "unknown parameter on tags", method: "GET", target: "/v1/collections/jobs/tags?limit=1&sort=desc"}, 400, "invalid_parameter"},
 		{call{name: "repeated parameter", method: "GET", target: "/v1/collections/jobs/tags?limit=1&limit=2"}, 400, "invalid_parameter"},

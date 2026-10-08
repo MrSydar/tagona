@@ -38,7 +38,7 @@ info:
     that by convention is `<implementation>` or `<implementation>:<model>`, for example `grep`, `false` or
     `decisions/openai:zai-org/GLM-5.3-Flash`. Objects are plain bytes; what a tagger makes of them is its
     business. When a tag has to be evaluated, the tagging engine is asked for the collection's version and
-    refuses if it runs another one (`409 tagger_version_mismatch`): its answers are never stored under a
+    refuses if it does not serve it (`409 tagger_version_mismatch`): its answers are never stored under a
     version they did not come from. Requests that need no evaluation (`evaluate=false`, or tags that are all
     known) are not affected.
 
@@ -55,6 +55,8 @@ servers:
   - url: /
     description: This server
 tags:
+  - name: Taggers
+    description: The tagger versions a collection can be tagged with.
   - name: Collections
     description: Create, list and delete collections. A collection is tagged with one tagger version.
   - name: Objects
@@ -66,6 +68,37 @@ tags:
 security:
   - bearerAuth: []
 paths:
+  /v1/taggers:
+    get:
+      tags: [Taggers]
+      operationId: listTaggers
+      summary: List the available taggers
+      description: >-
+        The versions the tagging engine serves, as it reports them at its `/version`: one for a plain tagger, one
+        per tagger when the engine is a router over several taggers. A collection is tagged with one of them
+        (`tagger_version` of *Create a collection*). Takes no parameters.
+      responses:
+        "200":
+          description: The tagger versions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [taggers]
+                properties:
+                  taggers:
+                    type: array
+                    items: { type: string }
+              example:
+                taggers: [grep, "decisions/openai:zai-org/GLM-5.3-Flash"]
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "502":
+          description: "`tag_engine_error`: the tagging engine's versions could not be fetched."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /v1/collections:
     get:
       tags: [Collections]
@@ -111,10 +144,12 @@ paths:
       operationId: createCollection
       summary: Create a collection
       description: |
-        A collection is tagged with one tagger version (see *Tagger versions* above). Leave out
-        `tagger_version` to use the version of the tagger that runs now; give it to create a collection for a
-        tagger that is not running (it can be queried with `evaluate=false`, and evaluated once that tagger
-        runs). Objects are plain bytes of any kind, so a collection has no data type.
+        A collection is tagged with one tagger version (see *Tagger versions* above); *List the available
+        taggers* shows the choices. `tagger_version` may be left out when the tagging engine serves exactly one
+        version, which the collection then gets; when it serves several, leaving it out is
+        `400 tagger_version_required` and `details.available` lists them. A version that is not served can be
+        given too: such a collection can be queried with `evaluate=false`, and evaluated once a tagger of that
+        version runs. Objects are plain bytes of any kind, so a collection has no data type.
       requestBody:
         required: true
         content:
@@ -129,7 +164,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Collection"
         "400":
-          description: "`invalid_json`, `invalid_parameter`, `invalid_name` or `invalid_tagger_version`."
+          description: "`invalid_json`, `invalid_parameter`, `invalid_name`, `invalid_tagger_version` or `tagger_version_required` (several taggers are served: `details.available` lists them)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -139,7 +174,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "502":
-          description: "`tag_engine_error`: `tagger_version` was left out and the running tagger's version could not be determined."
+          description: "`tag_engine_error`: `tagger_version` was left out and the tagging engine's versions could not be fetched."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -669,17 +704,17 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     TaggerVersionMismatch:
       description: >-
-        `tagger_version_mismatch`: a tag had to be evaluated, but the tagging engine runs another version than
-        the collection is tagged with. `details` has `expected` (the collection's) and `running` (the engine's).
-        Nothing was stored. Requests that need no evaluation, such as `evaluate=false`, still work.
+        `tagger_version_mismatch`: a tag had to be evaluated, but the tagging engine does not serve the version the
+        collection is tagged with. `details` has `expected` (the collection's) and `running` (the versions the
+        engine serves). Nothing was stored. Requests that need no evaluation, such as `evaluate=false`, still work.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
           example:
             error:
               code: tagger_version_mismatch
-              message: 'the collection is tagged with "decisions/openai:m" but the tagging engine runs "grep"; query with evaluate=false to use the tags it has'
-              details: { expected: "decisions/openai:m", running: grep }
+              message: 'the collection is tagged with "decisions/openai:m" but the tagging engine serves ["grep"]; query with evaluate=false to use the tags it has'
+              details: { expected: "decisions/openai:m", running: [grep] }
     NotFound:
       description: "`not_found`: the collection, object or key does not exist (expired objects count as missing)."
       content:
@@ -739,7 +774,7 @@ components:
           maxLength: 128
           description: >-
             The tagger version the collection is tagged with, `<implementation>` or
-            `<implementation>:<model>`. Defaults to the version of the tagger that runs now.
+            `<implementation>:<model>`. May be left out when the tagging engine serves only one version.
           example: "decisions/openai:zai-org/GLM-5.3-Flash"
 
     Collection:

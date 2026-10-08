@@ -1,7 +1,10 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"mrsydar/tagona/storage/pkg/client"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -66,5 +69,51 @@ func TestGetObjectTagsEvaluateValidation(t *testing.T) {
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp.Error.Code != "invalid_evaluate" {
 		t.Errorf("body = %s, want invalid_evaluate", w.Body.String())
+	}
+}
+
+type fakeVersions struct {
+	versions []string
+	err      error
+}
+
+func (f fakeVersions) Versions(context.Context) ([]string, error) { return f.versions, f.err }
+func (f fakeVersions) Tag(context.Context, string, string, string, []string) (map[string]bool, error) {
+	return nil, errors.New("not used")
+}
+
+func serveWith(tagger client.Tagger, method, path, body string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	(&Server{tagClient: tagger}).Router().ServeHTTP(rec, httptest.NewRequest(method, path, strings.NewReader(body)))
+	return rec
+}
+
+func TestListTaggersAnswersTheVersionsOfTheTaggingEngine(t *testing.T) {
+	rec := serveWith(fakeVersions{versions: []string{"grep", "decisions/openai:m"}}, http.MethodGet, "/taggers", "")
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"taggers":["grep","decisions/openai:m"]}` {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	rec = serveWith(fakeVersions{err: errors.New("down")}, http.MethodGet, "/taggers", "")
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "tag_engine_error") {
+		t.Fatalf("a tagger that is down: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// Without a tagger_version, a tagging engine that serves several versions cannot say which one is meant.
+func TestCreateCollectionNeedsAVersionWhenSeveralAreServed(t *testing.T) {
+	rec := serveWith(fakeVersions{versions: []string{"grep", "false"}}, http.MethodPost, "/collections", `{"name":"jobs"}`)
+	var e struct {
+		Error struct {
+			Code    string
+			Details struct{ Available []string }
+		}
+	}
+	if rec.Code != http.StatusBadRequest || json.Unmarshal(rec.Body.Bytes(), &e) != nil ||
+		e.Error.Code != "tagger_version_required" || len(e.Error.Details.Available) != 2 || e.Error.Details.Available[1] != "false" {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	rec = serveWith(fakeVersions{err: errors.New("down")}, http.MethodPost, "/collections", `{"name":"jobs"}`)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("a tagger that is down: %d %s", rec.Code, rec.Body)
 	}
 }

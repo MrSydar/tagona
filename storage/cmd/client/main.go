@@ -45,6 +45,8 @@ func main() {
 	switch remaining[0] {
 	case "list-collections":
 		listCollections(ctx, c, remaining[1:])
+	case "taggers":
+		listTaggers(ctx, c)
 	case "create-collection":
 		createCollection(ctx, c, remaining[1:])
 	case "collection-tags":
@@ -83,10 +85,11 @@ commands:
   list-collections   [--limit <n>] [--cursor <cursor>]
                      List collections, newest first. Without options every collection is listed;
                      with --limit or --cursor one page is, and its "next" cursor fetches the following page.
+  taggers            List the tagger versions available for new collections.
   create-collection  --name <name> [--tagger-version <version>]
                      Create a new collection. Its tagger version names the tagger that tags it,
-                     "<implementation>" or "<implementation>:<model>"; it defaults to the version of
-                     the tagger that runs now.
+                     "<implementation>" or "<implementation>:<model>"; it can be left out when the
+                     tagging engine serves only one version, and defaults to that one.
   delete-collection  --collection <c>
                      Delete a collection and all its objects.
   collection-tags    --collection <c> [--prefix <p>] [--limit <n>] [--cursor <cursor>]
@@ -158,7 +161,7 @@ func createCollection(ctx context.Context, c *client.Client, args []string) {
 	slog.Debug("createCollection called")
 	fs := flag.NewFlagSet("create-collection", flag.ExitOnError)
 	name := fs.String("name", "", "collection name")
-	taggerVersion := fs.String("tagger-version", "", "tagger version (default: the running tagger's)")
+	taggerVersion := fs.String("tagger-version", "", "tagger version (default: the tagging engine's, when it serves only one)")
 	fs.Parse(args)
 	if *name == "" {
 		fs.Usage()
@@ -170,6 +173,16 @@ func createCollection(ctx context.Context, c *client.Client, args []string) {
 		os.Exit(1)
 	}
 	printJSON(coll)
+}
+
+func listTaggers(ctx context.Context, c *client.Client) {
+	slog.Debug("listTaggers called")
+	taggers, err := c.ListTaggers(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	printJSON(taggers)
 }
 
 func listCollections(ctx context.Context, c *client.Client, args []string) {

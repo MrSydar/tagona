@@ -1,6 +1,7 @@
 package evaluator
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -8,7 +9,7 @@ import (
 // Names are the evaluators TAGGER_EVALUATOR_IMPL can select. A name is "<kind>/<dialect>" for the
 // LLM-backed ones: the dialect is the wire format, and a vendor that speaks it is used with its own
 // base URL.
-var Names = []string{"grep", "false", "completions/openai", "decisions/openai", "decisions/vercel"}
+var Names = []string{"grep", "false", "completions/openai", "decisions/openai", "decisions/vercel", "router"}
 
 // legacyNames maps names that were renamed to their replacements, for a helpful error.
 var legacyNames = map[string]string{
@@ -17,9 +18,11 @@ var legacyNames = map[string]string{
 }
 
 // New creates the evaluator selected by impl, reading its settings through lookup (os.LookupEnv in
-// production).
+// production). "router" is not an evaluator: the tagger's main runs it as a service of its own.
 func New(impl string, lookup LookupFunc) (Evaluator, error) {
 	switch impl {
+	case "router":
+		return nil, errors.New(`"router" routes to other taggers and is not an evaluator`)
 	case "grep":
 		return NewGrepEvaluator(), nil
 	case "false":

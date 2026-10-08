@@ -67,6 +67,7 @@ func (s *Server) Router() chi.Router {
 	r.Get("/collections", s.listCollections)
 	r.Post("/collections", s.createCollection)
 	r.Delete("/collections/{collection}", s.deleteCollection)
+	r.Get("/taggers", s.listTaggers)
 	r.Get("/collections/{collection}/tags", s.listCollectionTags)
 	r.Post("/collections/{collection}/objects", s.putObject)
 	r.Get("/collections/{collection}/objects/{id}", s.getObjectMetadata)
@@ -108,6 +109,19 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
+}
+
+// listTaggers lists the tagger versions available for new collections: the versions the tagging engine
+// reports at its /version.
+func (s *Server) listTaggers(w http.ResponseWriter, r *http.Request) {
+	versions, err := s.tagClient.Versions(r.Context())
+	if err != nil {
+		slog.Error("fetching the tagger versions failed", "error", err)
+		writeError(w, http.StatusBadGateway, "tag_engine_error", "the tagging engine's versions could not be fetched")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string][]string{"taggers": versions})
 }
 
 // Lists are paged: limit defaults to defaultListLimit and may not exceed maxListLimit; the cursor is the
@@ -167,14 +181,19 @@ func (s *Server) createCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.TaggerVersion == "" {
-		// Not given: the collection is tagged with whatever tagger runs now.
-		version, err := s.tagClient.Version(r.Context())
+		// Not given: the collection is tagged with the tagger that runs now, if there is only one.
+		versions, err := s.tagClient.Versions(r.Context())
 		if err != nil {
-			slog.Error("fetching the tagger version failed", "error", err)
+			slog.Error("fetching the tagger versions failed", "error", err)
 			writeError(w, http.StatusBadGateway, "tag_engine_error", "the tagger version could not be determined: give tagger_version")
 			return
 		}
-		req.TaggerVersion = version
+		if len(versions) != 1 {
+			writeErrorDetails(w, http.StatusBadRequest, "tagger_version_required",
+				"the tagging engine serves several versions: give tagger_version", map[string]any{"available": versions})
+			return
+		}
+		req.TaggerVersion = versions[0]
 	}
 	if err := validate.ValidateTaggerVersion(req.TaggerVersion); err != nil {
 		slog.Debug("createCollection validation failed: invalid tagger version", "tagger_version", req.TaggerVersion)
@@ -796,8 +815,8 @@ func writeErrorDetails(w http.ResponseWriter, status int, code, message string, 
 	json.NewEncoder(w).Encode(resp)
 }
 
-// writeTaggerError answers 409 tagger_version_mismatch when err says the tagging engine runs another
-// version than the collection is tagged with, and reports whether it did. Tags the collection already has
+// writeTaggerError answers 409 tagger_version_mismatch when err says the tagging engine does not serve the
+// version the collection is tagged with, and reports whether it did. Tags the collection already has
 // stay usable: a request with evaluate=false never reaches the engine.
 func writeTaggerError(w http.ResponseWriter, err error) bool {
 	var mismatch *client.VersionMismatchError
@@ -805,9 +824,15 @@ func writeTaggerError(w http.ResponseWriter, err error) bool {
 		return false
 	}
 	writeErrorDetails(w, http.StatusConflict, "tagger_version_mismatch",
-		fmt.Sprintf("the collection is tagged with %q but the tagging engine runs %q; query with evaluate=false to use the tags it has", mismatch.Expected, mismatch.Running),
+		fmt.Sprintf("the collection is tagged with %q but the tagging engine serves %s; query with evaluate=false to use the tags it has", mismatch.Expected, listOf(mismatch.Running)),
 		map[string]any{"expected": mismatch.Expected, "running": mismatch.Running})
 	return true
+}
+
+// listOf writes a list of versions for a message: ["grep","false"].
+func listOf(items []string) string {
+	b, _ := json.Marshal(items)
+	return string(b)
 }
 
 // parseMetadataParam reads the metadata query parameter of an upload: a JSON object of string values, or

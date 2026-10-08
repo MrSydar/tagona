@@ -173,6 +173,7 @@ go test ./...
 
 | Method | Path | Description |
 |--------|------|-------------|
+| `GET` | `/v1/taggers` | List the tagger versions a collection can be tagged with (`{"taggers": [...]}`) |
 | `GET` | `/v1/collections` | List all collections |
 | `POST` | `/v1/collections` | Create a collection |
 | `DELETE` | `/v1/collections/{collection}` | Delete a collection |
@@ -180,7 +181,7 @@ go test ./...
 
 **Create Collection**
 
-A collection is tagged with one tagger version: `tagger_version`, a string of 1-128 bytes that by convention is `<implementation>` or `<implementation>:<model>` (`grep`, `false`, `decisions/openai:zai-org/GLM-5.3-Flash`). Leave it out to use the version of the tagger that runs now. Tags are only evaluated by a tagger that runs the collection's version: asking for an evaluation from another one answers `409 tagger_version_mismatch` (`details`: `expected`, `running`), while `evaluate=false` still answers from the tags the collection has. Objects are plain bytes, so a collection has no data type.
+A collection is tagged with one tagger version: `tagger_version`, a string of 1-128 bytes that by convention is `<implementation>` or `<implementation>:<model>` (`grep`, `false`, `decisions/openai:zai-org/GLM-5.3-Flash`). Leave it out when the tagging engine serves exactly one version, which the collection then gets; `GET /v1/taggers` lists the versions that can be chosen. Tags are only evaluated by a tagger that runs the collection's version: asking for an evaluation from another one answers `409 tagger_version_mismatch` (`details`: `expected`, `running`), while `evaluate=false` still answers from the tags the collection has. Objects are plain bytes, so a collection has no data type.
 
 Request:
 ```json

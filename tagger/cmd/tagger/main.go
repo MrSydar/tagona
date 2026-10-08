@@ -11,6 +11,7 @@ import (
 	"time"
 
 	storageclient "mrsydar/tagona/storage/pkg/client"
+	"mrsydar/tagona/tagger/internal/router"
 	"mrsydar/tagona/tagger/internal/server"
 	"mrsydar/tagona/tagger/pkg/evaluator"
 )
@@ -25,15 +26,19 @@ func main() {
 	if httpAddr == "" {
 		httpAddr = ":8081"
 	}
-	storageBaseURL := os.Getenv("TAGGER_STORAGE_BASE_URL")
-	if storageBaseURL == "" {
-		storageBaseURL = "http://localhost:8082"
-	}
 	evaluatorImpl := os.Getenv("TAGGER_EVALUATOR_IMPL")
 	if evaluatorImpl == "" {
 		evaluatorImpl = "grep"
 	}
+	if evaluatorImpl == "router" {
+		runRouter(httpAddr)
+		return
+	}
 
+	storageBaseURL := os.Getenv("TAGGER_STORAGE_BASE_URL")
+	if storageBaseURL == "" {
+		storageBaseURL = "http://localhost:8082"
+	}
 	ev, err := evaluator.New(evaluatorImpl, os.LookupEnv)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "evaluator configuration error: %v\n", err)
@@ -52,18 +57,37 @@ func main() {
 		version = v
 	}
 
-	storageClient := storageclient.NewInternal(storageBaseURL)
-	srv := server.NewServer(storageClient, ev, evaluatorImpl, version)
+	srv := server.NewServer(storageclient.NewInternal(storageBaseURL), ev, evaluatorImpl, version)
+	serve(httpAddr, srv.Router(), 30*time.Second, "storage_url", storageBaseURL, "version", version)
+}
 
+// runRouter runs the tagger implementation "router": it evaluates nothing and routes to other tagger
+// services (TAGGER_ROUTER_URLS), each serving its own versions.
+func runRouter(httpAddr string) {
+	if os.Getenv("TAGGER_VERSION") != "" {
+		fmt.Fprintln(os.Stderr, "TAGGER_VERSION cannot be used with the router: it serves the versions of its taggers")
+		os.Exit(1)
+	}
+	rt, err := router.FromEnv(os.LookupEnv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "router configuration error: %v\n", err)
+		os.Exit(1)
+	}
+	// longer than a tagger's own limit, so that a slow answer of one of them is not cut off here
+	serve(httpAddr, rt.Handler(), 60*time.Second, "router", true)
+}
+
+// serve runs the HTTP server until the process is told to stop.
+func serve(addr string, handler http.Handler, writeTimeout time.Duration, logFields ...any) {
 	httpServer := &http.Server{
-		Addr:         httpAddr,
-		Handler:      srv.Router(),
+		Addr:         addr,
+		Handler:      handler,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		WriteTimeout: writeTimeout,
 	}
 
 	go func() {
-		slog.Info("starting tagger server", "addr", httpAddr, "storage_url", storageBaseURL, "version", version)
+		slog.Info("starting tagger server", append([]any{"addr", addr}, logFields...)...)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("http server error", "error", err)
 			os.Exit(1)

@@ -262,6 +262,32 @@ func (c *Client) ListCollections(ctx context.Context) ([]Collection, error) {
 	}
 }
 
+// ListTaggers returns the tagger versions that are available for new collections, the versions the tagging
+// engine reports.
+func (c *Client) ListTaggers(ctx context.Context) ([]string, error) {
+	slog.Debug("ListTaggers")
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+c.prefix+"/taggers", nil)
+	if err != nil {
+		return nil, err
+	}
+	c.setAuth(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list taggers: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, httpError("list taggers", resp)
+	}
+	var result struct {
+		Taggers []string `json:"taggers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode taggers: %w", err)
+	}
+	return result.Taggers, nil
+}
+
 // ListCollectionTags returns the total number of objects in a collection and the
 // tags registered in it, with per-tag object counts, ordered by tag name. When
 // the result has a Next cursor, pass it in opts.Cursor to fetch the next page.
