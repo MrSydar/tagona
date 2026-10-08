@@ -6,25 +6,28 @@ import (
 
 // Collection represents a collection in the system.
 type Collection struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	DataType  string    `json:"data_type"`
-	CreatedAt time.Time `json:"created_at"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// TaggerVersion is the version of the tagger the collection is tagged with, "<implementation>" or
+	// "<implementation>:<model>".
+	TaggerVersion string    `json:"tagger_version"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // Object represents object metadata.
 type Object struct {
-	ID           string          `json:"id"`
-	Collection   string          `json:"collection"`
-	CollectionID string          `json:"-"`
-	DataType     string          `json:"data_type"`
-	Date         time.Time       `json:"date"`
-	SizeBytes    int64           `json:"size_bytes"`
-	ContentHash  string          `json:"content_hash"`
-	CreatedAt    time.Time       `json:"created_at"`
-	ExpiresAt    *time.Time      `json:"expires_at,omitempty"`
-	PayloadKey   string          `json:"payload_key,omitempty"`
-	Tags         map[string]bool `json:"tags,omitempty"`
+	ID           string     `json:"id"`
+	Collection   string     `json:"collection"`
+	CollectionID string     `json:"-"`
+	Date         time.Time  `json:"date"`
+	SizeBytes    int64      `json:"size_bytes"`
+	ContentHash  string     `json:"content_hash"`
+	CreatedAt    time.Time  `json:"created_at"`
+	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
+	PayloadKey   string     `json:"payload_key,omitempty"`
+	// Metadata is what the uploader attached to the object: string keys and string values. Never null.
+	Metadata map[string]string `json:"metadata"`
+	Tags     map[string]bool   `json:"tags,omitempty"`
 }
 
 // TagResult represents a tag evaluation result.
@@ -60,31 +63,28 @@ type ErrorResponse struct {
 	} `json:"error"`
 }
 
-// CollectionCreateRequest is the request to create a collection.
+// CollectionCreateRequest is the request to create a collection. An omitted tagger_version is the version
+// of the tagger that is running now.
 type CollectionCreateRequest struct {
-	Name     string `json:"name"`
-	DataType string `json:"data_type"`
-}
-
-// CollectionCreateResponse is the response after creating a collection.
-type CollectionCreateResponse struct {
-	Name     string `json:"name"`
-	DataType string `json:"data_type"`
+	Name          string `json:"name"`
+	TaggerVersion string `json:"tagger_version"`
 }
 
 // CollectionsListResponse is the response for listing collections.
 type CollectionsListResponse struct {
 	Collections []Collection `json:"collections"`
+	// Next is the cursor of the following page; absent on the last page.
+	Next string `json:"next,omitempty"`
 }
 
 // ObjectUploadResponse is the response after uploading an object.
 type ObjectUploadResponse struct {
-	ID          string    `json:"id"`
-	Collection  string    `json:"collection"`
-	DataType    string    `json:"data_type"`
-	Date        time.Time `json:"date"`
-	SizeBytes   int64     `json:"size_bytes"`
-	ContentHash string    `json:"content_hash"`
+	ID          string            `json:"id"`
+	Collection  string            `json:"collection"`
+	Date        time.Time         `json:"date"`
+	SizeBytes   int64             `json:"size_bytes"`
+	ContentHash string            `json:"content_hash"`
+	Metadata    map[string]string `json:"metadata"`
 }
 
 // TagsQueryRequest is the request for querying objects by tags.
@@ -119,11 +119,6 @@ type DateFilter struct {
 	LT  *time.Time `json:"lt,omitempty"`
 	LTE *time.Time `json:"lte,omitempty"`
 	EQ  *time.Time `json:"eq,omitempty"`
-}
-
-// TaggingSupportedTypesResponse is the response from supported-types endpoint.
-type TaggingSupportedTypesResponse struct {
-	Types []string `json:"types"`
 }
 
 // TaggingRequest is the request to the tagging engine.

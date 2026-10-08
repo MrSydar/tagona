@@ -33,7 +33,7 @@ func applyMigrations(t *testing.T, pool *pgxpool.Pool, names ...string) {
 
 func mustCollection(t *testing.T, d *db.DB, name string) string {
 	t.Helper()
-	c, err := d.CreateCollection(context.Background(), name, "txt")
+	c, err := d.CreateCollection(context.Background(), name, "grep")
 	if err != nil {
 		t.Fatalf("create collection: %v", err)
 	}
@@ -42,7 +42,7 @@ func mustCollection(t *testing.T, d *db.DB, name string) string {
 
 func mustObject(t *testing.T, d *db.DB, collID, hash string, expiresAt *time.Time) string {
 	t.Helper()
-	o, err := d.InsertObject(context.Background(), collID, hash, time.Now(), 1, "txt", "key/"+hash, expiresAt)
+	o, err := d.InsertObject(context.Background(), collID, hash, time.Now(), 1, "key/"+hash, nil, expiresAt)
 	if err != nil {
 		t.Fatalf("insert object: %v", err)
 	}
@@ -244,9 +244,9 @@ func TestCollectionStatsExcludeExpired(t *testing.T) {
 func TestCollectionStatsBackfillAndIdempotentMigration(t *testing.T) {
 	// Start from the pre-stats schema and create data with no triggers.
 	d, pool := newTestDB(t, "000001_initial_schema.up.sql")
-	coll := mustCollection(t, d, "jobs")
-	o1 := mustObject(t, d, coll, "h1", nil)
-	o2 := mustObject(t, d, coll, "h2", nil)
+	coll, mustObjectRaw := preStatsFixtures(t, pool)
+	o1 := mustObjectRaw("h1")
+	o2 := mustObjectRaw("h2")
 	// Seed with raw SQL: before migration 000003 there is no collection_tags
 	// table, so the regular UpsertTags path cannot be used yet.
 	for _, row := range []struct {
@@ -363,5 +363,25 @@ func TestCollectionTagStatsPaging(t *testing.T) {
 	_, wild, _ = d.GetCollectionTagStats(ctx, coll, "team_", "", 100)
 	if len(wild) != 1 || wild[0].Tag != "team_a" {
 		t.Errorf("prefix team_ = %+v, want only team_a", wild)
+	}
+}
+
+// preStatsFixtures creates a collection and returns its id and a function that adds objects to it, with
+// raw SQL, which works before migration 000003 has created the statistics tables.
+func preStatsFixtures(t *testing.T, pool *pgxpool.Pool) (string, func(hash string) string) {
+	t.Helper()
+	ctx := context.Background()
+	var coll string
+	if err := pool.QueryRow(ctx, `INSERT INTO collections (name, tagger_version) VALUES ('jobs', 'grep') RETURNING id`).Scan(&coll); err != nil {
+		t.Fatalf("seed collection: %v", err)
+	}
+	return coll, func(hash string) string {
+		var id string
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO objects (collection_id, content_hash, size_bytes, payload_key) VALUES ($1, $2, 1, $3) RETURNING id`,
+			coll, hash, "key/"+hash).Scan(&id); err != nil {
+			t.Fatalf("seed object: %v", err)
+		}
+		return id
 	}
 }

@@ -43,16 +43,16 @@ Tagona stores collections of objects and lets you query them by **yes/no tags yo
 - **Operable by default.** API keys, TTL retention, content-hash de-duplication, Prometheus metrics and a Grafana dashboard.
 - **Boring, self-hosted stack.** Go services, Postgres and any S3-compatible object store, started with one `docker compose up`.
 
-> The bundled evaluators work on text objects today. Object data types are generic in the engine, so other types arrive with new evaluators.
+> Objects are plain bytes; the bundled evaluators read them as text. A collection records the version of the tagger that tags it (`tagger_version`, for example `grep` or `decisions/openai:gpt-6-luna`), and tags are only evaluated by that tagger.
 
 ## Demo
 
 A real session against a local stack (`grep` evaluator; `$AUTH` is `Authorization: Bearer <api key>`, see [Quickstart](#quickstart)). Three job postings go in with no labels at all:
 
 ```bash
-curl -s -X POST "$API/v1/collections/jobs/objects?data_type=txt" -H "$AUTH" -d 'Senior Go engineer. Remote. Kubernetes and Postgres.'
-curl -s -X POST "$API/v1/collections/jobs/objects?data_type=txt" -H "$AUTH" -d 'Data scientist. Python and SQL. Onsite in Berlin.'
-curl -s -X POST "$API/v1/collections/jobs/objects?data_type=txt" -H "$AUTH" -d 'Go backend developer. Remote-first team. Postgres.'
+curl -s -X POST "$API/v1/collections/jobs/objects" -H "$AUTH" -d 'Senior Go engineer. Remote. Kubernetes and Postgres.'
+curl -s -X POST "$API/v1/collections/jobs/objects" -H "$AUTH" -d 'Data scientist. Python and SQL. Onsite in Berlin.'
+curl -s -X POST "$API/v1/collections/jobs/objects" -H "$AUTH" -d 'Go backend developer. Remote-first team. Postgres.'
 
 curl -s "$API/v1/collections/jobs/tags" -H "$AUTH"
 # {"collection":"jobs","total_objects":3,"tags":[]}          <- three objects, no tags known yet
@@ -79,7 +79,7 @@ curl -s "$API/v1/collections/jobs/tags" -H "$AUTH"
 New objects start out *unknown*. Add one more posting and ask for known answers only (`evaluate: false` never calls the tagger):
 
 ```bash
-curl -s -X POST "$API/v1/collections/jobs/objects?data_type=txt" -H "$AUTH" -d 'Go platform engineer. Remote.'
+curl -s -X POST "$API/v1/collections/jobs/objects" -H "$AUTH" -d 'Go platform engineer. Remote.'
 
 curl -s "$API/v1/collections/jobs/tags" -H "$AUTH"
 # … {"tag":"Go","true_count":2,"false_count":1} …   <- the new object is not evaluated yet, so it is in neither count
@@ -120,9 +120,9 @@ AUTH="Authorization: Bearer $KEY"
 
 ```bash
 curl -s -X POST $API/v1/collections -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"name":"jobs","data_type":"txt"}'
+  -d '{"name":"jobs"}'
 
-curl -s -X POST "$API/v1/collections/jobs/objects?data_type=txt" -H "$AUTH" \
+curl -s -X POST "$API/v1/collections/jobs/objects" -H "$AUTH" \
   -H 'Content-Type: application/octet-stream' -d 'hello golang qa'
 
 curl -s -X POST $API/v1/collections/jobs/objects/query -H "$AUTH" \
@@ -235,6 +235,7 @@ Every service is configured with environment variables. In Docker Compose they a
 | `TAGGER_HTTP_ADDR` | `:8081` | Listen address. |
 | `TAGGER_STORAGE_BASE_URL` | `http://localhost:8082` | Storage URL the tagger reads object data from. |
 | `TAGGER_EVALUATOR_IMPL` | `grep` | `grep`, `false`, `completions/openai`, `decisions/openai` or `decisions/vercel`. |
+| `TAGGER_VERSION` | the evaluator's own | The version the tagger reports, `<implementation>[:<model>]`, which collections are tagged with. Set it to replace the default. |
 | `TAGGER_<KIND>_<DIALECT>_*` | per evaluator | Settings of the LLM-backed evaluators, named after the evaluator (`TAGGER_COMPLETIONS_OPENAI_*`, `TAGGER_DECISIONS_OPENAI_*`, `TAGGER_DECISIONS_VERCEL_*`): `API_KEY`, `BASE_URL`, `PATH`, `MODEL`, `TIMEOUT`, `AUTH_HEADER`, `AUTH_SCHEME`, `HEADERS`, `QUERY`, `PARAMS`, and for the decisions evaluators `THRESHOLD`, `BATCH_SIZE`, `INSTRUCTIONS`. See [`tagger/README.md`](tagger/README.md#llm-backed-evaluators). |
 
 Evaluators: `grep` is a case-sensitive substring match on text and needs no network. `false` marks every tag `false` (for testing). `completions/openai` asks a chat LLM about all tags at once; `decisions/openai` and `decisions/vercel` ask one yes/no question per tag and compare the returned probability with a threshold.
@@ -347,7 +348,7 @@ With `evaluate=false` the loop is skipped: the query reads known tags only and t
 - **`api` is a thin gateway.** It owns no data. It authenticates, limits, and forwards an allowlist of routes to `storage` without rewriting paths, and it serves the OpenAPI contract and docs for the API it fronts.
 - **`storage` owns all state** and is the only service that talks to Postgres and S3. Collection statistics (`object_count`, per-tag counters) are maintained by database triggers, so they always match the data, including after cascading deletes.
 - **`tagger` is stateless.** It has no database; it reads object bytes from `storage`, runs the evaluator, and returns booleans.
-- **Startup order matters:** Postgres and Garage, then tagger, then storage (it fetches the supported data types from the tagger and exits if it cannot), then api. Compose enforces this with health checks.
+- **Startup order matters:** Postgres and Garage, then tagger, then storage, then api. Compose enforces this with health checks.
 - **Uploads are content-addressed.** The SHA-256 of the bytes identifies an object within its collection; uploading the same bytes again returns the existing object.
 
 ## Contributing

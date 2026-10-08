@@ -21,14 +21,17 @@ type Server struct {
 	storage       *storageclient.Client
 	evaluator     evaluator.Evaluator
 	evaluatorImpl string
+	version       string
 }
 
-// NewServer creates a new tagging engine server.
-func NewServer(storageClient *storageclient.Client, evaluator evaluator.Evaluator, evaluatorImpl string) *Server {
+// NewServer creates a new tagging engine server. version is what the engine reports and what a tag
+// request must ask for; it is the evaluator's own version unless the operator set another one.
+func NewServer(storageClient *storageclient.Client, evaluator evaluator.Evaluator, evaluatorImpl, version string) *Server {
 	return &Server{
 		storage:       storageClient,
 		evaluator:     evaluator,
 		evaluatorImpl: evaluatorImpl,
+		version:       version,
 	}
 }
 
@@ -39,7 +42,7 @@ func (s *Server) Router() chi.Router {
 
 	r.Get("/healthz", s.healthz)
 	r.Get("/readyz", s.readyz)
-	r.Get("/supported-types", s.supportedTypes)
+	r.Get("/version", s.versionInfo)
 	r.Post("/tag", s.tag)
 	r.Get("/metrics", promhttp.Handler().ServeHTTP)
 	return r
@@ -55,17 +58,21 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok"))
 }
 
-func (s *Server) supportedTypes(w http.ResponseWriter, r *http.Request) {
+// versionInfo reports the engine's version, "<implementation>[:<model>]" unless TAGGER_VERSION says
+// otherwise.
+func (s *Server) versionInfo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"types": s.evaluator.GetSupportedDataTypes(),
-	})
+	json.NewEncoder(w).Encode(map[string]string{"version": s.version})
 }
 
 type tagRequest struct {
-	Collection string   `json:"collection"`
-	ObjectID   string   `json:"object_id"`
-	Tags       []string `json:"tags"`
+	Collection string `json:"collection"`
+	ObjectID   string `json:"object_id"`
+	// TaggerVersion is the version the object's collection is tagged with. If it is not the version this
+	// engine runs, the request is refused with 409: another tagger may tag the object differently, so its
+	// answer must not be stored as this collection's.
+	TaggerVersion string   `json:"tagger_version"`
+	Tags          []string `json:"tags"`
 }
 
 type tagResponse struct {
@@ -79,8 +86,8 @@ func (s *Server) tag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Collection == "" || req.ObjectID == "" {
-		http.Error(w, `{"error":{"code":"invalid_request","message":"collection and object_id required"}}`, http.StatusBadRequest)
+	if req.Collection == "" || req.ObjectID == "" || req.TaggerVersion == "" {
+		http.Error(w, `{"error":{"code":"invalid_request","message":"collection, object_id and tagger_version required"}}`, http.StatusBadRequest)
 		return
 	}
 	for _, tag := range req.Tags {
@@ -90,11 +97,14 @@ func (s *Server) tag(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Fetch object metadata from storage service first.
-	meta, err := s.storage.GetObjectMetadata(r.Context(), req.Collection, req.ObjectID)
-	if err != nil {
-		slog.Error("tagger: fetch metadata failed", "error", err)
-		http.Error(w, `{"error":{"code":"storage_error","message":"failed to fetch metadata"}}`, http.StatusBadGateway)
+	if req.TaggerVersion != s.version {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+			"code":    "tagger_version_mismatch",
+			"message": fmt.Sprintf("this engine runs %q, not %q", s.version, req.TaggerVersion),
+			"details": map[string]string{"expected": req.TaggerVersion, "running": s.version},
+		}})
 		return
 	}
 
@@ -107,7 +117,7 @@ func (s *Server) tag(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
-	result, err := s.evaluator.Evaluate(r.Context(), evaluator.DataType(meta.DataType), data, req.Tags)
+	result, err := s.evaluator.Evaluate(r.Context(), data, req.Tags)
 	metrics.RecordEvaluatorLatency(s.evaluatorImpl, start)
 	if err != nil {
 		slog.Error("tagger: evaluation failed", "error", err)

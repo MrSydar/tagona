@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"mrsydar/tagona/storage/internal/models"
@@ -22,15 +23,61 @@ func ValidateCollectionName(name string) error {
 	return nil
 }
 
-// ValidateDataType checks if data type is in the supported set.
-func ValidateDataType(dataType string, supported []string) error {
-	slog.Debug("ValidateDataType", "dataType", dataType, "supportedCount", len(supported))
-	for _, s := range supported {
-		if s == dataType {
-			return nil
+// MaxTaggerVersionBytes is the longest tagger version a collection can record.
+const MaxTaggerVersionBytes = 128
+
+// ValidateTaggerVersion checks a tagger version: any string of 1 to 128 bytes of valid UTF-8 without
+// control characters. By convention it is "<implementation>" or "<implementation>:<model>", for example
+// "grep" or "decisions/openai:zai-org/GLM-5.3-Flash", but what a version means is the tagger's business.
+func ValidateTaggerVersion(v string) error {
+	slog.Debug("ValidateTaggerVersion", "version", v)
+	if v == "" || len(v) > MaxTaggerVersionBytes {
+		return fmt.Errorf("tagger_version must be 1 to %d bytes", MaxTaggerVersionBytes)
+	}
+	if !utf8.ValidString(v) {
+		return fmt.Errorf("tagger_version must be valid UTF-8")
+	}
+	for _, r := range v {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("tagger_version must not contain control characters")
 		}
 	}
-	return fmt.Errorf("unsupported data_type: %s", dataType)
+	return nil
+}
+
+// Limits of object metadata.
+const (
+	MaxMetadataEntries    = 32
+	MaxMetadataKeyBytes   = 64
+	MaxMetadataValueBytes = 1024
+)
+
+// ValidateMetadata checks object metadata: at most 32 entries, keys of 1 to 64 bytes and values of at most
+// 1024 bytes, all valid UTF-8; keys carry no control characters and values no NUL.
+func ValidateMetadata(m map[string]string) error {
+	if len(m) > MaxMetadataEntries {
+		return fmt.Errorf("metadata has %d entries, at most %d are allowed", len(m), MaxMetadataEntries)
+	}
+	for k, v := range m {
+		if k == "" || len(k) > MaxMetadataKeyBytes {
+			return fmt.Errorf("a metadata key must be 1 to %d bytes", MaxMetadataKeyBytes)
+		}
+		if !utf8.ValidString(k) {
+			return fmt.Errorf("metadata key %q is not valid UTF-8", k)
+		}
+		for _, r := range k {
+			if unicode.IsControl(r) {
+				return fmt.Errorf("metadata key %q contains a control character", k)
+			}
+		}
+		if len(v) > MaxMetadataValueBytes {
+			return fmt.Errorf("the value of metadata key %q exceeds %d bytes", k, MaxMetadataValueBytes)
+		}
+		if !utf8.ValidString(v) || strings.ContainsRune(v, 0) {
+			return fmt.Errorf("the value of metadata key %q must be valid UTF-8 without NUL", k)
+		}
+	}
+	return nil
 }
 
 // ValidateTag checks if a single tag is valid.

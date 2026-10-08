@@ -15,7 +15,7 @@ func seedDated(t *testing.T, d *db.DB, collID string, n int) ([]string, time.Tim
 	base := time.Now().UTC().Truncate(time.Second)
 	ids := make([]string, n)
 	for i := 0; i < n; i++ {
-		o, err := d.InsertObject(context.Background(), collID, string(rune('a'+i)), base.Add(-time.Duration(i)*time.Hour), 1, "txt", "key/"+string(rune('a'+i)), nil)
+		o, err := d.InsertObject(context.Background(), collID, string(rune('a'+i)), base.Add(-time.Duration(i)*time.Hour), 1, "key/"+string(rune('a'+i)), nil, nil)
 		if err != nil {
 			t.Fatalf("insert object: %v", err)
 		}

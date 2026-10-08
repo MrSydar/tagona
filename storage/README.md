@@ -140,12 +140,12 @@ When pointing the client at the api gateway (`:8080`), use a key created via the
 ```bash
 # Collections (all commands require --token or API_TOKEN)
 client --url http://localhost:8080 --token "$API_TOKEN" list-collections
-client --url http://localhost:8080 --token "$API_TOKEN" create-collection --name jobs --data-type txt
+client --url http://localhost:8080 --token "$API_TOKEN" create-collection --name jobs
 client --url http://localhost:8080 --token "$API_TOKEN" delete-collection --collection jobs
 client --url http://localhost:8080 --token "$API_TOKEN" collection-tags --collection jobs [--prefix lang] [--limit 100] [--cursor <next>]
 
 # Objects
-client --url http://localhost:8080 --token "$API_TOKEN" upload --collection jobs --data-type txt --file hello.txt
+client --url http://localhost:8080 --token "$API_TOKEN" upload --collection jobs --file hello.txt --metadata '{"name":"hello.txt"}'
 client --url http://localhost:8080 --token "$API_TOKEN" get --collection jobs --id <id>
 client --url http://localhost:8080 --token "$API_TOKEN" data --collection jobs --id <id> --out hello.txt
 client --url http://localhost:8080 --token "$API_TOKEN" tags --collection jobs --id <id> --tags golang,qa

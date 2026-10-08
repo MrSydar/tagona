@@ -83,3 +83,44 @@ func TestNewReportsBadSettingsOfTheSelectedEvaluator(t *testing.T) {
 		t.Errorf("a vercel setting broke decisions/openai: %v", err)
 	}
 }
+
+func TestVersions(t *testing.T) {
+	lookup := func(env map[string]string) LookupFunc {
+		return func(k string) (string, bool) { v, ok := env[k]; return v, ok }
+	}
+	tests := []struct {
+		impl string
+		env  map[string]string
+		want string
+	}{
+		{"grep", nil, "grep"},
+		{"false", nil, "false"},
+		{"completions/openai", map[string]string{"TAGGER_COMPLETIONS_OPENAI_API_KEY": "k", "TAGGER_COMPLETIONS_OPENAI_MODEL": "zai-org/GLM-5.3-Flash"}, "completions/openai:zai-org/GLM-5.3-Flash"},
+		{"decisions/openai", map[string]string{"TAGGER_DECISIONS_OPENAI_API_KEY": "k", "TAGGER_DECISIONS_OPENAI_MODEL": "m1"}, "decisions/openai:m1"},
+		{"decisions/vercel", map[string]string{"TAGGER_DECISIONS_VERCEL_API_KEY": "k"}, "decisions/vercel:typesafe-ai/jev"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.impl, func(t *testing.T) {
+			ev, err := New(tt.impl, lookup(tt.env))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := ev.Version(); got != tt.want {
+				t.Fatalf("Version() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateVersion(t *testing.T) {
+	for _, ok := range []string{"grep", "decisions/openai:zai-org/GLM-5.3-Flash", strings.Repeat("x", MaxVersionBytes), "naïve:模型"} {
+		if err := ValidateVersion(ok); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", strings.Repeat("x", MaxVersionBytes+1), "a\nb", "a\x00b", "\xff"} {
+		if err := ValidateVersion(bad); err == nil {
+			t.Errorf("%q should be refused", bad)
+		}
+	}
+}

@@ -40,8 +40,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The version names what tagged the objects: "<implementation>[:<model>]", which the evaluator knows.
+	// TAGGER_VERSION replaces it, to keep a collection's version through a change of implementation or
+	// model that is known to tag alike (or to name one that is not what it seems).
+	version := ev.Version()
+	if v := os.Getenv("TAGGER_VERSION"); v != "" {
+		if err := evaluator.ValidateVersion(v); err != nil {
+			fmt.Fprintf(os.Stderr, "TAGGER_VERSION: %v\n", err)
+			os.Exit(1)
+		}
+		version = v
+	}
+
 	storageClient := storageclient.NewInternal(storageBaseURL)
-	srv := server.NewServer(storageClient, ev, evaluatorImpl)
+	srv := server.NewServer(storageClient, ev, evaluatorImpl, version)
 
 	httpServer := &http.Server{
 		Addr:         httpAddr,
@@ -51,7 +63,7 @@ func main() {
 	}
 
 	go func() {
-		slog.Info("starting tagger server", "addr", httpAddr, "storage_url", storageBaseURL)
+		slog.Info("starting tagger server", "addr", httpAddr, "storage_url", storageBaseURL, "version", version)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("http server error", "error", err)
 			os.Exit(1)

@@ -83,30 +83,10 @@ func main() {
 	}
 	tagClient := taggerclient.New(cfg.TagEngineURL, cfg.TagEngineTimeout)
 
-	// Fetch supported types with retries.
-	var supportedTypes []string
-	for i := 0; i < 10; i++ {
-		slog.Debug("fetching supported types from tagging engine", "attempt", i+1)
-		ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-		supportedTypes, err = tagClient.GetSupportedTypes(ctx)
-		cancel()
-		if err == nil {
-			break
-		}
-		if i == 9 {
-			slog.Error("failed to fetch supported types from tagging engine", "error", err)
-			os.Exit(1)
-		}
-		slog.Warn("fetch supported types failed, retrying", "error", err, "attempt", i+1)
-		time.Sleep(2 * time.Second)
-	}
-	slog.Info("supported data types", "types", supportedTypes)
-
 	slog.Debug("creating server")
 	database := db.New(pool)
 	instrumentedTagClient := client.NewInstrumentedTagger(tagClient)
 	srv := server.NewServer(cfg, database, store, instrumentedTagClient)
-	srv.SetSupportedTypes(supportedTypes)
 
 	// Retention sweeper.
 	slog.Debug("starting retention sweeper")

@@ -185,6 +185,8 @@ func newRouter(upstreams []string, g *gateway, cfg gatewayConfig) http.Handler {
 			r.Get("/v1/collections/{collection}/objects/{id}", g.getObject)
 			r.Get("/v1/collections/{collection}/objects/{id}/data", g.getObjectData)
 			r.Get("/v1/collections/{collection}/objects/{id}/tags", g.getObjectTags)
+			r.Put("/v1/collections/{collection}/objects/{id}/metadata", g.replaceMetadata)
+			r.Patch("/v1/collections/{collection}/objects/{id}/metadata", g.mergeMetadata)
 			r.Delete("/v1/collections/{collection}/objects/{id}", g.deleteObject)
 		})
 		r.With(limitBody(g.maxBodyBytes)).Post("/v1/collections/{collection}/objects", g.putObject)

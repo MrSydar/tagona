@@ -133,15 +133,26 @@ func TestRoutesBuildCleanRequests(t *testing.T) {
 		wantMethod, wantURI, wantBody string // wantBody "" means none; JSON compared structurally
 	}{
 		{call{name: "list collections", method: "GET", target: "/v1/collections"}, "GET", "/collections", ""},
-		{call{name: "create collection", method: "POST", target: "/v1/collections", body: `{"name":"jobs","data_type":"txt"}`},
-			"POST", "/collections", `{"name":"jobs","data_type":"txt"}`},
+		{call{name: "list collections, paged", method: "GET", target: "/v1/collections?limit=007&cursor=abc_-"},
+			"GET", "/collections?cursor=abc_-&limit=7", ""},
+		{call{name: "list collections, empty params dropped", method: "GET", target: "/v1/collections?limit=&cursor="}, "GET", "/collections", ""},
+		{call{name: "create collection", method: "POST", target: "/v1/collections", body: `{"name":"jobs"}`},
+			"POST", "/collections", `{"name":"jobs"}`},
+		{call{name: "create collection with a tagger version", method: "POST", target: "/v1/collections", body: `{"name":"jobs","tagger_version":"decisions/openai:zai-org/GLM-5.3-Flash"}`},
+			"POST", "/collections", `{"name":"jobs","tagger_version":"decisions/openai:zai-org/GLM-5.3-Flash"}`},
 		{call{name: "delete collection", method: "DELETE", target: "/v1/collections/jobs"}, "DELETE", "/collections/jobs", ""},
 		{call{name: "collection tags", method: "GET", target: "/v1/collections/jobs/tags?limit=007&prefix=go&cursor=abc_-"},
 			"GET", "/collections/jobs/tags?cursor=abc_-&limit=7&prefix=go", ""},
 		{call{name: "collection tags, empty params dropped", method: "GET", target: "/v1/collections/jobs/tags?limit=&prefix="},
 			"GET", "/collections/jobs/tags", ""},
-		{call{name: "upload", method: "POST", target: "/v1/collections/jobs/objects?data_type=txt&ttl_seconds=0060&date=2026-01-02T03:04:05%2B02:00", body: "hello"},
-			"POST", "/collections/jobs/objects?data_type=txt&date=2026-01-02T01%3A04%3A05Z&ttl_seconds=60", "hello"},
+		{call{name: "upload", method: "POST", target: "/v1/collections/jobs/objects?ttl_seconds=0060&date=2026-01-02T03:04:05%2B02:00", body: "hello"},
+			"POST", "/collections/jobs/objects?date=2026-01-02T01%3A04%3A05Z&ttl_seconds=60", "hello"},
+		{call{name: "upload with metadata, re-encoded", method: "POST", target: "/v1/collections/jobs/objects?metadata=%7B%20%22name%22%3A%22cute-dog.png%22%2C%22a%22%3A%22b%22%20%7D", body: "hello"},
+			"POST", "/collections/jobs/objects?metadata=%7B%22a%22%3A%22b%22%2C%22name%22%3A%22cute-dog.png%22%7D", "hello"},
+		{call{name: "replace metadata", method: "PUT", target: "/v1/collections/jobs/objects/" + objID + "/metadata", body: `{"name":"cute-dog.png"}`},
+			"PUT", "/collections/jobs/objects/" + objID + "/metadata", `{"name":"cute-dog.png"}`},
+		{call{name: "merge metadata", method: "PATCH", target: "/v1/collections/jobs/objects/" + objID + "/metadata", body: `{"name":"dog.png","old":null}`},
+			"PATCH", "/collections/jobs/objects/" + objID + "/metadata", `{"name":"dog.png","old":null}`},
 		{call{name: "get object", method: "GET", target: "/v1/collections/jobs/objects/" + objID}, "GET", "/collections/jobs/objects/" + objID, ""},
 		{call{name: "get data", method: "GET", target: "/v1/collections/jobs/objects/" + objID + "/data"}, "GET", "/collections/jobs/objects/" + objID + "/data", ""},
 		{call{name: "object tags", method: "GET", target: "/v1/collections/jobs/objects/" + objID + "/tags?tags=golang,qa&evaluate=1"},
@@ -199,8 +210,8 @@ func TestUnexpectedInputIsRejected(t *testing.T) {
 		{call{name: "repeated parameter", method: "GET", target: "/v1/collections/jobs/tags?limit=1&limit=2"}, 400, "invalid_parameter"},
 		{call{name: "parameter on object", method: "GET", target: "/v1/collections/jobs/objects/" + objID + "?x=1"}, 400, "invalid_parameter"},
 		{call{name: "parameter on query", method: "POST", target: "/v1/collections/jobs/objects/query?limit=1", body: `{}`}, 400, "invalid_parameter"},
-		{call{name: "parameter on create", method: "POST", target: "/v1/collections?x=1", body: `{"name":"a","data_type":"txt"}`}, 400, "invalid_parameter"},
-		{call{name: "unknown parameter on upload", method: "POST", target: "/v1/collections/jobs/objects?data_type=txt&owner=x", body: "x"}, 400, "invalid_parameter"},
+		{call{name: "parameter on create", method: "POST", target: "/v1/collections?x=1", body: `{"name":"a"}`}, 400, "invalid_parameter"},
+		{call{name: "unknown parameter on upload", method: "POST", target: "/v1/collections/jobs/objects?owner=x", body: "x"}, 400, "invalid_parameter"},
 		{call{name: "malformed query string", method: "GET", target: "/v1/collections/jobs/tags?limit=%zz"}, 400, "invalid_parameter"},
 		// values
 		{call{name: "bad limit", method: "GET", target: "/v1/collections/jobs/tags?limit=-1"}, 400, "invalid_limit"},
@@ -211,9 +222,26 @@ func TestUnexpectedInputIsRejected(t *testing.T) {
 		{call{name: "invalid utf-8 prefix", method: "GET", target: "/v1/collections/jobs/tags?prefix=%ff"}, 400, "invalid_prefix"},
 		{call{name: "bad evaluate", method: "GET", target: "/v1/collections/jobs/objects/" + objID + "/tags?evaluate=maybe"}, 400, "invalid_evaluate"},
 		{call{name: "control characters in tags", method: "GET", target: "/v1/collections/jobs/objects/" + objID + "/tags?tags=a%0d%0ab"}, 400, "invalid_tags"},
-		{call{name: "bad ttl", method: "POST", target: "/v1/collections/jobs/objects?data_type=txt&ttl_seconds=-1", body: "x"}, 400, "invalid_ttl"},
-		{call{name: "bad date", method: "POST", target: "/v1/collections/jobs/objects?data_type=txt&date=yesterday", body: "x"}, 400, "invalid_date"},
-		{call{name: "bad data type", method: "POST", target: "/v1/collections/jobs/objects?data_type=%3Cscript%3E", body: "x"}, 400, "invalid_data_type"},
+		{call{name: "bad ttl", method: "POST", target: "/v1/collections/jobs/objects?ttl_seconds=-1", body: "x"}, 400, "invalid_ttl"},
+		{call{name: "bad date", method: "POST", target: "/v1/collections/jobs/objects?date=yesterday", body: "x"}, 400, "invalid_date"},
+		{call{name: "the data_type parameter is gone", method: "POST", target: "/v1/collections/jobs/objects?data_type=txt", body: "x"}, 400, "invalid_parameter"},
+		{call{name: "metadata not json", method: "POST", target: "/v1/collections/jobs/objects?metadata=nope", body: "x"}, 400, "invalid_metadata"},
+		{call{name: "metadata not an object", method: "POST", target: "/v1/collections/jobs/objects?metadata=%5B1%5D", body: "x"}, 400, "invalid_metadata"},
+		{call{name: "metadata null", method: "POST", target: "/v1/collections/jobs/objects?metadata=null", body: "x"}, 400, "invalid_metadata"},
+		{call{name: "metadata value not a string", method: "POST", target: "/v1/collections/jobs/objects?metadata=%7B%22a%22%3A1%7D", body: "x"}, 400, "invalid_metadata"},
+		{call{name: "metadata with trailing data", method: "POST", target: "/v1/collections/jobs/objects?metadata=%7B%7D%7B%7D", body: "x"}, 400, "invalid_metadata"},
+		{call{name: "metadata too large", method: "POST", target: "/v1/collections/jobs/objects?metadata=" + strings.Repeat("a", maxMetadataBytes+1), body: "x"}, 400, "invalid_metadata"},
+		{call{name: "parameter on a metadata request", method: "PUT", target: "/v1/collections/jobs/objects/" + objID + "/metadata?x=1", body: `{}`}, 400, "invalid_parameter"},
+		{call{name: "metadata request on a bad id", method: "PUT", target: "/v1/collections/jobs/objects/nope/metadata", body: `{}`}, 404, "not_found"},
+		{call{name: "replace with a non-string", method: "PUT", target: "/v1/collections/jobs/objects/" + objID + "/metadata", body: `{"a":1}`}, 400, "invalid_json"},
+		{call{name: "replace with null", method: "PUT", target: "/v1/collections/jobs/objects/" + objID + "/metadata", body: `null`}, 400, "invalid_json"},
+		{call{name: "replace with null values", method: "PUT", target: "/v1/collections/jobs/objects/" + objID + "/metadata", body: `{"a":null}`}, 400, "invalid_json"},
+		{call{name: "replace with an array", method: "PUT", target: "/v1/collections/jobs/objects/" + objID + "/metadata", body: `["a"]`}, 400, "invalid_json"},
+		{call{name: "merge with a number", method: "PATCH", target: "/v1/collections/jobs/objects/" + objID + "/metadata", body: `{"a":2}`}, 400, "invalid_json"},
+		{call{name: "metadata body too large", method: "PUT", target: "/v1/collections/jobs/objects/" + objID + "/metadata", body: `{"a":"` + strings.Repeat("x", maxMetadataBytes) + `"}`}, 413, "payload_too_large"},
+		{call{name: "bad limit on collections", method: "GET", target: "/v1/collections?limit=x"}, 400, "invalid_limit"},
+		{call{name: "bad cursor on collections", method: "GET", target: "/v1/collections?cursor=a%20b"}, 400, "invalid_cursor"},
+		{call{name: "unknown parameter on collections", method: "GET", target: "/v1/collections?sort=name"}, 400, "invalid_parameter"},
 		{call{name: "bad collection name", method: "GET", target: "/v1/collections/Jobs/tags"}, 400, "invalid_collection_name"},
 		{call{name: "collection name with dots", method: "DELETE", target: "/v1/collections/a.b"}, 400, "invalid_collection_name"},
 		{call{name: "object id not a uuid", method: "GET", target: "/v1/collections/jobs/objects/not-a-uuid"}, 404, "not_found"},
@@ -233,9 +261,13 @@ func TestUnexpectedInputIsRejected(t *testing.T) {
 		{call{name: "not an object", method: "POST", target: "/v1/collections/jobs/objects/query", body: `[1]`}, 400, "invalid_json"},
 		{call{name: "empty body", method: "POST", target: "/v1/collections/jobs/objects/query"}, 400, "invalid_json"},
 		{call{name: "bad cursor in body", method: "POST", target: "/v1/collections/jobs/objects/query", body: `{"cursor":"a b"}`}, 400, "invalid_cursor"},
-		{call{name: "unknown field in create", method: "POST", target: "/v1/collections", body: `{"name":"a","data_type":"txt","owner":"x"}`}, 400, "invalid_json"},
-		{call{name: "bad collection name in body", method: "POST", target: "/v1/collections", body: `{"name":"A b","data_type":"txt"}`}, 400, "invalid_name"},
-		{call{name: "bad data type in body", method: "POST", target: "/v1/collections", body: `{"name":"a","data_type":"t x t"}`}, 400, "invalid_data_type"},
+		{call{name: "unknown field in create", method: "POST", target: "/v1/collections", body: `{"name":"a","owner":"x"}`}, 400, "invalid_json"},
+		{call{name: "the data_type field is gone", method: "POST", target: "/v1/collections", body: `{"name":"a","data_type":"txt"}`}, 400, "invalid_json"},
+		{call{name: "bad collection name in body", method: "POST", target: "/v1/collections", body: `{"name":"A b"}`}, 400, "invalid_name"},
+		{call{name: "empty tagger version", method: "POST", target: "/v1/collections", body: `{"name":"a","tagger_version":""}`}, 400, "invalid_tagger_version"},
+		{call{name: "long tagger version", method: "POST", target: "/v1/collections", body: `{"name":"a","tagger_version":"` + strings.Repeat("x", maxVersionBytes+1) + `"}`}, 400, "invalid_tagger_version"},
+		{call{name: "tagger version with a control character", method: "POST", target: "/v1/collections", body: `{"name":"a","tagger_version":"a\nb"}`}, 400, "invalid_tagger_version"},
+		{call{name: "tagger version not a string", method: "POST", target: "/v1/collections", body: `{"name":"a","tagger_version":1}`}, 400, "invalid_json"},
 		{call{name: "oversized json", method: "POST", target: "/v1/collections/jobs/objects/query", body: `{"cursor":"` + strings.Repeat("a", maxJSONBodyBytes) + `"}`}, 413, "payload_too_large"},
 	}
 	for _, tt := range tests {
@@ -278,9 +310,9 @@ func TestInboundHeadersNeverReachStorage(t *testing.T) {
 	}{
 		{call{name: "get", method: "GET", target: "/v1/collections", headers: hostile}, []string{"User-Agent"}},
 		{call{name: "delete", method: "DELETE", target: "/v1/collections/jobs", headers: hostile}, []string{"User-Agent"}},
-		{call{name: "json", method: "POST", target: "/v1/collections", body: `{"name":"a","data_type":"txt"}`, headers: hostile},
+		{call{name: "json", method: "POST", target: "/v1/collections", body: `{"name":"a"}`, headers: hostile},
 			[]string{"Content-Length", "Content-Type", "User-Agent"}},
-		{call{name: "upload", method: "POST", target: "/v1/collections/jobs/objects?data_type=txt", body: "payload", headers: hostile},
+		{call{name: "upload", method: "POST", target: "/v1/collections/jobs/objects", body: "payload", headers: hostile},
 			[]string{"Content-Length", "Content-Type", "User-Agent"}},
 	}
 	for _, tt := range tests {
@@ -304,7 +336,7 @@ func TestInboundHeadersNeverReachStorage(t *testing.T) {
 	t.Run("upload content type is fixed", func(t *testing.T) {
 		backend, seen := newRecordingStorage(t)
 		router := newGatewayRouter(t, backend.URL, gatewayConfig{})
-		router.ServeHTTP(httptest.NewRecorder(), call{method: "POST", target: "/v1/collections/jobs/objects?data_type=txt", body: "x",
+		router.ServeHTTP(httptest.NewRecorder(), call{method: "POST", target: "/v1/collections/jobs/objects", body: "x",
 			headers: map[string]string{"Content-Type": "text/html; charset=evil"}}.request())
 		if ct := seen()[0].header.Get("Content-Type"); ct != "application/octet-stream" {
 			t.Errorf("storage was told Content-Type %q", ct)
@@ -326,7 +358,7 @@ func TestResponseHeadersAreFiltered(t *testing.T) {
 	})
 	router := newGatewayRouter(t, backend.URL, gatewayConfig{})
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, call{method: "POST", target: "/v1/collections", body: `{"name":"jobs","data_type":"txt"}`}.request())
+	router.ServeHTTP(w, call{method: "POST", target: "/v1/collections", body: `{"name":"jobs"}`}.request())
 
 	if w.Code != http.StatusCreated || w.Body.String() != `{"name":"jobs"}` {
 		t.Fatalf("status %d, body %s", w.Code, w.Body)
@@ -437,7 +469,7 @@ func TestBodyLimit(t *testing.T) {
 	g := newTestGateway(t, backend.URL)
 	g.maxBodyBytes = 10
 	router := newRouterFor(t, g, backend.URL, gatewayConfig{})
-	path := "/v1/collections/jobs/objects?data_type=txt"
+	path := "/v1/collections/jobs/objects"
 
 	t.Run("within limit is forwarded", func(t *testing.T) {
 		w := httptest.NewRecorder()
@@ -493,7 +525,7 @@ func TestUploadPayloadIsRelayedUntouched(t *testing.T) {
 	router := newGatewayRouter(t, backend.URL, gatewayConfig{})
 	payload := "{\"not\":\"parsed\"}\x00\xff binary \r\n" + strings.Repeat("z", 100000)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, call{method: "POST", target: "/v1/collections/jobs/objects?data_type=txt", body: payload}.request())
+	router.ServeHTTP(w, call{method: "POST", target: "/v1/collections/jobs/objects", body: payload}.request())
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", w.Code, w.Body)
 	}

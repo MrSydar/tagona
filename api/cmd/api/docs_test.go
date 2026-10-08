@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -253,4 +255,125 @@ func TestDocsEndpointsArePublic(t *testing.T) {
 			t.Errorf("expected 401 on /v1/collections without a key, got %d", w.Code)
 		}
 	})
+}
+
+// The document lists every query parameter an operation accepts and the gateway accepts no others: each
+// documented parameter must get past the gateway's parameter check, and a parameter that is not
+// documented must be refused.
+func TestOpenAPIDocumentsEveryQueryParameter(t *testing.T) {
+	var root map[string]any
+	if err := yaml.Unmarshal(openapi.V1, &root); err != nil {
+		t.Fatal(err)
+	}
+	resolve := func(p any) map[string]any {
+		m, _ := p.(map[string]any)
+		if ref, ok := m["$ref"].(string); ok {
+			cur := any(root)
+			for _, part := range strings.Split(strings.TrimPrefix(ref, "#/"), "/") {
+				cur = cur.(map[string]any)[part]
+			}
+			m, _ = cur.(map[string]any)
+		}
+		return m
+	}
+	queryParams := func(lists ...any) []string {
+		var names []string
+		for _, l := range lists {
+			items, _ := l.([]any)
+			for _, p := range items {
+				if m := resolve(p); m["in"] == "query" {
+					names = append(names, m["name"].(string))
+				}
+			}
+		}
+		sort.Strings(names)
+		return names
+	}
+	samples := map[string]string{
+		"limit": "1", "cursor": "abc", "prefix": "a", "tags": "a", "evaluate": "true",
+		"date": "2026-01-01T00:00:00Z", "ttl_seconds": "60", "metadata": `{"a":"b"}`,
+	}
+	bodies := map[string]string{
+		"POST /v1/collections":                                     `{"name":"jobs"}`,
+		"POST /v1/collections/{collection}/objects":                "payload",
+		"POST /v1/collections/{collection}/objects/query":          `{}`,
+		"PUT /v1/collections/{collection}/objects/{id}/metadata":   `{}`,
+		"PATCH /v1/collections/{collection}/objects/{id}/metadata": `{}`,
+		"POST /v1/admin/api-keys":                                  `{"name":"k"}`,
+	}
+
+	paths := root["paths"].(map[string]any)
+	checked := 0
+	for path, item := range paths {
+		pathItem := item.(map[string]any)
+		for method, op := range pathItem {
+			method = strings.ToUpper(method)
+			if method != "GET" && method != "POST" && method != "PUT" && method != "PATCH" && method != "DELETE" {
+				continue
+			}
+			operation := op.(map[string]any)
+			documented := queryParams(pathItem["parameters"], operation["parameters"])
+			target := strings.NewReplacer("{collection}", "jobs", "{id}", objID).Replace(path)
+			body := bodies[method+" "+path]
+
+			send := func(query string) (int, string) {
+				backend, _ := newRecordingStorage(t)
+				router := newGatewayRouter(t, backend.URL, gatewayConfig{})
+				w := httptest.NewRecorder()
+				if strings.HasPrefix(path, "/v1/admin/") {
+					router.ServeHTTP(w, adminRequest(method, target+query, body))
+				} else {
+					router.ServeHTTP(w, call{method: method, target: target + query, body: body}.request())
+				}
+				code := ""
+				if w.Code == http.StatusBadRequest {
+					code = decodeErrorCode(t, w.Body.Bytes())
+				}
+				return w.Code, code
+			}
+
+			for _, name := range documented {
+				sample, ok := samples[name]
+				if !ok {
+					t.Fatalf("%s %s documents the parameter %q: add a sample value for it to this test", method, path, name)
+				}
+				if status, code := send("?" + name + "=" + url.QueryEscape(sample)); code == "invalid_parameter" {
+					t.Errorf("%s %s documents the parameter %q but the gateway refuses it (%d)", method, path, name, status)
+				}
+			}
+			if _, code := send("?undocumented_parameter=1"); code != "invalid_parameter" {
+				t.Errorf("%s %s: a parameter that is not documented was not refused (%q)", method, path, code)
+			}
+			checked++
+		}
+	}
+	if checked < 15 {
+		t.Fatalf("checked only %d operations; the walk is broken", checked)
+	}
+}
+
+// The fields of the query body are the properties of TagsQueryRequest in the document, no more and no fewer.
+func TestOpenAPIQueryBodyMatchesTheGateway(t *testing.T) {
+	var doc struct {
+		Components struct {
+			Schemas map[string]struct {
+				Properties map[string]any `yaml:"properties"`
+			} `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal(openapi.V1, &doc); err != nil {
+		t.Fatal(err)
+	}
+	documented := map[string]bool{}
+	for name := range doc.Components.Schemas["TagsQueryRequest"].Properties {
+		documented[name] = true
+	}
+	typ := reflect.TypeOf(queryBody{})
+	accepted := map[string]bool{}
+	for i := 0; i < typ.NumField(); i++ {
+		accepted[strings.Split(typ.Field(i).Tag.Get("json"), ",")[0]] = true
+	}
+	if !reflect.DeepEqual(documented, accepted) {
+		t.Errorf("documented fields %v, accepted fields %v", documented, accepted)
+	}
 }

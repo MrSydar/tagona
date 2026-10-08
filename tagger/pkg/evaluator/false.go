@@ -14,9 +14,9 @@ func NewFalseEvaluator() *FalseEvaluator {
 	return &FalseEvaluator{}
 }
 
-// Evaluate returns false for all tags regardless of data type.
-func (e *FalseEvaluator) Evaluate(ctx context.Context, dataType DataType, content []byte, tags []string) (map[string]bool, error) {
-	slog.Debug("FalseEvaluator.Evaluate", "data_type", dataType, "tags_count", len(tags))
+// Evaluate returns false for all tags regardless of the content.
+func (e *FalseEvaluator) Evaluate(ctx context.Context, content []byte, tags []string) (map[string]bool, error) {
+	slog.Debug("FalseEvaluator.Evaluate", "tags_count", len(tags))
 	result := make(map[string]bool, len(tags))
 	for _, tag := range tags {
 		slog.Debug("evaluating tag", "tag", tag)
@@ -25,8 +25,5 @@ func (e *FalseEvaluator) Evaluate(ctx context.Context, dataType DataType, conten
 	return result, nil
 }
 
-// GetSupportedDataTypes returns all supported data types.
-func (e *FalseEvaluator) GetSupportedDataTypes() []string {
-	slog.Debug("FalseEvaluator.GetSupportedDataTypes called")
-	return []string{string(DataTypeTxt), string(DataTypePng)}
-}
+// Version is "false".
+func (e *FalseEvaluator) Version() string { return "false" }

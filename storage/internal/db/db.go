@@ -39,13 +39,13 @@ func (d *DB) Pool() *pgxpool.Pool {
 }
 
 // CreateCollection inserts a collection.
-func (d *DB) CreateCollection(ctx context.Context, name, dataType string) (*models.Collection, error) {
-	slog.Debug("CreateCollection", "name", name, "dataType", dataType)
+func (d *DB) CreateCollection(ctx context.Context, name, taggerVersion string) (*models.Collection, error) {
+	slog.Debug("CreateCollection", "name", name, "taggerVersion", taggerVersion)
 	var c models.Collection
 	err := d.pool.QueryRow(ctx,
-		`INSERT INTO collections (name, data_type) VALUES ($1, $2) RETURNING id, name, data_type, created_at`,
-		name, dataType,
-	).Scan(&c.ID, &c.Name, &c.DataType, &c.CreatedAt)
+		`INSERT INTO collections (name, tagger_version) VALUES ($1, $2) RETURNING id, name, tagger_version, created_at`,
+		name, taggerVersion,
+	).Scan(&c.ID, &c.Name, &c.TaggerVersion, &c.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("insert collection: %w", err)
 	}
@@ -57,9 +57,9 @@ func (d *DB) GetCollectionByName(ctx context.Context, name string) (*models.Coll
 	slog.Debug("GetCollectionByName", "name", name)
 	var c models.Collection
 	err := d.pool.QueryRow(ctx,
-		`SELECT id, name, data_type, created_at FROM collections WHERE name = $1`,
+		`SELECT id, name, tagger_version, created_at FROM collections WHERE name = $1`,
 		name,
-	).Scan(&c.ID, &c.Name, &c.DataType, &c.CreatedAt)
+	).Scan(&c.ID, &c.Name, &c.TaggerVersion, &c.CreatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, fmt.Errorf("collection not found: %w", err)
@@ -69,26 +69,47 @@ func (d *DB) GetCollectionByName(ctx context.Context, name string) (*models.Coll
 	return &c, nil
 }
 
-// ListCollections returns all collections.
-func (d *DB) ListCollections(ctx context.Context) ([]models.Collection, error) {
-	slog.Debug("ListCollections: called")
-	rows, err := d.pool.Query(ctx,
-		`SELECT id, name, data_type, created_at FROM collections ORDER BY created_at DESC`,
-	)
+// CollectionCursor is a position in the order ListCollections returns collections in: the last collection
+// of a page.
+type CollectionCursor struct {
+	CreatedAt time.Time
+	ID        string
+}
+
+// ListCollections returns up to limit collections, newest first (ties broken by id), that come after the
+// cursor, or from the start when after is nil. The second result says whether more collections follow.
+func (d *DB) ListCollections(ctx context.Context, limit int, after *CollectionCursor) ([]models.Collection, bool, error) {
+	slog.Debug("ListCollections", "limit", limit, "paged", after != nil)
+	const cols = `SELECT id, name, tagger_version, created_at FROM collections`
+	const order = ` ORDER BY created_at DESC, id DESC LIMIT `
+	var rows pgx.Rows
+	var err error
+	if after == nil {
+		rows, err = d.pool.Query(ctx, cols+order+`$1`, limit+1)
+	} else {
+		rows, err = d.pool.Query(ctx, cols+` WHERE (created_at, id) < ($1, $2::uuid)`+order+`$3`, after.CreatedAt, after.ID, limit+1)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("list collections: %w", err)
+		return nil, false, fmt.Errorf("list collections: %w", err)
 	}
 	defer rows.Close()
 
 	var collections []models.Collection
 	for rows.Next() {
 		var c models.Collection
-		if err := rows.Scan(&c.ID, &c.Name, &c.DataType, &c.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan collection: %w", err)
+		if err := rows.Scan(&c.ID, &c.Name, &c.TaggerVersion, &c.CreatedAt); err != nil {
+			return nil, false, fmt.Errorf("scan collection: %w", err)
 		}
 		collections = append(collections, c)
 	}
-	return collections, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("list collections: %w", err)
+	}
+	more := len(collections) > limit
+	if more {
+		collections = collections[:limit]
+	}
+	return collections, more, nil
 }
 
 // GetCollectionPayloadKeys returns payload keys for all objects in a collection.
@@ -133,11 +154,11 @@ func (d *DB) GetObjectByID(ctx context.Context, id string) (*models.Object, erro
 	var o models.Object
 	var expiresAt *time.Time
 	err := d.pool.QueryRow(ctx,
-		`SELECT o.id, o.collection_id, c.name, o.data_type, o.date, o.size_bytes, o.content_hash, o.created_at, o.expires_at, o.payload_key
+		`SELECT o.id, o.collection_id, c.name, o.metadata, o.date, o.size_bytes, o.content_hash, o.created_at, o.expires_at, o.payload_key
 		 FROM objects o JOIN collections c ON o.collection_id = c.id
 		 WHERE o.id = $1 AND (o.expires_at IS NULL OR o.expires_at > NOW())`,
 		id,
-	).Scan(&o.ID, &o.CollectionID, &o.Collection, &o.DataType, &o.Date, &o.SizeBytes, &o.ContentHash, &o.CreatedAt, &expiresAt, &o.PayloadKey)
+	).Scan(&o.ID, &o.CollectionID, &o.Collection, &o.Metadata, &o.Date, &o.SizeBytes, &o.ContentHash, &o.CreatedAt, &expiresAt, &o.PayloadKey)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, fmt.Errorf("object not found: %w", err)
@@ -155,11 +176,11 @@ func (d *DB) GetObjectByCollectionAndHash(ctx context.Context, collectionID, has
 	var expiresAt *time.Time
 	var collName string
 	err := d.pool.QueryRow(ctx,
-		`SELECT o.id, o.collection_id, c.name, o.data_type, o.date, o.size_bytes, o.content_hash, o.created_at, o.expires_at, o.payload_key
+		`SELECT o.id, o.collection_id, c.name, o.metadata, o.date, o.size_bytes, o.content_hash, o.created_at, o.expires_at, o.payload_key
 		 FROM objects o JOIN collections c ON o.collection_id = c.id
 		 WHERE o.collection_id = $1 AND o.content_hash = $2 AND (o.expires_at IS NULL OR o.expires_at > NOW())`,
 		collectionID, hash,
-	).Scan(&o.ID, &o.CollectionID, &collName, &o.DataType, &o.Date, &o.SizeBytes, &o.ContentHash, &o.CreatedAt, &expiresAt, &o.PayloadKey)
+	).Scan(&o.ID, &o.CollectionID, &collName, &o.Metadata, &o.Date, &o.SizeBytes, &o.ContentHash, &o.CreatedAt, &expiresAt, &o.PayloadKey)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, fmt.Errorf("object not found: %w", err)
@@ -178,11 +199,11 @@ func (d *DB) GetObjectByCollectionAndHashIncludingExpired(ctx context.Context, c
 	var expiresAt *time.Time
 	var collName string
 	err := d.pool.QueryRow(ctx,
-		`SELECT o.id, o.collection_id, c.name, o.data_type, o.date, o.size_bytes, o.content_hash, o.created_at, o.expires_at, o.payload_key
+		`SELECT o.id, o.collection_id, c.name, o.metadata, o.date, o.size_bytes, o.content_hash, o.created_at, o.expires_at, o.payload_key
 		 FROM objects o JOIN collections c ON o.collection_id = c.id
 		 WHERE o.collection_id = $1 AND o.content_hash = $2`,
 		collectionID, hash,
-	).Scan(&o.ID, &o.CollectionID, &collName, &o.DataType, &o.Date, &o.SizeBytes, &o.ContentHash, &o.CreatedAt, &expiresAt, &o.PayloadKey)
+	).Scan(&o.ID, &o.CollectionID, &collName, &o.Metadata, &o.Date, &o.SizeBytes, &o.ContentHash, &o.CreatedAt, &expiresAt, &o.PayloadKey)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, fmt.Errorf("object not found: %w", err)
@@ -195,14 +216,17 @@ func (d *DB) GetObjectByCollectionAndHashIncludingExpired(ctx context.Context, c
 }
 
 // InsertObject inserts a new object.
-func (d *DB) InsertObject(ctx context.Context, collectionID string, hash string, date time.Time, sizeBytes int64, dataType, payloadKey string, expiresAt *time.Time) (*models.Object, error) {
-	slog.Debug("InsertObject", "collectionID", collectionID, "sizeBytes", sizeBytes, "dataType", dataType)
+func (d *DB) InsertObject(ctx context.Context, collectionID string, hash string, date time.Time, sizeBytes int64, payloadKey string, metadata map[string]string, expiresAt *time.Time) (*models.Object, error) {
+	slog.Debug("InsertObject", "collectionID", collectionID, "sizeBytes", sizeBytes, "metadataKeys", len(metadata))
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
 	var id string
 	var createdAt time.Time
 	err := d.pool.QueryRow(ctx,
-		`INSERT INTO objects (collection_id, content_hash, date, size_bytes, data_type, expires_at, payload_key)
+		`INSERT INTO objects (collection_id, content_hash, date, size_bytes, metadata, expires_at, payload_key)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, created_at`,
-		collectionID, hash, date, sizeBytes, dataType, expiresAt, payloadKey,
+		collectionID, hash, date, sizeBytes, metadata, expiresAt, payloadKey,
 	).Scan(&id, &createdAt)
 	if err != nil {
 		return nil, fmt.Errorf("insert object: %w", err)
@@ -210,14 +234,54 @@ func (d *DB) InsertObject(ctx context.Context, collectionID string, hash string,
 	return &models.Object{
 		ID:          id,
 		Collection:  "", // filled by caller if needed
-		DataType:    dataType,
 		Date:        date,
 		SizeBytes:   sizeBytes,
 		ContentHash: hash,
 		CreatedAt:   createdAt,
 		ExpiresAt:   expiresAt,
 		PayloadKey:  payloadKey,
+		Metadata:    metadata,
 	}, nil
+}
+
+// ErrObjectNotFound is returned by UpdateObjectMetadata for an object that does not exist or has expired.
+var ErrObjectNotFound = errors.New("object not found")
+
+// UpdateObjectMetadata changes the metadata of an object in one transaction: change receives the current
+// metadata and returns the new one, which replaces it. An error from change is returned as it is, and
+// nothing is written. It returns the metadata that was stored.
+func (d *DB) UpdateObjectMetadata(ctx context.Context, id string, change func(current map[string]string) (map[string]string, error)) (map[string]string, error) {
+	slog.Debug("UpdateObjectMetadata", "id", id)
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // a no-op after Commit
+
+	var current map[string]string
+	err = tx.QueryRow(ctx,
+		`SELECT metadata FROM objects WHERE id = $1 AND (expires_at IS NULL OR expires_at > NOW()) FOR UPDATE`, id,
+	).Scan(&current)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrObjectNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read metadata: %w", err)
+	}
+	updated, err := change(current)
+	if err != nil {
+		return nil, err
+	}
+	if updated == nil {
+		updated = map[string]string{}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE objects SET metadata = $2 WHERE id = $1`, id, updated); err != nil {
+		return nil, fmt.Errorf("write metadata: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+	return updated, nil
 }
 
 // DeleteObject removes object, tags, and returns payload_key.
@@ -533,7 +597,7 @@ func (d *DB) QueryObjectsKnownTags(ctx context.Context, collectionID string, tag
 			GROUP BY object_id
 			HAVING COUNT(*) = %d
 		)
-		SELECT o.id, o.collection_id, c.name, o.data_type, o.date, o.size_bytes, o.content_hash, o.created_at, o.expires_at, o.payload_key
+		SELECT o.id, o.collection_id, c.name, o.metadata, o.date, o.size_bytes, o.content_hash, o.created_at, o.expires_at, o.payload_key
 		FROM objects o
 		JOIN collections c ON o.collection_id = c.id
 		WHERE o.collection_id = $1 %s
@@ -582,7 +646,7 @@ func (d *DB) queryObjectsByDate(ctx context.Context, collectionID string, dateFi
 	}
 
 	query := fmt.Sprintf(`
-		SELECT o.id, o.collection_id, c.name, o.data_type, o.date, o.size_bytes, o.content_hash, o.created_at, o.expires_at, o.payload_key
+		SELECT o.id, o.collection_id, c.name, o.metadata, o.date, o.size_bytes, o.content_hash, o.created_at, o.expires_at, o.payload_key
 		FROM objects o
 		JOIN collections c ON o.collection_id = c.id
 		WHERE o.collection_id = $1 %s
@@ -631,7 +695,7 @@ func (d *DB) ScanCandidateObjects(ctx context.Context, collectionID string, date
 	}
 
 	query := fmt.Sprintf(`
-		SELECT o.id, o.collection_id, c.name, o.data_type, o.date, o.size_bytes, o.content_hash, o.created_at, o.expires_at, o.payload_key
+		SELECT o.id, o.collection_id, c.name, o.metadata, o.date, o.size_bytes, o.content_hash, o.created_at, o.expires_at, o.payload_key
 		FROM objects o
 		JOIN collections c ON o.collection_id = c.id
 		WHERE o.collection_id = $1 %s
@@ -745,7 +809,7 @@ func scanObjects(rows pgx.Rows) ([]models.Object, error) {
 	for rows.Next() {
 		var o models.Object
 		var expiresAt *time.Time
-		if err := rows.Scan(&o.ID, &o.CollectionID, &o.Collection, &o.DataType, &o.Date, &o.SizeBytes, &o.ContentHash, &o.CreatedAt, &expiresAt, &o.PayloadKey); err != nil {
+		if err := rows.Scan(&o.ID, &o.CollectionID, &o.Collection, &o.Metadata, &o.Date, &o.SizeBytes, &o.ContentHash, &o.CreatedAt, &expiresAt, &o.PayloadKey); err != nil {
 			return nil, fmt.Errorf("scan object: %w", err)
 		}
 		o.ExpiresAt = expiresAt

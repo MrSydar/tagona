@@ -3,11 +3,12 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE IF NOT EXISTS collections (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name TEXT NOT NULL UNIQUE,
-    data_type TEXT NOT NULL,
+    tagger_version TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_collections_name ON collections(name);
+CREATE INDEX IF NOT EXISTS idx_collections_created_at_id ON collections(created_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS objects (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -15,7 +16,7 @@ CREATE TABLE IF NOT EXISTS objects (
     content_hash TEXT NOT NULL,
     date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     size_bytes INT NOT NULL,
-    data_type TEXT NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at TIMESTAMPTZ,
     payload_key TEXT NOT NULL,

@@ -18,7 +18,7 @@ func TestGatewayRefusesUnexpectedInput(t *testing.T) {
 	defer deleteAPIKey(t, creds.ID)
 	coll := "e2e_sanitize_" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "")
 	createCollection(t, creds.Key, coll)
-	obj := uploadObject(t, creds.Key, coll, "txt", []byte("a golang job"))
+	obj := uploadObject(t, creds.Key, coll, []byte("a golang job"))
 	defer func() {
 		do(t, http.MethodDelete, "/v1/collections/"+coll, "", asKey(creds.Key))
 	}()
@@ -34,10 +34,10 @@ func TestGatewayRefusesUnexpectedInput(t *testing.T) {
 		{"body on a get", http.MethodGet, "/v1/collections", `{"x":1}`, 400, "unexpected_body"},
 		{"unknown field in a query", http.MethodPost, "/v1/collections/" + coll + "/objects/query", `{"limit":1,"sql":"x"}`, 400, "invalid_json"},
 		{"trailing data after a query", http.MethodPost, "/v1/collections/" + coll + "/objects/query", `{} {}`, 400, "invalid_json"},
-		{"unknown field when creating a collection", http.MethodPost, "/v1/collections", `{"name":"x","data_type":"txt","owner":"me"}`, 400, "invalid_json"},
+		{"unknown field when creating a collection", http.MethodPost, "/v1/collections", `{"name":"x","owner":"me"}`, 400, "invalid_json"},
 		{"malformed cursor", http.MethodGet, "/v1/collections/" + coll + "/tags?cursor=not%20valid", "", 400, "invalid_cursor"},
 		{"object id that is not a uuid", http.MethodGet, "/v1/collections/" + coll + "/objects/not-a-uuid", "", 404, "not_found"},
-		{"unknown parameter when uploading", http.MethodPost, "/v1/collections/" + coll + "/objects?data_type=txt&owner=x", "data", 400, "invalid_parameter"},
+		{"unknown parameter when uploading", http.MethodPost, "/v1/collections/" + coll + "/objects?owner=x", "data", 400, "invalid_parameter"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
