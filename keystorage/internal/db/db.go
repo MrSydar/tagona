@@ -91,22 +91,45 @@ func (d *DB) Create(ctx context.Context, keyHash, keyPrefix, name string, ttlSec
 	return &k, nil
 }
 
-// List returns all keys, newest first, expired ones included until they are swept.
-func (d *DB) List(ctx context.Context) ([]APIKey, error) {
-	rows, err := d.pool.Query(ctx, `SELECT id, name, key_prefix, created_at, expires_at FROM api_keys ORDER BY created_at DESC`)
+// Cursor is a position in the order List returns keys in: the last key of a page.
+type Cursor struct {
+	CreatedAt time.Time
+	ID        string
+}
+
+// List returns up to limit keys, newest first (ties broken by id), that come after the cursor, or from
+// the start when after is nil. The second result says whether more keys follow. Expired keys are
+// included until they are swept.
+func (d *DB) List(ctx context.Context, limit int, after *Cursor) ([]APIKey, bool, error) {
+	const cols = `SELECT id, name, key_prefix, created_at, expires_at FROM api_keys`
+	const order = ` ORDER BY created_at DESC, id DESC LIMIT `
+	var rows pgx.Rows
+	var err error
+	if after == nil {
+		rows, err = d.pool.Query(ctx, cols+order+`$1`, limit+1)
+	} else {
+		rows, err = d.pool.Query(ctx, cols+` WHERE (created_at, id) < ($1, $2::uuid)`+order+`$3`, after.CreatedAt, after.ID, limit+1)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("list api keys: %w", err)
+		return nil, false, fmt.Errorf("list api keys: %w", err)
 	}
 	defer rows.Close()
 	var keys []APIKey
 	for rows.Next() {
 		var k APIKey
 		if err := rows.Scan(&k.ID, &k.Name, &k.KeyPrefix, &k.CreatedAt, &k.ExpiresAt); err != nil {
-			return nil, fmt.Errorf("scan api key: %w", err)
+			return nil, false, fmt.Errorf("scan api key: %w", err)
 		}
 		keys = append(keys, k)
 	}
-	return keys, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("list api keys: %w", err)
+	}
+	more := len(keys) > limit
+	if more {
+		keys = keys[:limit]
+	}
+	return keys, more, nil
 }
 
 // GetByHash returns the key with the given hash. It returns ErrNotFound when there is none, and

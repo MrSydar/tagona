@@ -36,8 +36,8 @@ func TestCreateGetListDelete(t *testing.T) {
 		t.Fatalf("unknown key: err = %v, want ErrNotFound", err)
 	}
 
-	list, err := d.List(ctx)
-	if err != nil || len(list) != 1 || list[0].ID != created.ID {
+	list, more, err := d.List(ctx, 100, nil)
+	if err != nil || more || len(list) != 1 || list[0].ID != created.ID {
 		t.Fatalf("List = %+v, %v", list, err)
 	}
 
@@ -73,7 +73,7 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := db.Migrate(ctx, pool, migrations.FS); err != nil {
 		t.Fatalf("second migrate: %v", err)
 	}
-	list, err := d.List(ctx)
+	list, _, err := d.List(ctx, 100, nil)
 	if err != nil || len(list) != 1 || list[0].Name != "kept" {
 		t.Fatalf("data lost after re-running migrations: %+v, %v", list, err)
 	}
@@ -110,7 +110,7 @@ func TestExpiry(t *testing.T) {
 	if _, err := d.GetByHash(ctx, keys.Hash("forever")); err != nil {
 		t.Fatalf("a key without expiry is unaffected: %v", err)
 	}
-	if list, _ := d.List(ctx); len(list) != 2 {
+	if list, _, _ := d.List(ctx, 100, nil); len(list) != 2 {
 		t.Fatalf("an expired key stays listed until it is swept: %d keys", len(list))
 	}
 }
@@ -138,7 +138,7 @@ func TestDeleteExpiredHonoursRetention(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("with no retention the hour-old one goes too: %d, %v", n, err)
 	}
-	list, _ := d.List(ctx)
+	list, _, _ := d.List(ctx, 100, nil)
 	if len(list) != 2 {
 		t.Fatalf("keys that never expire and live ones stay: %d left", len(list))
 	}
@@ -162,5 +162,60 @@ func TestMigrationKeepsKeysCreatedBeforeExpiryExisted(t *testing.T) {
 	k, err := d.GetByHash(ctx, keys.Hash("tagona_legacy"))
 	if err != nil || k.Name != "legacy" || k.ExpiresAt != nil {
 		t.Fatalf("the legacy key must still validate and never expire: %+v, %v", k, err)
+	}
+}
+
+func TestListPagesInOrder(t *testing.T) {
+	d, _ := dbtest.New(t)
+	ctx := context.Background()
+	var created []string
+	for i := 0; i < 5; i++ {
+		_, hash, prefix, err := keys.Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		k, err := d.Create(ctx, hash, prefix, "k", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		created = append(created, k.ID)
+	}
+
+	var got []string
+	var after *db.Cursor
+	for pages := 0; ; pages++ {
+		if pages > 5 {
+			t.Fatal("paging does not end")
+		}
+		page, more, err := d.List(ctx, 2, after)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range page {
+			got = append(got, k.ID)
+		}
+		if !more {
+			if len(page) == 0 {
+				t.Fatal("an empty last page")
+			}
+			break
+		}
+		last := page[len(page)-1]
+		after = &db.Cursor{CreatedAt: last.CreatedAt, ID: last.ID}
+	}
+	if len(got) != 5 {
+		t.Fatalf("got %d keys: %v", len(got), got)
+	}
+	seen := map[string]bool{}
+	for _, id := range got {
+		if seen[id] {
+			t.Fatalf("key %s listed twice: %v", id, got)
+		}
+		seen[id] = true
+	}
+	for _, id := range created {
+		if !seen[id] {
+			t.Fatalf("key %s was skipped: %v", id, got)
+		}
 	}
 }

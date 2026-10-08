@@ -10,7 +10,7 @@ Keystorage listens on `:8083` on the compose network and is not published on the
 |--------|------|------|-------------|
 | `POST` | `/api-keys/validate` | none | Body `{"key":"..."}`. Valid → `200` `{"id","name","expires_at"}` (`expires_at` is `null` for a key that never expires); unknown → `401` `invalid_api_key`; **expired → `401` `expired_api_key`**; empty → `400` `missing_key` |
 | `POST` | `/api-keys` | admin Basic | Create a key. Body `{"name":"...","ttl_seconds":14400}`: `name` is 1–128 bytes of valid UTF-8, `ttl_seconds` is optional (see [Expiry](#expiry)). `201` `{"id","name","key","created_at","expires_at"}` |
-| `GET` | `/api-keys` | admin Basic | List keys (never the raw key), expired ones included until swept: `200` `{"keys":[{"id","name","key_prefix","created_at","expires_at"}]}` |
+| `GET` | `/api-keys` | admin Basic | List keys (never the raw key), newest first, expired ones included until swept: `200` `{"keys":[{"id","name","key_prefix","created_at","expires_at"}],"next":"..."}`. Paged: `?limit=` (1–1000, default 100; else `400` `invalid_limit`) and `?cursor=` (the previous `next`; else `400` `invalid_cursor`). `next` is present only when more keys follow |
 | `DELETE` | `/api-keys/{id}` | admin Basic | `204`; `404` for an unknown id or one that is not a UUID |
 | `GET` | `/healthz`, `/readyz`, `/metrics` | none | Liveness; readiness (database ping); Prometheus metrics |
 

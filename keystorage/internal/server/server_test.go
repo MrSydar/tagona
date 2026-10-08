@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -41,7 +43,7 @@ func (m *memStore) Create(_ context.Context, hash, prefix, name string, ttlSecon
 		return nil, errors.New("boom")
 	}
 	m.next++
-	k := db.APIKey{ID: fakeUUID(m.next), Name: name, KeyPrefix: prefix, CreatedAt: m.now}
+	k := db.APIKey{ID: fakeUUID(m.next), Name: name, KeyPrefix: prefix, CreatedAt: m.now.Truncate(time.Microsecond)}
 	if ttlSeconds > 0 {
 		exp := m.now.Add(time.Duration(ttlSeconds) * time.Second)
 		k.ExpiresAt = &exp
@@ -51,17 +53,34 @@ func (m *memStore) Create(_ context.Context, hash, prefix, name string, ttlSecon
 	return &k, nil
 }
 
-func (m *memStore) List(context.Context) ([]db.APIKey, error) {
+func (m *memStore) List(_ context.Context, limit int, after *db.Cursor) ([]db.APIKey, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failOn == "List" {
-		return nil, errors.New("boom")
+		return nil, false, errors.New("boom")
 	}
-	var out []db.APIKey
+	all := make([]db.APIKey, 0, len(m.keys))
 	for _, k := range m.keys {
+		all = append(all, k)
+	}
+	// newest first, ties by id: the order the database uses
+	sort.Slice(all, func(i, j int) bool {
+		if !all[i].CreatedAt.Equal(all[j].CreatedAt) {
+			return all[i].CreatedAt.After(all[j].CreatedAt)
+		}
+		return all[i].ID > all[j].ID
+	})
+	var out []db.APIKey
+	for _, k := range all {
+		if after != nil && !(k.CreatedAt.Before(after.CreatedAt) || (k.CreatedAt.Equal(after.CreatedAt) && k.ID < after.ID)) {
+			continue
+		}
 		out = append(out, k)
 	}
-	return out, nil
+	if len(out) > limit {
+		return out[:limit], true, nil
+	}
+	return out, false, nil
 }
 
 func (m *memStore) GetByHash(_ context.Context, hash string) (*db.APIKey, error) {
@@ -495,5 +514,106 @@ func TestListShowsExpiry(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"expires_at":null`) {
 		t.Fatalf("a key without expiry must show an explicit null: %s", rec.Body)
+	}
+}
+
+// listPage fetches one page of keys.
+func listPage(t *testing.T, h http.Handler, query string) (ids []string, next string) {
+	t.Helper()
+	rec := do(h, http.MethodGet, "/api-keys"+query, "", admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list %q: %d %s", query, rec.Code, rec.Body)
+	}
+	var page struct {
+		Keys []struct{ ID string }
+		Next string
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range page.Keys {
+		ids = append(ids, k.ID)
+	}
+	return ids, page.Next
+}
+
+func TestListIsPaged(t *testing.T) {
+	h := newTestServer(newMemStore())
+	var created []string
+	for i := 0; i < 5; i++ {
+		id, _ := createKey(t, h, "k")
+		created = append(created, id)
+	}
+
+	var got []string
+	query, pages := "?limit=2", 0
+	for {
+		ids, next := listPage(t, h, query)
+		pages++
+		got = append(got, ids...)
+		if next == "" {
+			break
+		}
+		if len(ids) != 2 {
+			t.Fatalf("page %d has %d keys, want 2", pages, len(ids))
+		}
+		query = "?limit=2&cursor=" + next
+	}
+	if pages != 3 || len(got) != 5 {
+		t.Fatalf("%d pages, %d keys: %v", pages, len(got), got)
+	}
+	// newest first, each key once: the creation order reversed
+	for i, id := range got {
+		if id != created[len(created)-1-i] {
+			t.Fatalf("keys = %v, want %v reversed", got, created)
+		}
+	}
+
+	// an exact fit has no next page
+	if _, next := listPage(t, h, "?limit=5"); next != "" {
+		t.Fatalf("next = %q after the last key", next)
+	}
+}
+
+func TestListDefaultsToOneHundredKeys(t *testing.T) {
+	h := newTestServer(newMemStore())
+	for i := 0; i < defaultListLimit+1; i++ {
+		createKey(t, h, "k")
+	}
+	ids, next := listPage(t, h, "")
+	if len(ids) != defaultListLimit || next == "" {
+		t.Fatalf("%d keys, next %q", len(ids), next)
+	}
+	rest, next := listPage(t, h, "?cursor="+next)
+	if len(rest) != 1 || next != "" {
+		t.Fatalf("second page: %d keys, next %q", len(rest), next)
+	}
+}
+
+func TestListRejectsBadPaging(t *testing.T) {
+	h := newTestServer(newMemStore())
+	createKey(t, h, "k")
+	tests := []struct{ query, code string }{
+		{"?limit=0", "invalid_limit"},
+		{"?limit=-1", "invalid_limit"},
+		{"?limit=abc", "invalid_limit"},
+		{"?limit=", "invalid_limit"},
+		{"?limit=1001", "invalid_limit"},
+		{"?cursor=", "invalid_cursor"},
+		{"?cursor=!!!", "invalid_cursor"},
+		{"?cursor=" + base64.RawURLEncoding.EncodeToString([]byte("nonsense")), "invalid_cursor"},
+		{"?cursor=" + base64.RawURLEncoding.EncodeToString([]byte("12|not-a-uuid")), "invalid_cursor"},
+		{"?cursor=" + base64.RawURLEncoding.EncodeToString([]byte("x|00000000-0000-4000-8000-000000000001")), "invalid_cursor"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			rec := do(h, http.MethodGet, "/api-keys"+tt.query, "", admin)
+			if rec.Code != http.StatusBadRequest || errCode(t, rec) != tt.code {
+				t.Fatalf("%d %s", rec.Code, rec.Body)
+			}
+		})
+	}
+	if ids, _ := listPage(t, h, "?limit=1000"); len(ids) != 1 {
+		t.Fatal("the largest page size is refused")
 	}
 }

@@ -314,11 +314,30 @@ func (g *gateway) createKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *gateway) listKeys(w http.ResponseWriter, r *http.Request) {
-	if e := checkBare(r); e != nil {
+	if e := noBody(r); e != nil {
 		reject(w, e)
 		return
 	}
-	g.forward(w, r, g.keystorage, upstreamRequest{method: http.MethodGet, path: "/api-keys", authorization: adminAuthorization(r)}, nil)
+	params, e := queryParams(r, "limit", "cursor")
+	if e != nil {
+		reject(w, e)
+		return
+	}
+	// The ranges are keystorage's to enforce; here only the form is checked, as for tags.
+	q := url.Values{}
+	limit, e := optionalInt(params, "limit", "invalid_limit")
+	if e == nil {
+		var cursor string
+		if cursor, e = optionalCursor(params); e == nil {
+			set(q, "limit", limit)
+			set(q, "cursor", cursor)
+		}
+	}
+	if e != nil {
+		reject(w, e)
+		return
+	}
+	g.forward(w, r, g.keystorage, upstreamRequest{method: http.MethodGet, path: "/api-keys", query: q, authorization: adminAuthorization(r)}, nil)
 }
 
 func (g *gateway) deleteKey(w http.ResponseWriter, r *http.Request) {
