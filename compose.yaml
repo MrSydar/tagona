@@ -123,6 +123,8 @@ services:
         condition: service_completed_successfully
       garage:
         condition: service_healthy
+      tagger:
+        condition: service_healthy   # a collection created without a tagger_version gets the tagger's
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8082/readyz"]
       interval: 5s
