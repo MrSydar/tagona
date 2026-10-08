@@ -35,7 +35,7 @@ func New(baseURL string, timeout time.Duration) *Client {
 
 // versionResponse matches the /version response shape.
 type versionResponse struct {
-	Version string `json:"version"`
+	Version []string `json:"version"`
 }
 
 // tagRequest is the request body for /tag.
@@ -49,8 +49,11 @@ type tagRequest struct {
 // errorResponse is the shape of the engine's errors.
 type errorResponse struct {
 	Error struct {
-		Code    string            `json:"code"`
-		Details map[string]string `json:"details"`
+		Code    string `json:"code"`
+		Details struct {
+			Expected string   `json:"expected"`
+			Running  []string `json:"running"`
+		} `json:"details"`
 	} `json:"error"`
 }
 
@@ -59,27 +62,27 @@ type tagResponse struct {
 	Tags map[string]bool `json:"tags"`
 }
 
-// Version fetches the version of the tagging engine.
-func (c *Client) Version(ctx context.Context) (string, error) {
-	slog.Debug("tagger client Version")
+// Versions fetches the versions the tagging engine serves.
+func (c *Client) Versions(ctx context.Context) ([]string, error) {
+	slog.Debug("tagger client Versions")
 	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/version", nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("fetch version: %w", err)
+		return nil, fmt.Errorf("fetch versions: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("fetch version: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("fetch versions: status %d", resp.StatusCode)
 	}
 	var result versionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode version: %w", err)
+		return nil, fmt.Errorf("decode versions: %w", err)
 	}
-	if result.Version == "" {
-		return "", fmt.Errorf("the tagging engine reported no version")
+	if len(result.Version) == 0 {
+		return nil, fmt.Errorf("the tagging engine reported no version")
 	}
 	return result.Version, nil
 }
@@ -140,7 +143,7 @@ func (c *Client) Tag(ctx context.Context, collection, objectID, taggerVersion st
 			_ = json.NewDecoder(resp.Body).Decode(&e)
 			resp.Body.Close()
 			if e.Error.Code == "tagger_version_mismatch" {
-				return nil, &client.VersionMismatchError{Expected: e.Error.Details["expected"], Running: e.Error.Details["running"]}
+				return nil, &client.VersionMismatchError{Expected: e.Error.Details.Expected, Running: e.Error.Details.Running}
 			}
 			return nil, fmt.Errorf("tag request unexpected status: %d", resp.StatusCode)
 		}

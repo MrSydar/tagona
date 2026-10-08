@@ -130,11 +130,16 @@ func TestCollectionTaggerVersion(t *testing.T) {
 	require.Equal(t, http.StatusConflict, status, string(body))
 	assert.Equal(t, "tagger_version_mismatch", errorCode(t, body))
 	var e struct {
-		Error struct{ Details map[string]string }
+		Error struct {
+			Details struct {
+				Expected string
+				Running  []string
+			}
+		}
 	}
 	require.NoError(t, json.Unmarshal(body, &e))
-	assert.Equal(t, custom, e.Error.Details["expected"])
-	assert.Equal(t, def.TaggerVersion, e.Error.Details["running"])
+	assert.Equal(t, custom, e.Error.Details.Expected)
+	assert.Equal(t, []string{def.TaggerVersion}, e.Error.Details.Running)
 
 	status, body = do(t, http.MethodPost, queryPath, `{"tags":{"golang":true},"limit":5,"evaluate":false}`, asKey(key))
 	require.Equal(t, http.StatusOK, status, string(body))
@@ -266,4 +271,27 @@ func TestObjectMetadata(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, status)
 	status, _ = do(t, http.MethodPut, objects+"/"+dog.ID+"/metadata", `{}`, nil)
 	assert.Equal(t, http.StatusUnauthorized, status, "metadata needs an api key")
+}
+
+func TestTaggersAreListed(t *testing.T) {
+	key := newKey(t).Key
+	status, body := do(t, http.MethodGet, "/v1/taggers", "", asKey(key))
+	require.Equal(t, http.StatusOK, status, string(body))
+	var list struct{ Taggers []string }
+	require.NoError(t, json.Unmarshal(body, &list))
+	require.NotEmpty(t, list.Taggers)
+
+	// a collection created without a version gets the only one served, and it is one of the listed
+	if len(list.Taggers) == 1 {
+		status, body = createCollectionWith(t, key, fmt.Sprintf(`{"name":"e2e-tg-%d"}`, time.Now().UnixNano()%1_000_000_000))
+		require.Equal(t, http.StatusCreated, status, string(body))
+		var c collectionInfo
+		require.NoError(t, json.Unmarshal(body, &c))
+		assert.Equal(t, list.Taggers[0], c.TaggerVersion)
+	}
+
+	status, _ = do(t, http.MethodGet, "/v1/taggers?all=1", "", asKey(key))
+	assert.Equal(t, http.StatusBadRequest, status)
+	status, _ = do(t, http.MethodGet, "/v1/taggers", "", nil)
+	assert.Equal(t, http.StatusUnauthorized, status)
 }

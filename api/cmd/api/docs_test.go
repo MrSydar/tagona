@@ -52,7 +52,7 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 	inRouter := map[string]bool{}
 	err := chi.Walk(router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		route = strings.TrimSuffix(route, "/")
-		if strings.HasPrefix(route, "/v1/collections") || strings.HasPrefix(route, "/v1/admin") {
+		if strings.HasPrefix(route, "/v1/collections") || strings.HasPrefix(route, "/v1/admin") || strings.HasPrefix(route, "/v1/taggers") {
 			inRouter[method+" "+route] = true
 		}
 		return nil

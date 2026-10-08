@@ -177,6 +177,7 @@ func newRouter(upstreams []string, g *gateway, cfg gatewayConfig) http.Handler {
 
 		r.Group(func(r chi.Router) {
 			r.Use(limitBody(maxJSONBodyBytes))
+			r.Get("/v1/taggers", g.listTaggers)
 			r.Get("/v1/collections", g.listCollections)
 			r.Post("/v1/collections", g.createCollection)
 			r.Delete("/v1/collections/{collection}", g.deleteCollection)

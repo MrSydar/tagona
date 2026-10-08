@@ -58,11 +58,11 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok"))
 }
 
-// versionInfo reports the engine's version, "<implementation>[:<model>]" unless TAGGER_VERSION says
-// otherwise.
+// versionInfo reports the versions the engine serves: its own, "<implementation>[:<model>]" unless
+// TAGGER_VERSION says otherwise. It is a list because a tagger router serves the versions of several taggers.
 func (s *Server) versionInfo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"version": s.version})
+	json.NewEncoder(w).Encode(map[string][]string{"version": {s.version}})
 }
 
 type tagRequest struct {
@@ -102,8 +102,8 @@ func (s *Server) tag(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusConflict)
 		json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
 			"code":    "tagger_version_mismatch",
-			"message": fmt.Sprintf("this engine runs %q, not %q", s.version, req.TaggerVersion),
-			"details": map[string]string{"expected": req.TaggerVersion, "running": s.version},
+			"message": fmt.Sprintf("this engine serves %q, not %q", s.version, req.TaggerVersion),
+			"details": map[string]any{"expected": req.TaggerVersion, "running": []string{s.version}},
 		}})
 		return
 	}

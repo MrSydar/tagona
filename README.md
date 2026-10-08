@@ -234,7 +234,8 @@ Every service is configured with environment variables. In Docker Compose they a
 |----------|---------|-------------|
 | `TAGGER_HTTP_ADDR` | `:8081` | Listen address. |
 | `TAGGER_STORAGE_BASE_URL` | `http://localhost:8082` | Storage URL the tagger reads object data from. |
-| `TAGGER_EVALUATOR_IMPL` | `grep` | `grep`, `false`, `completions/openai`, `decisions/openai` or `decisions/vercel`. |
+| `TAGGER_EVALUATOR_IMPL` | `grep` | `grep`, `false`, `completions/openai`, `decisions/openai`, `decisions/vercel` or `router`. |
+| `TAGGER_ROUTER_URLS` | — | With `TAGGER_EVALUATOR_IMPL=router`: base URLs of tagger services (comma separated) the tagger routes to, so that one deployment supports several taggers; see [`tagger/README.md`](tagger/README.md#router-several-taggers-in-one-deployment). `TAGGER_ROUTER_CACHE_TTL` (default `5s`) sets how long it remembers what they serve. |
 | `TAGGER_VERSION` | the evaluator's own | The version the tagger reports, `<implementation>[:<model>]`, which collections are tagged with. Set it to replace the default. |
 | `TAGGER_<KIND>_<DIALECT>_*` | per evaluator | Settings of the LLM-backed evaluators, named after the evaluator (`TAGGER_COMPLETIONS_OPENAI_*`, `TAGGER_DECISIONS_OPENAI_*`, `TAGGER_DECISIONS_VERCEL_*`): `API_KEY`, `BASE_URL`, `PATH`, `MODEL`, `TIMEOUT`, `AUTH_HEADER`, `AUTH_SCHEME`, `HEADERS`, `QUERY`, `PARAMS`, and for the decisions evaluators `THRESHOLD`, `BATCH_SIZE`, `INSTRUCTIONS`. See [`tagger/README.md`](tagger/README.md#llm-backed-evaluators). |
 

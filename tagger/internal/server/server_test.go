@@ -42,8 +42,8 @@ func TestVersionIsReported(t *testing.T) {
 	h := NewServer(nil, evaluator.NewGrepEvaluator(), "grep", "my-grep:2").Router()
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/version", nil))
-	var got struct{ Version string }
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got.Version != "my-grep:2" {
+	var got struct{ Version []string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got.Version) != 1 || got.Version[0] != "my-grep:2" {
 		t.Fatalf("%s (%v)", rec.Body, err)
 	}
 }
@@ -61,11 +61,14 @@ func TestTagRefusesAnotherVersion(t *testing.T) {
 	var e struct {
 		Error struct {
 			Code    string
-			Details map[string]string
+			Details struct {
+				Expected string
+				Running  []string
+			}
 		}
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil ||
-		e.Error.Code != "tagger_version_mismatch" || e.Error.Details["expected"] != "decisions/openai:m" || e.Error.Details["running"] != "grep" {
+		e.Error.Code != "tagger_version_mismatch" || e.Error.Details.Expected != "decisions/openai:m" || len(e.Error.Details.Running) != 1 || e.Error.Details.Running[0] != "grep" {
 		t.Fatalf("%s (%v)", rec.Body, err)
 	}
 }

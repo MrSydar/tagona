@@ -8,9 +8,9 @@ A standalone HTTP service that evaluates boolean tags for objects stored in the 
 
 ## Responsibilities
 
-- Report its version
+- Report the versions it serves
 - Receive tag evaluation requests for specific objects
-- Refuse requests for a version it does not run
+- Refuse requests for a version it does not serve
 - Fetch the object payload from the storage service (dogfooding public APIs)
 - Evaluate tags against the payload
 - Return tag results synchronously
@@ -21,7 +21,7 @@ A standalone HTTP service that evaluates boolean tags for objects stored in the 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/version` | Return the tagger version |
+| `GET` | `/version` | Return the versions the tagger serves |
 | `POST` | `/tag` | Evaluate tags for an object |
 | `GET` | `/healthz` | Liveness |
 | `GET` | `/readyz` | Readiness |
@@ -35,7 +35,7 @@ curl http://localhost:8081/version
 
 **Response `200 OK`**
 ```json
-{"version": "decisions/openai:gpt-6-luna"}
+{"version": ["decisions/openai:gpt-6-luna"]}
 ```
 
 Different taggers, and different models behind one tagger, may tag the same object differently, so a collection records the version of the tagger that tags it. A version is any string; the convention is `<implementation>` or `<implementation>:<model>`: `grep`, `false`, `completions/openai:gpt-4o-mini`, `decisions/openai:gpt-6-luna`. It defaults to the evaluator's own (the implementation name and, for the LLM-backed ones, its `MODEL`), and `TAGGER_VERSION` replaces it, for example to keep a collection's version through a change of model that is known to tag alike.
@@ -82,7 +82,24 @@ The evaluator is selected via `TAGGER_EVALUATOR_IMPL`:
 
 The part after the slash names the **API dialect**, not the vendor: any vendor that speaks it is used with its own base URL (and path, key header and extra parameters, below). The `completions/openai` evaluator replaces the former `openai`, and `decisions/vercel` the former `systemone` with its `vercel` backend.
 
-When a collection is created without a `tagger_version`, the storage service asks the tagger for its `/version` and records it.
+When a collection is created without a `tagger_version`, the storage service asks the tagger for its `/version` and records the version if there is exactly one; when the tagger serves several (a router, below), the version has to be given. Storage also lists the versions at `GET /taggers`.
+
+---
+
+## Router: several taggers in one deployment
+
+`TAGGER_EVALUATOR_IMPL=router` makes the tagger a router: it evaluates nothing itself and routes to other tagger services, each of which serves its own version (a `grep` tagger, a `decisions/openai` one, ...). Point storage's `TAGONA_TAG_ENGINE_URL` at the router, and a deployment supports all of them at once, each collection being tagged by the one it was created for.
+
+```bash
+TAGGER_EVALUATOR_IMPL=router
+TAGGER_ROUTER_URLS=http://tagger-grep:8081,http://tagger-llm:8081
+```
+
+- `GET /version` asks every tagger for its `/version` and answers the union, each version once, in the order of `TAGGER_ROUTER_URLS`. A tagger that does not answer is skipped (and logged), so the others stay listed.
+- `POST /tag` hands the request, unchanged, to the tagger that serves its `tagger_version` and relays the answer and its status as they are: that tagger fetches the object from storage, evaluates the tags and does its own version check. A version no tagger serves is `409` `tagger_version_mismatch`, with `details.running` listing the versions the router serves. A tagger that does not answer is `502`. If two taggers serve the same version, the first in the list is used and a warning is logged.
+- `GET /readyz` is ready when at least one tagger answers. The router needs no storage access of its own.
+- What the taggers serve is remembered for `TAGGER_ROUTER_CACHE_TTL` (default `5s`, `0` asks them for every request), so a restarted tagger with another model shows up within that time.
+- `TAGGER_VERSION` cannot be used with the router (every tagger has its own version), and an empty or invalid `TAGGER_ROUTER_URLS` stops it at startup.
 
 ---
 
@@ -137,6 +154,8 @@ TAGGER_COMPLETIONS_OPENAI_PARAMS='{"temperature":null,"max_completion_tokens":64
 | `TAGGER_STORAGE_BASE_URL` | Yes | `http://localhost:8082` | Base URL of the storage service to fetch objects from |
 | `TAGGER_EVALUATOR_IMPL` | No | `grep` | Evaluator to use: `grep`, `false`, `completions/openai`, `decisions/openai` or `decisions/vercel` |
 | `TAGGER_VERSION` | No | the evaluator's own | The version the tagger reports and accepts, 1-128 bytes of text; see [Version](#version) |
+| `TAGGER_ROUTER_URLS` | With `router` | — | Base URLs of the taggers the router routes to, comma separated; see [Router](#router-several-taggers-in-one-deployment) |
+| `TAGGER_ROUTER_CACHE_TTL` | No | `5s` | How long the router remembers the versions its taggers serve (`0`: ask every time) |
 | `TAGGER_<KIND>_<DIALECT>_*` | No | per evaluator | Settings of the LLM-backed evaluators, listed under [LLM-backed evaluators](#llm-backed-evaluators); `tagger/.env.example` lists them all |
 
 ---

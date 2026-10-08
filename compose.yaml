@@ -109,6 +109,7 @@ services:
       TAGONA_S3_ACCESS_KEY: "tagonadev"
       TAGONA_S3_SECRET_KEY: "tagona-dev-secret"
       TAGONA_S3_FORCE_PATH_STYLE: "true"
+      # a tagger router (TAGGER_EVALUATOR_IMPL=router) here supports several taggers at once
       TAGONA_TAG_ENGINE_URL: "http://tagger:8081"
       TAGONA_DEFAULT_LIMIT: "5"
       TAGONA_MAX_LIMIT: "100"

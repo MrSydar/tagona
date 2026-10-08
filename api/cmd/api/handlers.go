@@ -61,6 +61,15 @@ func (g *gateway) listCollections(w http.ResponseWriter, r *http.Request) {
 	g.forward(w, r, g.storage, upstreamRequest{method: http.MethodGet, path: "/collections", query: q}, nil)
 }
 
+// listTaggers lists the tagger versions available for new collections. It takes nothing.
+func (g *gateway) listTaggers(w http.ResponseWriter, r *http.Request) {
+	if e := checkBare(r); e != nil {
+		reject(w, e)
+		return
+	}
+	g.forward(w, r, g.storage, upstreamRequest{method: http.MethodGet, path: "/taggers"}, nil)
+}
+
 func (g *gateway) createCollection(w http.ResponseWriter, r *http.Request) {
 	if _, e := queryParams(r); e != nil {
 		reject(w, e)
