@@ -262,3 +262,55 @@ func TestKeyTTLValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestKeyListIsPaged(t *testing.T) {
+	var ids []string
+	for i := 0; i < 5; i++ {
+		status, body := do(t, http.MethodPost, "/v1/admin/api-keys", fmt.Sprintf(`{"name":"e2e-paged-%d","ttl_seconds":600}`, i), asAdmin)
+		require.Equal(t, http.StatusCreated, status, string(body))
+		var k struct{ ID string }
+		require.NoError(t, json.Unmarshal(body, &k))
+		ids = append(ids, k.ID)
+		id := k.ID
+		t.Cleanup(func() { do(t, http.MethodDelete, "/v1/admin/api-keys/"+id, "", asAdmin) })
+	}
+
+	// walk the whole list two keys at a time: every key shows up exactly once
+	seen := map[string]int{}
+	query, pages := "?limit=2", 0
+	for {
+		status, body := do(t, http.MethodGet, "/v1/admin/api-keys"+query, "", asAdmin)
+		require.Equal(t, http.StatusOK, status, string(body))
+		var page struct {
+			Keys []struct{ ID string }
+			Next string
+		}
+		require.NoError(t, json.Unmarshal(body, &page))
+		require.LessOrEqual(t, len(page.Keys), 2)
+		for _, k := range page.Keys {
+			seen[k.ID]++
+		}
+		pages++
+		require.Less(t, pages, 1000, "paging does not end")
+		if page.Next == "" {
+			break
+		}
+		query = "?limit=2&cursor=" + page.Next
+	}
+	for _, id := range ids {
+		assert.Equal(t, 1, seen[id], "key %s", id)
+	}
+	for id, n := range seen {
+		assert.Equal(t, 1, n, "key %s listed %d times", id, n)
+	}
+	assert.GreaterOrEqual(t, pages, 3)
+
+	for _, tt := range []struct{ query, code string }{
+		{"?limit=0", "invalid_limit"}, {"?limit=1001", "invalid_limit"}, {"?limit=x", "invalid_limit"},
+		{"?cursor=!!", "invalid_cursor"}, {"?cursor=bm9uc2Vuc2U", "invalid_cursor"},
+	} {
+		status, body := do(t, http.MethodGet, "/v1/admin/api-keys"+tt.query, "", asAdmin)
+		assert.Equal(t, http.StatusBadRequest, status, tt.query)
+		assert.Equal(t, tt.code, errorCode(t, body), tt.query)
+	}
+}

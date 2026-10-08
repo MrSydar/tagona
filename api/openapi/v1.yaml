@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Tagona API
-  version: 1.4.0
+  version: 1.5.0
   description: |
     Storage for collections of objects with sparse boolean tags that are evaluated on demand.
 
@@ -431,9 +431,21 @@ paths:
       tags: [Admin]
       operationId: listApiKeys
       summary: List API keys
-      description: Never includes raw keys, only a short prefix.
+      description: |
+        Never includes raw keys, only a short prefix. Keys are listed newest first, in pages: when more
+        follow, the answer carries `next`, which goes in `cursor` to get the next page. Expired keys are
+        listed until they are swept.
       security:
         - adminBasicAuth: []
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum keys per page.
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+        - name: cursor
+          in: query
+          description: The `next` value of the previous page.
+          schema: { type: string }
       responses:
         "200":
           description: Keys
@@ -445,6 +457,14 @@ paths:
                   keys:
                     type: array
                     items: { $ref: "#/components/schemas/ApiKeyInfo" }
+                  next:
+                    type: string
+                    description: Present only when more keys follow. Pass it as `cursor`.
+        "400":
+          description: "`invalid_parameter`, `unexpected_body`, `invalid_limit` or `invalid_cursor`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/AdminUnauthorized" }
         "403": { $ref: "#/components/responses/AdminForbidden" }
 

@@ -55,6 +55,7 @@ func TestAdminRoutesBecomeCleanKeystorageRequests(t *testing.T) {
 	}{
 		{http.MethodPost, "/v1/admin/api-keys", `{"name":"dev"}`, http.StatusCreated, "/api-keys", `{"name":"dev"}`},
 		{http.MethodGet, "/v1/admin/api-keys", ``, http.StatusOK, "/api-keys", ``},
+		{http.MethodGet, "/v1/admin/api-keys?limit=007&cursor=abc_-XY", ``, http.StatusOK, "/api-keys?cursor=abc_-XY&limit=7", ``},
 		{http.MethodDelete, "/v1/admin/api-keys/" + keyID, ``, http.StatusNoContent, "/api-keys/" + keyID, ``},
 	}
 	for _, tt := range tests {
@@ -163,6 +164,12 @@ func TestAdminSurfaceIsStrictlyAllowlisted(t *testing.T) {
 		{http.MethodDelete, "/v1/admin/api-keys/..%2fapi-keys", ``, http.StatusBadRequest},
 		// requests that carry more than the route takes
 		{http.MethodGet, "/v1/admin/api-keys?evil=1", ``, http.StatusBadRequest},
+		{http.MethodGet, "/v1/admin/api-keys?limit=x", ``, http.StatusBadRequest},
+		{http.MethodGet, "/v1/admin/api-keys?limit=-1", ``, http.StatusBadRequest},
+		{http.MethodGet, "/v1/admin/api-keys?cursor=a%20b", ``, http.StatusBadRequest},
+		{http.MethodGet, "/v1/admin/api-keys?cursor=a/../b", ``, http.StatusBadRequest},
+		{http.MethodGet, "/v1/admin/api-keys?limit=1&limit=2", ``, http.StatusBadRequest},
+		{http.MethodPost, "/v1/admin/api-keys?limit=1", `{"name":"a"}`, http.StatusBadRequest},
 		{http.MethodDelete, "/v1/admin/api-keys/" + keyID + "?force=1", ``, http.StatusBadRequest},
 		{http.MethodGet, "/v1/admin/api-keys", `{"x":1}`, http.StatusBadRequest},
 		{http.MethodPost, "/v1/admin/api-keys?x=1", `{"name":"a"}`, http.StatusBadRequest},

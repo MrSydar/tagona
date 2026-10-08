@@ -62,7 +62,7 @@ There is no RBAC: every valid API key grants complete access to all `/v1/*` endp
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/v1/admin/api-keys` | Create an API key, optionally with a lifetime: `{"name":"...","ttl_seconds":14400}` |
-| `GET` | `/v1/admin/api-keys` | List API keys |
+| `GET` | `/v1/admin/api-keys` | List API keys, newest first, in pages: `?limit=` (1–1000, default 100) and `?cursor=` (the `next` of the previous page; `next` is absent on the last page) |
 | `DELETE` | `/v1/admin/api-keys/{id}` | Delete an API key |
 
 These endpoints require admin HTTP Basic auth, checked by the keystorage service against `KEYSTORAGE_ADMIN_USERNAME`/`KEYSTORAGE_ADMIN_PASSWORD` (the api has no admin settings of its own):

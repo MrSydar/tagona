@@ -13,12 +13,14 @@ package server
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -45,7 +47,9 @@ var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[
 type Store interface {
 	Ping(ctx context.Context) error
 	Create(ctx context.Context, keyHash, keyPrefix, name string, ttlSeconds int64) (*db.APIKey, error)
-	List(ctx context.Context) ([]db.APIKey, error)
+	// List returns up to limit keys after the cursor (from the start when it is nil), newest first, and
+	// whether more follow.
+	List(ctx context.Context, limit int, after *db.Cursor) ([]db.APIKey, bool, error)
 	// GetByHash returns db.ErrNotFound for an unknown key, and the key with db.ErrExpired for one
 	// whose expiry has passed.
 	GetByHash(ctx context.Context, keyHash string) (*db.APIKey, error)
@@ -204,8 +208,34 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Keys are listed in pages: limit defaults to defaultListLimit and may not exceed maxListLimit. The cursor
+// is opaque to callers: it carries the position of the last key of the previous page.
+const (
+	defaultListLimit = 100
+	maxListLimit     = 1000
+)
+
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
-	list, err := s.store.List(r.Context())
+	limit := defaultListLimit
+	q := r.URL.Query()
+	if v := q.Get("limit"); q.Has("limit") {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > maxListLimit {
+			writeError(w, http.StatusBadRequest, "invalid_limit", fmt.Sprintf("limit must be an integer from 1 to %d", maxListLimit))
+			return
+		}
+		limit = n
+	}
+	var after *db.Cursor
+	if v := q.Get("cursor"); q.Has("cursor") {
+		c, err := decodeCursor(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_cursor", "cursor is not valid")
+			return
+		}
+		after = c
+	}
+	list, more, err := s.store.List(r.Context(), limit, after)
 	if err != nil {
 		slog.Error("list api keys failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to list api keys")
@@ -214,7 +244,32 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []db.APIKey{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"keys": list})
+	out := map[string]any{"keys": list}
+	if more && len(list) > 0 {
+		out["next"] = encodeCursor(list[len(list)-1])
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// encodeCursor names the position after k: its creation time (microseconds, what Postgres stores) and id.
+func encodeCursor(k db.APIKey) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%d|%s", k.CreatedAt.UnixMicro(), k.ID)))
+}
+
+func decodeCursor(s string) (*db.Cursor, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return nil, err
+	}
+	micros, id, ok := strings.Cut(string(raw), "|")
+	if !ok || !uuidRe.MatchString(id) {
+		return nil, errors.New("malformed cursor")
+	}
+	n, err := strconv.ParseInt(micros, 10, 64)
+	if err != nil {
+		return nil, err
+	}
+	return &db.Cursor{CreatedAt: time.UnixMicro(n).UTC(), ID: id}, nil
 }
 
 func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
