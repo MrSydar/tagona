@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Tagona API
-  version: 1.5.0
+  version: 1.6.0
   description: |
     Storage for collections of objects with sparse boolean tags that are evaluated on demand.
 
@@ -30,7 +30,22 @@ info:
     define (`invalid_parameter`), a parameter given more than once (`invalid_parameter`), a JSON field it
     does not define or data after the JSON object (`invalid_json`), and a body on an endpoint that takes none
     (`unexpected_body`). Values are checked for their form (numbers, timestamps, booleans, identifiers); limits
-    that are configured in the service, such as the maximum page size, are enforced by the service.
+    that are configured in the service, such as the maximum page size, are enforced by the service. Every
+    parameter and field an endpoint accepts is documented here, and there are no others.
+
+    **Tagger versions.** Different taggers (and different models behind them) may tag the same object
+    differently, so a collection records the version of the tagger that tags it: `tagger_version`, a string
+    that by convention is `<implementation>` or `<implementation>:<model>`, for example `grep`, `false` or
+    `decisions/openai:zai-org/GLM-5.3-Flash`. Objects are plain bytes; what a tagger makes of them is its
+    business. When a tag has to be evaluated, the tagging engine is asked for the collection's version and
+    refuses if it runs another one (`409 tagger_version_mismatch`): its answers are never stored under a
+    version they did not come from. Requests that need no evaluation (`evaluate=false`, or tags that are all
+    known) are not affected.
+
+    **Metadata.** An object can carry metadata, a map of string keys to string values that the uploader
+    chooses, for example `{"name": "cute-dog.png"}`. It is set when the object is uploaded and can be
+    replaced or changed later. Limits: at most 32 entries; keys of 1-64 bytes without control characters;
+    values of at most 1024 bytes. Metadata is returned wherever an object is, and is not searchable.
 
     **Errors** always have the shape `{"error": {"code": "...", "message": "..."}}`.
   license:
@@ -41,9 +56,9 @@ servers:
     description: This server
 tags:
   - name: Collections
-    description: Create, list and delete collections.
+    description: Create, list and delete collections. A collection is tagged with one tagger version.
   - name: Objects
-    description: Upload, download, query and delete objects.
+    description: Upload, download, query and delete objects, and change their metadata.
   - name: Tags
     description: Tag values and per-collection tag statistics.
   - name: Admin
@@ -56,9 +71,16 @@ paths:
       tags: [Collections]
       operationId: listCollections
       summary: List collections
+      description: >-
+        Collections are listed newest first, at most `limit` per page (default 100, at most 1000). When more
+        follow, the answer carries `next`: pass it as `cursor` to get the next page, and repeat until an
+        answer has no `next`.
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageCursor"
       responses:
         "200":
-          description: All collections, newest first. `collections` is `null` when there are none.
+          description: A page of collections. `collections` is `null` when there are none.
           content:
             application/json:
               schema:
@@ -69,6 +91,19 @@ paths:
                     nullable: true
                     items:
                       $ref: "#/components/schemas/Collection"
+                  next:
+                    type: string
+                    description: Present only when more collections follow. Pass it as `cursor`.
+              example:
+                collections:
+                  - { id: 5b0c5bd0-5c4e-4a0b-9d4a-6f6a0f3d9a11, name: photos, tagger_version: "decisions/openai:zai-org/GLM-5.3-Flash", created_at: "2026-06-13T12:05:00Z" }
+                  - { id: 0a5e1d0e-3b1e-4f43-8f0c-0c1d2e3f4a5b, name: jobs, tagger_version: grep, created_at: "2026-06-13T12:00:00Z" }
+                next: azE3ODEzMDYzMDAwMDAwMHw1YjBjNWJkMC01YzRlLTRhMGItOWQ0YS02ZjZhMGYzZDlhMTE
+        "400":
+          description: "`invalid_parameter`, `unexpected_body`, `invalid_limit` or `invalid_cursor`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "503": { $ref: "#/components/responses/NotReady" }
     post:
@@ -76,8 +111,10 @@ paths:
       operationId: createCollection
       summary: Create a collection
       description: |
-        `data_type` must be one of the types the tagging engine supports (for example `txt`);
-        every object uploaded to the collection must have the same `data_type`.
+        A collection is tagged with one tagger version (see *Tagger versions* above). Leave out
+        `tagger_version` to use the version of the tagger that runs now; give it to create a collection for a
+        tagger that is not running (it can be queried with `evaluate=false`, and evaluated once that tagger
+        runs). Objects are plain bytes of any kind, so a collection has no data type.
       requestBody:
         required: true
         content:
@@ -90,14 +127,19 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CollectionCreate"
+                $ref: "#/components/schemas/Collection"
         "400":
-          description: "`invalid_json`, `invalid_parameter`, `invalid_name`, `invalid_data_type` or `unsupported_data_type`."
+          description: "`invalid_json`, `invalid_parameter`, `invalid_name` or `invalid_tagger_version`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "409":
           description: "`already_exists`: a collection with this name exists."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: "`tag_engine_error`: `tagger_version` was left out and the running tagger's version could not be determined."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -130,19 +172,15 @@ paths:
         many objects the tag is known true for, known false for, and not yet evaluated for.
         Tags are ordered by name (byte order). A tag stays registered once seen, even if all objects
         carrying it are later deleted. Expired objects are excluded even before they are removed.
+        Tags are listed at most `limit` per page (default 100, at most 1000); when more follow, the answer
+        carries `next`: pass it as `cursor` to get the next page. `prefix` keeps only tags that start with it.
       parameters:
         - name: prefix
           in: query
           description: Only tags starting with this literal prefix (at most 128 bytes).
           schema: { type: string, maxLength: 128 }
-        - name: limit
-          in: query
-          description: Maximum tags per page.
-          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
-        - name: cursor
-          in: query
-          description: The `next` value of the previous page.
-          schema: { type: string }
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageCursor"
       responses:
         "200":
           description: Counts and tags
@@ -184,12 +222,18 @@ paths:
         and does not change its expiry. After the object has expired, the same content is stored as a
         new object with a new `id`. The expiry of an existing object cannot be changed; delete the
         object and upload it again instead.
+
+        **Metadata.** `metadata` attaches string key-value pairs to the new object. When the content already
+        exists, the existing object is returned as it is, with its own metadata: use *Replace the metadata of
+        an object* or *Change some metadata of an object* to change it.
       parameters:
-        - name: data_type
+        - name: metadata
           in: query
-          required: true
-          description: Must equal the collection's `data_type`.
-          schema: { type: string, example: txt }
+          description: |
+            A JSON object whose keys and values are strings, URL-encoded, for example
+            `{"name":"cute-dog.png"}`. Omit it for no metadata. Limits: at most 32 entries, keys of 1-64
+            bytes, values of at most 1024 bytes (`400 invalid_metadata`).
+          schema: { type: string, example: '{"name":"cute-dog.png"}' }
         - name: date
           in: query
           description: Object date (RFC 3339). Defaults to the upload time. Queries order by it, newest first.
@@ -229,7 +273,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ObjectUploadResponse" }
         "400":
-          description: "`missing_data_type`, `invalid_data_type`, `invalid_ttl`, `invalid_date`, `invalid_parameter` or `invalid_collection_name`."
+          description: "`invalid_ttl`, `invalid_date`, `invalid_metadata`, `invalid_parameter` or `invalid_collection_name`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -253,21 +297,54 @@ paths:
         known tags only: an object is returned only if every requested tag is known for it and
         matches. Objects whose requested tags were never evaluated are left out, so the result is a
         subset of what an evaluating query returns. No new tags are registered.
+
+        **Evaluation needs the right tagger.** Evaluating asks the tagging engine for the collection's
+        `tagger_version`; if the engine runs another one, the query fails with `409 tagger_version_mismatch`
+        (see *Tagger versions* above). `evaluate: false` still answers from the tags the collection has.
+
+        **Page size and cursor.** The answer holds at most `limit` objects (default `TAGONA_DEFAULT_LIMIT`, 5; at most
+        `TAGONA_MAX_LIMIT`, 100). When more objects match, it carries `next`: send the same query again
+        with `cursor` set to it to get the following page, and repeat until an answer has no `next`. Keep
+        `tags`, `date` and `evaluate` the same on every page. The cursor marks a position in the order
+        (`date`, then `id`), so objects uploaded or deleted between pages do not shift it. With
+        `best_effort`, a query that times out also answers with a `next` to continue from.
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: "#/components/schemas/TagsQueryRequest"
-            example:
-              tags: { golang: true, qa: false }
-              limit: 5
-              evaluate: true
+            examples:
+              firstPage:
+                summary: First page
+                value:
+                  tags: { golang: true, qa: false }
+                  limit: 5
+                  evaluate: true
+              nextPage:
+                summary: The next page, with the `next` of the previous answer
+                value:
+                  tags: { golang: true, qa: false }
+                  limit: 5
+                  evaluate: true
+                  cursor: MTc4MTMwNjMwMDAwMHwzYWIxYjZlMC1hMTc5LTQyNGItOTgyNS0yZDI4MTdjNzYxYWU
       responses:
         "200":
           description: Matching objects and, when more exist, a cursor for the next page.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/TagsQueryResponse" }
+              example:
+                objects:
+                  - id: 3ab1b6e0-a179-424b-9825-2d2817c761ae
+                    collection: jobs
+                    date: "2026-06-07T12:00:00Z"
+                    size_bytes: 52
+                    content_hash: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+                    created_at: "2026-06-07T12:00:01Z"
+                    metadata: { name: senior-go-engineer.txt }
+                    tags: { golang: true, qa: false }
+                next: MTc4MTMwNjMwMDAwMHwzYWIxYjZlMC1hMTc5LTQyNGItOTgyNS0yZDI4MTdjNzYxYWU
         "400":
           description: >-
             `invalid_json`, `invalid_parameter`, `invalid_limit`, `invalid_cursor`, `invalid_tags`,
@@ -276,6 +353,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/TaggerVersionMismatch" }
         "500":
           description: "`query_timeout`: the query did not finish within `timeout_ms` (and `best_effort` was off)."
           content:
@@ -295,23 +373,26 @@ paths:
     get:
       tags: [Objects]
       operationId: getObject
-      summary: Get object metadata
+      summary: Get an object
+      description: The object's properties, including its metadata (not its payload, which is `…/data`).
       responses:
         "200":
-          description: Object metadata
+          description: The object
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Object" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "401": { $ref: "#/components/responses/Unauthorized" }
     delete:
       tags: [Objects]
       operationId: deleteObject
       summary: Delete an object
-      description: Hard delete of the metadata, tags and stored payload.
+      description: Hard delete of the object's record, metadata, tags and stored payload.
       responses:
         "204":
           description: Deleted
+        "400": { $ref: "#/components/responses/InvalidRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
@@ -331,7 +412,67 @@ paths:
               schema:
                 type: string
                 format: binary
+        "400": { $ref: "#/components/responses/InvalidRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/collections/{collection}/objects/{id}/metadata:
+    parameters:
+      - $ref: "#/components/parameters/Collection"
+      - $ref: "#/components/parameters/ObjectId"
+    put:
+      tags: [Objects]
+      operationId: replaceObjectMetadata
+      summary: Replace the metadata of an object
+      description: >-
+        The body, a JSON object whose values are strings, becomes the object's metadata; keys that are not in
+        it are removed. Send `{}` to remove all metadata. Limits are those listed under *Metadata* above.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Metadata" }
+            example: { name: cute-dog.png, photographer: Sam }
+      responses:
+        "200":
+          description: The object, with its new metadata.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Object" }
+        "400":
+          description: "`invalid_json` (not a JSON object of strings), `invalid_metadata` (a limit was exceeded), `invalid_parameter` or `invalid_collection_name`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    patch:
+      tags: [Objects]
+      operationId: mergeObjectMetadata
+      summary: Change some metadata of an object
+      description: >-
+        Sets the keys of the body and removes those whose value is `null`; all other keys stay. The limits
+        apply to the result.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MetadataChanges" }
+            example: { name: dog.png, photographer: null }
+      responses:
+        "200":
+          description: The object, with its new metadata.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Object" }
+        "400":
+          description: "`invalid_json` (not a JSON object of strings and nulls), `invalid_metadata` (a limit was exceeded by the result), `invalid_parameter` or `invalid_collection_name`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /v1/collections/{collection}/objects/{id}/tags:
@@ -377,6 +518,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/TaggerVersionMismatch" }
         "502":
           description: "`tag_engine_error`: the tagging engine failed."
           content:
@@ -432,20 +574,14 @@ paths:
       operationId: listApiKeys
       summary: List API keys
       description: |
-        Never includes raw keys, only a short prefix. Keys are listed newest first, in pages: when more
-        follow, the answer carries `next`, which goes in `cursor` to get the next page. Expired keys are
-        listed until they are swept.
+        Never includes raw keys, only a short prefix. Keys are listed newest first, at most `limit` per page
+        (default 100, at most 1000). When more follow, the answer carries `next`: pass it as `cursor` to get
+        the next page, and repeat until an answer has no `next`. Expired keys are listed until they are swept.
       security:
         - adminBasicAuth: []
       parameters:
-        - name: limit
-          in: query
-          description: Maximum keys per page.
-          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
-        - name: cursor
-          in: query
-          description: The `next` value of the previous page.
-          schema: { type: string }
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageCursor"
       responses:
         "200":
           description: Keys
@@ -512,7 +648,18 @@ components:
       name: id
       in: path
       required: true
+      description: The object's `id`.
       schema: { type: string, format: uuid }
+    PageLimit:
+      name: limit
+      in: query
+      description: Maximum items per page.
+      schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+    PageCursor:
+      name: cursor
+      in: query
+      description: The `next` value of the previous page; leave it out for the first page.
+      schema: { type: string }
 
   responses:
     InvalidRequest:
@@ -520,6 +667,19 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    TaggerVersionMismatch:
+      description: >-
+        `tagger_version_mismatch`: a tag had to be evaluated, but the tagging engine runs another version than
+        the collection is tagged with. `details` has `expected` (the collection's) and `running` (the engine's).
+        Nothing was stored. Requests that need no evaluation, such as `evaluate=false`, still work.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error:
+              code: tagger_version_mismatch
+              message: 'the collection is tagged with "decisions/openai:m" but the tagging engine runs "grep"; query with evaluate=false to use the tags it has'
+              details: { expected: "decisions/openai:m", running: grep }
     NotFound:
       description: "`not_found`: the collection, object or key does not exist (expired objects count as missing)."
       content:
@@ -570,27 +730,49 @@ components:
 
     CollectionCreate:
       type: object
-      required: [name, data_type]
+      required: [name]
       properties:
         name: { type: string, pattern: "^[a-z][a-z0-9_-]{0,63}$", example: jobs }
-        data_type: { type: string, example: txt }
+        tagger_version:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: >-
+            The tagger version the collection is tagged with, `<implementation>` or
+            `<implementation>:<model>`. Defaults to the version of the tagger that runs now.
+          example: "decisions/openai:zai-org/GLM-5.3-Flash"
 
     Collection:
       type: object
-      required: [id, name, data_type, created_at]
+      required: [id, name, tagger_version, created_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
-        data_type: { type: string }
+        tagger_version:
+          type: string
+          description: The version of the tagger the collection is tagged with, `<implementation>` or `<implementation>:<model>`.
         created_at: { type: string, format: date-time }
+
+    Metadata:
+      type: object
+      description: String keys to string values. At most 32 entries, keys of 1-64 bytes, values of at most 1024 bytes.
+      maxProperties: 32
+      additionalProperties: { type: string, maxLength: 1024 }
+      example: { name: cute-dog.png }
+
+    MetadataChanges:
+      type: object
+      description: Keys to set (string values) or to remove (`null`).
+      additionalProperties: { type: string, nullable: true, maxLength: 1024 }
+      example: { name: dog.png, photographer: null }
 
     Object:
       type: object
-      required: [id, collection, data_type, date, size_bytes, content_hash, created_at]
+      required: [id, collection, date, size_bytes, content_hash, created_at, metadata]
       properties:
         id: { type: string, format: uuid }
         collection: { type: string }
-        data_type: { type: string }
+        metadata: { $ref: "#/components/schemas/Metadata" }
         date: { type: string, format: date-time }
         size_bytes: { type: integer, format: int64 }
         content_hash: { type: string, description: Lowercase hex SHA-256 of the payload. }
@@ -609,11 +791,11 @@ components:
 
     ObjectUploadResponse:
       type: object
-      required: [id, collection, data_type, date, size_bytes, content_hash]
+      required: [id, collection, date, size_bytes, content_hash, metadata]
       properties:
         id: { type: string, format: uuid }
         collection: { type: string }
-        data_type: { type: string }
+        metadata: { $ref: "#/components/schemas/Metadata" }
         date: { type: string, format: date-time }
         size_bytes: { type: integer, format: int64 }
         content_hash: { type: string }
@@ -639,10 +821,14 @@ components:
         limit:
           type: integer
           minimum: 1
-          description: Page size. Defaults to the server default and may not exceed the server maximum (`400 invalid_limit`).
+          description: >-
+            Page size: the most objects the answer holds. Defaults to the server's default (`TAGONA_DEFAULT_LIMIT`,
+            5) and may not exceed its maximum (`TAGONA_MAX_LIMIT`, 100): `400 invalid_limit`.
         cursor:
           type: string
-          description: The `next` value of the previous page.
+          description: >-
+            The `next` value of the previous page; leave it out for the first page. Send it with the same
+            `tags`, `date` and `evaluate` as the request that returned it.
         timeout_ms:
           type: integer
           minimum: 1000
@@ -671,7 +857,8 @@ components:
           items: { $ref: "#/components/schemas/Object" }
         next:
           type: string
-          description: Cursor for the next page; absent on the last page.
+          description: >-
+            Cursor for the next page: send the query again with this as `cursor`. Absent on the last page.
 
     ObjectTags:
       type: object

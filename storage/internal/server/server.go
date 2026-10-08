@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"mrsydar/tagona/storage/internal/config"
+	"mrsydar/tagona/storage/internal/cursor"
 	"mrsydar/tagona/storage/internal/db"
 	"mrsydar/tagona/storage/internal/metrics"
 	"mrsydar/tagona/storage/internal/models"
@@ -30,14 +32,15 @@ import (
 	"mrsydar/tagona/storage/pkg/client"
 )
 
+var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
 // Server holds dependencies for the HTTP server.
 type Server struct {
-	cfg            *config.Config
-	db             *db.DB
-	store          *storage.S3Store
-	tagClient      client.Tagger
-	queryRunner    *query.Runner
-	supportedTypes []string
+	cfg         *config.Config
+	db          *db.DB
+	store       *storage.S3Store
+	tagClient   client.Tagger
+	queryRunner *query.Runner
 }
 
 // NewServer creates a new Server.
@@ -49,11 +52,6 @@ func NewServer(cfg *config.Config, database *db.DB, store *storage.S3Store, tagC
 		tagClient:   tagClient,
 		queryRunner: query.NewRunner(database, tagClient),
 	}
-}
-
-// SetSupportedTypes sets the supported data types from tagging engine.
-func (s *Server) SetSupportedTypes(types []string) {
-	s.supportedTypes = types
 }
 
 // Router builds and returns the chi router.
@@ -74,6 +72,8 @@ func (s *Server) Router() chi.Router {
 	r.Get("/collections/{collection}/objects/{id}", s.getObjectMetadata)
 	r.Get("/collections/{collection}/objects/{id}/data", s.getObjectData)
 	r.Get("/collections/{collection}/objects/{id}/tags", s.getObjectTags)
+	r.Put("/collections/{collection}/objects/{id}/metadata", s.replaceMetadata)
+	r.Patch("/collections/{collection}/objects/{id}/metadata", s.mergeMetadata)
 	r.Post("/collections/{collection}/objects/query", s.queryObjects)
 	r.Delete("/collections/{collection}/objects/{id}", s.deleteObject)
 
@@ -110,16 +110,45 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok"))
 }
 
+// Lists are paged: limit defaults to defaultListLimit and may not exceed maxListLimit; the cursor is the
+// opaque next value of the previous page.
+const (
+	defaultListLimit = 100
+	maxListLimit     = 1000
+)
+
 func (s *Server) listCollections(w http.ResponseWriter, r *http.Request) {
 	slog.Debug("listCollections handler called")
-	collections, err := s.db.ListCollections(r.Context())
+	q := r.URL.Query()
+	limit := defaultListLimit
+	if q.Has("limit") {
+		n, err := strconv.Atoi(q.Get("limit"))
+		if err != nil || n < 1 || n > maxListLimit {
+			writeError(w, http.StatusBadRequest, "invalid_limit", fmt.Sprintf("limit must be an integer from 1 to %d", maxListLimit))
+			return
+		}
+		limit = n
+	}
+	var after *db.CollectionCursor
+	if q.Has("cursor") {
+		created, id, err := cursor.DecodeKey(q.Get("cursor"))
+		if err != nil || !uuidRe.MatchString(id) {
+			writeError(w, http.StatusBadRequest, "invalid_cursor", "cursor is not valid")
+			return
+		}
+		after = &db.CollectionCursor{CreatedAt: created, ID: id}
+	}
+
+	collections, more, err := s.db.ListCollections(r.Context(), limit, after)
 	if err != nil {
 		slog.Error("list collections failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to list collections")
 		return
 	}
-	resp := models.CollectionsListResponse{
-		Collections: collections,
+	resp := models.CollectionsListResponse{Collections: collections}
+	if more && len(collections) > 0 {
+		last := collections[len(collections)-1]
+		resp.Next = cursor.EncodeKey(last.CreatedAt, last.ID)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -137,13 +166,23 @@ func (s *Server) createCollection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_name", err.Error())
 		return
 	}
-	if err := validate.ValidateDataType(req.DataType, s.supportedTypes); err != nil {
-		slog.Debug("createCollection validation failed: unsupported data type", "data_type", req.DataType)
-		writeError(w, http.StatusBadRequest, "unsupported_data_type", err.Error())
+	if req.TaggerVersion == "" {
+		// Not given: the collection is tagged with whatever tagger runs now.
+		version, err := s.tagClient.Version(r.Context())
+		if err != nil {
+			slog.Error("fetching the tagger version failed", "error", err)
+			writeError(w, http.StatusBadGateway, "tag_engine_error", "the tagger version could not be determined: give tagger_version")
+			return
+		}
+		req.TaggerVersion = version
+	}
+	if err := validate.ValidateTaggerVersion(req.TaggerVersion); err != nil {
+		slog.Debug("createCollection validation failed: invalid tagger version", "tagger_version", req.TaggerVersion)
+		writeError(w, http.StatusBadRequest, "invalid_tagger_version", err.Error())
 		return
 	}
-	slog.Debug("creating collection", "name", req.Name, "data_type", req.DataType)
-	coll, err := s.db.CreateCollection(r.Context(), req.Name, req.DataType)
+	slog.Debug("creating collection", "name", req.Name, "tagger_version", req.TaggerVersion)
+	coll, err := s.db.CreateCollection(r.Context(), req.Name, req.TaggerVersion)
 	if err != nil {
 		// Check for unique violation
 		if strings.Contains(err.Error(), "unique") || strings.Contains(err.Error(), "duplicate") {
@@ -154,14 +193,10 @@ func (s *Server) createCollection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to create collection")
 		return
 	}
-	slog.Debug("collection created", "name", coll.Name, "data_type", coll.DataType)
-	resp := models.CollectionCreateResponse{
-		Name:     coll.Name,
-		DataType: coll.DataType,
-	}
+	slog.Debug("collection created", "name", coll.Name, "tagger_version", coll.TaggerVersion)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(resp)
+	json.NewEncoder(w).Encode(coll)
 }
 
 const (
@@ -294,15 +329,9 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dataType := r.URL.Query().Get("data_type")
-	if dataType == "" {
-		slog.Debug("putObject missing data_type")
-		writeError(w, http.StatusBadRequest, "missing_data_type", "data_type is required")
-		return
-	}
-	if dataType != coll.DataType {
-		slog.Debug("putObject data_type mismatch", "collection_type", coll.DataType, "object_type", dataType)
-		writeError(w, http.StatusBadRequest, "invalid_data_type", "object data_type does not match collection")
+	metadata, err := parseMetadataParam(r.URL.Query().Get("metadata"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_metadata", err.Error())
 		return
 	}
 
@@ -369,7 +398,7 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 		resp := models.ObjectUploadResponse{
 			ID:          existing.ID,
 			Collection:  existing.Collection,
-			DataType:    existing.DataType,
+			Metadata:    existing.Metadata,
 			Date:        existing.Date,
 			SizeBytes:   existing.SizeBytes,
 			ContentHash: existing.ContentHash,
@@ -390,7 +419,7 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 	// Actually, per design: payload_key format: <collection>/<object_id>
 	// Since we need object_id, let's use UUID generated by postgres.
 	// We'll insert with a dummy payload_key, then update after we get ID.
-	obj, err := s.db.InsertObject(r.Context(), coll.ID, contentHash, date, written, dataType, "temp", expiresAt)
+	obj, err := s.db.InsertObject(r.Context(), coll.ID, contentHash, date, written, "temp", metadata, expiresAt)
 	if err != nil {
 		// Handle duplicate caused by concurrent insert or expired row.
 		if strings.Contains(err.Error(), "unique") || strings.Contains(err.Error(), "duplicate") {
@@ -406,7 +435,7 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 					if err := s.store.Delete(r.Context(), payloadKey); err != nil {
 						slog.Warn("delete expired duplicate from s3 failed", "error", err, "key", payloadKey)
 					}
-					obj, err = s.db.InsertObject(r.Context(), coll.ID, contentHash, date, written, dataType, "temp", expiresAt)
+					obj, err = s.db.InsertObject(r.Context(), coll.ID, contentHash, date, written, "temp", metadata, expiresAt)
 					if err != nil {
 						slog.Error("insert object after cleanup failed", "error", err)
 						writeError(w, http.StatusInternalServerError, "internal_error", "failed to insert object")
@@ -416,7 +445,7 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 					resp := models.ObjectUploadResponse{
 						ID:          existing.ID,
 						Collection:  existing.Collection,
-						DataType:    existing.DataType,
+						Metadata:    existing.Metadata,
 						Date:        existing.Date,
 						SizeBytes:   existing.SizeBytes,
 						ContentHash: existing.ContentHash,
@@ -465,7 +494,7 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 	resp := models.ObjectUploadResponse{
 		ID:          objectID,
 		Collection:  collectionName,
-		DataType:    dataType,
+		Metadata:    metadata,
 		Date:        date,
 		SizeBytes:   written,
 		ContentHash: contentHash,
@@ -589,9 +618,17 @@ func (s *Server) getObjectTags(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if len(missing) > 0 {
-			// Call tagging engine.
-			resp, err := s.tagClient.Tag(r.Context(), collectionName, id, missing)
+			coll, err := s.db.GetCollectionByName(r.Context(), collectionName)
 			if err != nil {
+				writeError(w, http.StatusNotFound, "not_found", "collection not found")
+				return
+			}
+			// Call tagging engine, which must be the version the collection is tagged with.
+			resp, err := s.tagClient.Tag(r.Context(), collectionName, id, coll.TaggerVersion, missing)
+			if err != nil {
+				if writeTaggerError(w, err) {
+					return
+				}
 				slog.Error("tag engine failed", "error", err)
 				writeError(w, http.StatusBadGateway, "tag_engine_error", "tag engine failed")
 				return
@@ -698,6 +735,9 @@ func (s *Server) queryObjects(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.queryRunner.Query(ctx, coll, req)
 	if err != nil {
 		slog.Error("query failed", "error", err)
+		if writeTaggerError(w, err) {
+			return
+		}
 		if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
 			writeError(w, http.StatusInternalServerError, "query_timeout", "query timed out")
 			return
@@ -743,12 +783,141 @@ func (s *Server) deleteObject(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
+	writeErrorDetails(w, status, code, message, nil)
+}
+
+func writeErrorDetails(w http.ResponseWriter, status int, code, message string, details map[string]any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	resp := models.ErrorResponse{}
 	resp.Error.Code = code
 	resp.Error.Message = message
+	resp.Error.Details = details
 	json.NewEncoder(w).Encode(resp)
+}
+
+// writeTaggerError answers 409 tagger_version_mismatch when err says the tagging engine runs another
+// version than the collection is tagged with, and reports whether it did. Tags the collection already has
+// stay usable: a request with evaluate=false never reaches the engine.
+func writeTaggerError(w http.ResponseWriter, err error) bool {
+	var mismatch *client.VersionMismatchError
+	if !errors.As(err, &mismatch) {
+		return false
+	}
+	writeErrorDetails(w, http.StatusConflict, "tagger_version_mismatch",
+		fmt.Sprintf("the collection is tagged with %q but the tagging engine runs %q; query with evaluate=false to use the tags it has", mismatch.Expected, mismatch.Running),
+		map[string]any{"expected": mismatch.Expected, "running": mismatch.Running})
+	return true
+}
+
+// parseMetadataParam reads the metadata query parameter of an upload: a JSON object of string values, or
+// nothing.
+func parseMetadataParam(raw string) (map[string]string, error) {
+	if raw == "" {
+		return map[string]string{}, nil
+	}
+	m := map[string]string{}
+	dec := json.NewDecoder(strings.NewReader(raw))
+	if err := dec.Decode(&m); err != nil || dec.More() {
+		return nil, errors.New("metadata must be a JSON object whose values are strings")
+	}
+	if m == nil { // the JSON null
+		m = map[string]string{}
+	}
+	if err := validate.ValidateMetadata(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+const maxMetadataBodyBytes = 16 << 10
+
+// objectOfRequest finds the object a metadata request is about, or answers 404.
+func (s *Server) objectOfRequest(w http.ResponseWriter, r *http.Request) (*models.Object, bool) {
+	obj, err := s.db.GetObjectByID(r.Context(), chi.URLParam(r, "id"))
+	if err != nil || obj.Collection != chi.URLParam(r, "collection") {
+		writeError(w, http.StatusNotFound, "not_found", "object not found")
+		return nil, false
+	}
+	return obj, true
+}
+
+// replaceMetadata (PUT) replaces all metadata of an object with the body, a JSON object of string values.
+func (s *Server) replaceMetadata(w http.ResponseWriter, r *http.Request) {
+	obj, ok := s.objectOfRequest(w, r)
+	if !ok {
+		return
+	}
+	var body map[string]string
+	dec := json.NewDecoder(io.LimitReader(r.Body, maxMetadataBodyBytes))
+	if err := dec.Decode(&body); err != nil || body == nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "the body must be a JSON object whose values are strings")
+		return
+	}
+	if err := validate.ValidateMetadata(body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_metadata", err.Error())
+		return
+	}
+	s.changeMetadata(w, r, obj, func(map[string]string) (map[string]string, error) { return body, nil })
+}
+
+// mergeMetadata (PATCH) sets the keys of the body, a JSON object, and removes those whose value is null; the
+// other keys stay.
+func (s *Server) mergeMetadata(w http.ResponseWriter, r *http.Request) {
+	obj, ok := s.objectOfRequest(w, r)
+	if !ok {
+		return
+	}
+	var body map[string]*string
+	dec := json.NewDecoder(io.LimitReader(r.Body, maxMetadataBodyBytes))
+	if err := dec.Decode(&body); err != nil || body == nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "the body must be a JSON object whose values are strings or null")
+		return
+	}
+	s.changeMetadata(w, r, obj, func(current map[string]string) (map[string]string, error) {
+		merged := make(map[string]string, len(current)+len(body))
+		for k, v := range current {
+			merged[k] = v
+		}
+		for k, v := range body {
+			if v == nil {
+				delete(merged, k)
+			} else {
+				merged[k] = *v
+			}
+		}
+		if err := validate.ValidateMetadata(merged); err != nil {
+			return nil, &metadataError{err}
+		}
+		return merged, nil
+	})
+}
+
+// metadataError marks a validation failure of the merged metadata.
+type metadataError struct{ error }
+
+// changeMetadata applies change to the object's metadata and answers with the object as it is now.
+func (s *Server) changeMetadata(w http.ResponseWriter, r *http.Request, obj *models.Object, change func(map[string]string) (map[string]string, error)) {
+	if _, err := s.db.UpdateObjectMetadata(r.Context(), obj.ID, change); err != nil {
+		var invalid *metadataError
+		switch {
+		case errors.As(err, &invalid):
+			writeError(w, http.StatusBadRequest, "invalid_metadata", invalid.Error())
+		case errors.Is(err, db.ErrObjectNotFound):
+			writeError(w, http.StatusNotFound, "not_found", "object not found")
+		default:
+			slog.Error("update metadata failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "failed to update metadata")
+		}
+		return
+	}
+	updated, err := s.db.GetObjectByID(r.Context(), obj.ID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "object not found")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(updated)
 }
 
 func requestLogger() func(http.Handler) http.Handler {

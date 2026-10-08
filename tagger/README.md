@@ -2,16 +2,17 @@
 
 Go module: `mrsydar/tagona/tagger`
 
-A standalone HTTP service that evaluates boolean tags for objects stored in the Tagona storage service. It is a pure evaluator: it fetches object metadata and payload from the storage service via its public HTTP API, then runs the tagging logic.
+A standalone HTTP service that evaluates boolean tags for objects stored in the Tagona storage service. It is a pure evaluator: it fetches an object's payload from the storage service via its public HTTP API, then runs the tagging logic. Objects are bytes: an evaluator decides what it makes of them (the bundled ones read them as UTF-8 text).
 
 ---
 
 ## Responsibilities
 
-- Expose supported data types
+- Report its version
 - Receive tag evaluation requests for specific objects
-- Fetch object metadata + payload from the storage service (dogfooding public APIs)
-- Evaluate tags based on `data_type` and payload content
+- Refuse requests for a version it does not run
+- Fetch the object payload from the storage service (dogfooding public APIs)
+- Evaluate tags against the payload
 - Return tag results synchronously
 
 ---
@@ -20,22 +21,24 @@ A standalone HTTP service that evaluates boolean tags for objects stored in the 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/supported-types` | Return supported data types |
+| `GET` | `/version` | Return the tagger version |
 | `POST` | `/tag` | Evaluate tags for an object |
 | `GET` | `/healthz` | Liveness |
 | `GET` | `/readyz` | Readiness |
 
-### Supported Types
+### Version
 
 **Request**
 ```bash
-curl http://localhost:8081/supported-types
+curl http://localhost:8081/version
 ```
 
 **Response `200 OK`**
 ```json
-{"types": ["txt"]}
+{"version": "decisions/openai:gpt-6-luna"}
 ```
+
+Different taggers, and different models behind one tagger, may tag the same object differently, so a collection records the version of the tagger that tags it. A version is any string; the convention is `<implementation>` or `<implementation>:<model>`: `grep`, `false`, `completions/openai:gpt-4o-mini`, `decisions/openai:gpt-6-luna`. It defaults to the evaluator's own (the implementation name and, for the LLM-backed ones, its `MODEL`), and `TAGGER_VERSION` replaces it, for example to keep a collection's version through a change of model that is known to tag alike.
 
 ### Tag
 
@@ -46,6 +49,7 @@ curl -X POST http://localhost:8081/tag \
   -d '{
     "collection": "jobs",
     "object_id": "a1b2c3d4...",
+    "tagger_version": "grep",
     "tags": ["golang", "qa"]
   }'
 ```
@@ -57,9 +61,9 @@ curl -X POST http://localhost:8081/tag \
 
 **Behavior**
 
-1. Fetches object metadata from storage: `GET /v1/collections/{collection}/objects/{id}`
+1. Compares `tagger_version` (the version the object's collection is tagged with) with its own: another version is refused with `409` `tagger_version_mismatch` (`details`: `expected`, `running`), because its answer must not be stored as that collection's
 2. Fetches object payload: `GET /v1/collections/{collection}/objects/{id}/data`
-3. Evaluates tags based on `data_type`
+3. Evaluates tags against the payload
 4. Returns only the requested tags
 
 ---
@@ -68,17 +72,17 @@ curl -X POST http://localhost:8081/tag \
 
 The evaluator is selected via `TAGGER_EVALUATOR_IMPL`:
 
-| Evaluator | Supported `data_type`s | Logic |
-|-----------|----------------------|-------|
-| `grep`    | `txt`                | Tag is `true` if the payload (UTF-8 text) contains the tag string as a substring. Case-sensitive. |
-| `false`   | `txt`, `png`         | All tags evaluate to `false`. |
-| `completions/openai` | `txt` | An LLM classifies the payload against the requested tags through a chat completions API in the OpenAI dialect; missing tags default to `false`. |
-| `decisions/openai` | `txt` | One yes/no question per tag through OpenAI's [Decisions API](https://developers.openai.com/api/docs/guides/decisions) (`POST /decisions`). A tag is `true` when the returned probability is at least the threshold. |
-| `decisions/vercel` | `txt` | The same idea through the Vercel AI Gateway's evaluate endpoint (`POST /evaluate`), which has a different wire format. |
+| Evaluator | Default version | Logic |
+|-----------|-----------------|-------|
+| `grep`    | `grep`          | Tag is `true` if the payload (read as UTF-8 text) contains the tag string as a substring. Case-sensitive. |
+| `false`   | `false`         | All tags evaluate to `false`. |
+| `completions/openai` | `completions/openai:<model>` | An LLM classifies the payload against the requested tags through a chat completions API in the OpenAI dialect; missing tags default to `false`. |
+| `decisions/openai` | `decisions/openai:<model>` | One yes/no question per tag through OpenAI's [Decisions API](https://developers.openai.com/api/docs/guides/decisions) (`POST /decisions`). A tag is `true` when the returned probability is at least the threshold. |
+| `decisions/vercel` | `decisions/vercel:<model>` | The same idea through the Vercel AI Gateway's evaluate endpoint (`POST /evaluate`), which has a different wire format. |
 
 The part after the slash names the **API dialect**, not the vendor: any vendor that speaks it is used with its own base URL (and path, key header and extra parameters, below). The `completions/openai` evaluator replaces the former `openai`, and `decisions/vercel` the former `systemone` with its `vercel` backend.
 
-The storage service validates that `data_type` is in the supported-types set (reported by the evaluator) before creating a collection.
+When a collection is created without a `tagger_version`, the storage service asks the tagger for its `/version` and records it.
 
 ---
 
@@ -132,6 +136,7 @@ TAGGER_COMPLETIONS_OPENAI_PARAMS='{"temperature":null,"max_completion_tokens":64
 | `TAGGER_HTTP_ADDR` | No | `:8081` | HTTP listen address |
 | `TAGGER_STORAGE_BASE_URL` | Yes | `http://localhost:8082` | Base URL of the storage service to fetch objects from |
 | `TAGGER_EVALUATOR_IMPL` | No | `grep` | Evaluator to use: `grep`, `false`, `completions/openai`, `decisions/openai` or `decisions/vercel` |
+| `TAGGER_VERSION` | No | the evaluator's own | The version the tagger reports and accepts, 1-128 bytes of text; see [Version](#version) |
 | `TAGGER_<KIND>_<DIALECT>_*` | No | per evaluator | Settings of the LLM-backed evaluators, listed under [LLM-backed evaluators](#llm-backed-evaluators); `tagger/.env.example` lists them all |
 
 ---
@@ -189,4 +194,4 @@ This service intentionally stays minimal. It has no database, no object storage 
 
 - **No caching (MVP)**: tag results are not cached. The storage service persists evaluated tags.
 - **Public API only**: the tagging engine uses the same public HTTP APIs as any external client. No internal/private endpoints are used.
-- **No interpretation of payload semantics**: the storage service does not understand `data_type`; it only validates it against the supported set. The tagging engine is the only component that interprets content.
+- **No interpretation of payload semantics**: the storage service stores bytes and does not understand them. The tagging engine is the only component that interprets content, and a collection records which tagger version it is tagged with.

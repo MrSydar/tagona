@@ -42,7 +42,6 @@ func reject(w http.ResponseWriter, e *requestError) {
 var (
 	collectionRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 	uuidRe       = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-	dataTypeRe   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+/-]{0,63}$`)
 	cursorRe     = regexp.MustCompile(`^[A-Za-z0-9_-]{1,512}$`) // storage cursors are unpadded base64url
 	digitsRe     = regexp.MustCompile(`^[0-9]{1,9}$`)
 )
@@ -52,6 +51,8 @@ const (
 	maxNameBytes       = 128       // tag and key names
 	maxTagsParamBytes  = 16 << 10
 	maxAuthHeaderBytes = 1 << 10
+	maxMetadataBytes   = 16 << 10 // the metadata parameter of an upload and the body of a metadata request
+	maxVersionBytes    = 128      // a tagger version
 )
 
 // collectionParam returns the validated {collection} path segment.
@@ -208,4 +209,33 @@ func set(q url.Values, name, value string) {
 	if value != "" {
 		q.Set(name, value)
 	}
+}
+
+// validTaggerVersion reports whether v can be a tagger version: 1 to 128 bytes of valid UTF-8 without control
+// characters. What a version means is the tagger's business, so nothing more is required.
+func validTaggerVersion(v string) bool {
+	return v != "" && len(v) <= maxVersionBytes && cleanText(v)
+}
+
+// optionalMetadata validates the metadata parameter of an upload, a JSON object whose values are strings,
+// and returns it re-encoded, so that what storage receives is built here and not the client's text. The
+// limits on its size and content are storage's.
+func optionalMetadata(params map[string]string) (string, *requestError) {
+	raw, ok := params["metadata"]
+	if !ok || raw == "" {
+		return "", nil
+	}
+	if len(raw) > maxMetadataBytes {
+		return "", badRequest("invalid_metadata", "metadata is too large")
+	}
+	var m map[string]string
+	dec := json.NewDecoder(strings.NewReader(raw))
+	if err := dec.Decode(&m); err != nil || m == nil {
+		return "", badRequest("invalid_metadata", "metadata must be a JSON object whose values are strings")
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return "", badRequest("invalid_metadata", "metadata has data after the JSON object")
+	}
+	out, _ := json.Marshal(m)
+	return string(out), nil
 }

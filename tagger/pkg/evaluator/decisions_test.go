@@ -113,7 +113,7 @@ func (s *decisionsStub) vercel(t *testing.T, extra map[string]string) *Decisions
 
 func TestDecisionsOpenAIRequestShape(t *testing.T) {
 	s := newOpenAIStub(t, map[string]float64{"golang": 0.92, "java": 0.1})
-	got, err := s.openai(t, nil).Evaluate(context.Background(), DataTypeTxt, []byte("a golang job"), []string{"golang", "java"})
+	got, err := s.openai(t, nil).Evaluate(context.Background(), []byte("a golang job"), []string{"golang", "java"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestDecisionsOpenAIThresholdRefusalAndMissingAnswers(t *testing.T) {
 	tags := []string{"high", "edge", "low", "refused", "unanswered"}
 
 	s := newOpenAIStub(t, probs)
-	got, err := s.openai(t, nil).Evaluate(context.Background(), DataTypeTxt, []byte("x"), tags)
+	got, err := s.openai(t, nil).Evaluate(context.Background(), []byte("x"), tags)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,11 +158,11 @@ func TestDecisionsOpenAIThresholdRefusalAndMissingAnswers(t *testing.T) {
 		}
 	}
 
-	got, err = s.openai(t, map[string]string{"THRESHOLD": "0.95"}).Evaluate(context.Background(), DataTypeTxt, []byte("x"), tags)
+	got, err = s.openai(t, map[string]string{"THRESHOLD": "0.95"}).Evaluate(context.Background(), []byte("x"), tags)
 	if err != nil || got["high"] {
 		t.Fatalf("with threshold 0.95, high = %v, %v", got["high"], err)
 	}
-	got, _ = s.openai(t, map[string]string{"THRESHOLD": "0"}).Evaluate(context.Background(), DataTypeTxt, []byte("x"), tags)
+	got, _ = s.openai(t, map[string]string{"THRESHOLD": "0"}).Evaluate(context.Background(), []byte("x"), tags)
 	if !got["low"] || got["unanswered"] {
 		t.Fatalf("with threshold 0, an answered tag is true and an unanswered one is still false: %v", got)
 	}
@@ -173,7 +173,7 @@ func TestDecisionsBatching(t *testing.T) {
 	probs := map[string]float64{"a": 1, "b": 1, "c": 1, "d": 1, "e": 1}
 
 	s := newOpenAIStub(t, probs)
-	got, err := s.openai(t, map[string]string{"BATCH_SIZE": "2"}).Evaluate(context.Background(), DataTypeTxt, []byte("x"), tags)
+	got, err := s.openai(t, map[string]string{"BATCH_SIZE": "2"}).Evaluate(context.Background(), []byte("x"), tags)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,18 +190,18 @@ func TestDecisionsBatching(t *testing.T) {
 	}
 
 	s = newOpenAIStub(t, probs)
-	if _, err := s.openai(t, map[string]string{"BATCH_SIZE": "0"}).Evaluate(context.Background(), DataTypeTxt, []byte("x"), tags); err != nil || len(s.reqs) != 1 {
+	if _, err := s.openai(t, map[string]string{"BATCH_SIZE": "0"}).Evaluate(context.Background(), []byte("x"), tags); err != nil || len(s.reqs) != 1 {
 		t.Fatalf("batch size 0 must send everything at once: %d requests, %v", len(s.reqs), err)
 	}
 	s = newOpenAIStub(t, probs)
-	if _, err := s.openai(t, nil).Evaluate(context.Background(), DataTypeTxt, []byte("x"), tags); err != nil || len(s.reqs) != 1 {
+	if _, err := s.openai(t, nil).Evaluate(context.Background(), []byte("x"), tags); err != nil || len(s.reqs) != 1 {
 		t.Fatalf("the default batch holds 50: %d requests, %v", len(s.reqs), err)
 	}
 
 	// A failing batch fails the evaluation: a partial answer is not a verdict.
 	s = newOpenAIStub(t, probs)
 	s.status = http.StatusBadGateway
-	if _, err := s.openai(t, map[string]string{"BATCH_SIZE": "2"}).Evaluate(context.Background(), DataTypeTxt, []byte("x"), tags); err == nil {
+	if _, err := s.openai(t, map[string]string{"BATCH_SIZE": "2"}).Evaluate(context.Background(), []byte("x"), tags); err == nil {
 		t.Fatal("expected an error")
 	}
 }
@@ -212,7 +212,7 @@ func TestDecisionsCustomInstructionsAndVendorSettings(t *testing.T) {
 		"INSTRUCTIONS": `Does this text concern "{tag}"? Be strict.`, "PATH": "/v2/decide", "MODEL": "luna-2",
 		"PARAMS": `{"store":false}`,
 	})
-	if _, err := ev.Evaluate(context.Background(), DataTypeTxt, []byte("x"), []string{"golang"}); err != nil {
+	if _, err := ev.Evaluate(context.Background(), []byte("x"), []string{"golang"}); err != nil {
 		t.Fatal(err)
 	}
 	q := s.reqs[0]["questions"].([]any)[0].(map[string]any)
@@ -248,26 +248,22 @@ func TestDecisionsEdgeCases(t *testing.T) {
 	s := newOpenAIStub(t, map[string]float64{"a": 1})
 	ev := s.openai(t, nil)
 
-	got, err := ev.Evaluate(context.Background(), DataType("png"), []byte("x"), []string{"a"})
-	if err != nil || got["a"] || len(s.reqs) != 0 {
-		t.Fatalf("non-txt: %v, %v, requests %d", got, err, len(s.reqs))
-	}
-	got, err = ev.Evaluate(context.Background(), DataTypeTxt, []byte("x"), nil)
+	got, err := ev.Evaluate(context.Background(), []byte("x"), nil)
 	if err != nil || len(got) != 0 || len(s.reqs) != 0 {
 		t.Fatalf("no tags: %v, %v, requests %d", got, err, len(s.reqs))
 	}
-	if types := ev.GetSupportedDataTypes(); len(types) != 1 || types[0] != "txt" {
-		t.Fatalf("types = %v", types)
+	if v := ev.Version(); v != "decisions/openai:"+ev.cfg.Model || ev.cfg.Model == "" {
+		t.Fatalf("version = %q", v)
 	}
 
 	for name, raw := range map[string]string{"not json": `nope`, "answers wrong type": `{"answers":"x"}`} {
 		s.raw = raw
-		if _, err := ev.Evaluate(context.Background(), DataTypeTxt, []byte("x"), []string{"a"}); err == nil {
+		if _, err := ev.Evaluate(context.Background(), []byte("x"), []string{"a"}); err == nil {
 			t.Errorf("%s: expected an error", name)
 		}
 	}
 	s.raw = `{"answers":[{"type":"predicate","name":"q0"}]}` // no probability: unanswered, not zero
-	got, err = ev.Evaluate(context.Background(), DataTypeTxt, []byte("x"), []string{"a"})
+	got, err = ev.Evaluate(context.Background(), []byte("x"), []string{"a"})
 	if err != nil || got["a"] {
 		t.Fatalf("an answer without a probability is no answer: %v, %v", got, err)
 	}
@@ -275,7 +271,7 @@ func TestDecisionsEdgeCases(t *testing.T) {
 
 func TestDecisionsVercelRequestShapeAndAnswers(t *testing.T) {
 	s := newVercelStub(t, map[string]float64{"golang": 0.92, "java": 0.2, "rust": 0.5})
-	got, err := s.vercel(t, nil).Evaluate(context.Background(), DataTypeTxt, []byte("a golang job"), []string{"golang", "java", "rust", "go lang & more"})
+	got, err := s.vercel(t, nil).Evaluate(context.Background(), []byte("a golang job"), []string{"golang", "java", "rust", "go lang & more"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,16 +295,16 @@ func TestDecisionsVercelRequestShapeAndAnswers(t *testing.T) {
 func TestDecisionsVercelSettingsAndErrors(t *testing.T) {
 	s := newVercelStub(t, map[string]float64{"a": 0.6})
 	got, err := s.vercel(t, map[string]string{"THRESHOLD": "0.7", "MODEL": "m2", "PATH": "/v2/evaluate"}).
-		Evaluate(context.Background(), DataTypeTxt, []byte("x"), []string{"a"})
+		Evaluate(context.Background(), []byte("x"), []string{"a"})
 	if err != nil || got["a"] || s.reqs[0]["model"] != "m2" || s.paths[0] != "/v2/evaluate" {
 		t.Fatalf("got %v, %v, %v to %s", got, err, s.reqs[0]["model"], s.paths[0])
 	}
 	s.status = http.StatusUnauthorized
-	if _, err := s.vercel(t, nil).Evaluate(context.Background(), DataTypeTxt, []byte("x"), []string{"a"}); err == nil {
+	if _, err := s.vercel(t, nil).Evaluate(context.Background(), []byte("x"), []string{"a"}); err == nil {
 		t.Fatal("expected an error")
 	}
 	s.status, s.raw = 200, `{"answers":`
-	if _, err := s.vercel(t, nil).Evaluate(context.Background(), DataTypeTxt, []byte("x"), []string{"a"}); err == nil {
+	if _, err := s.vercel(t, nil).Evaluate(context.Background(), []byte("x"), []string{"a"}); err == nil {
 		t.Fatal("expected an error for a malformed answer")
 	}
 }

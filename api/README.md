@@ -123,7 +123,7 @@ KEY="tagona_..."   # from the create response
 curl -s -X POST http://localhost:8080/v1/collections \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
-  -d '{"name":"jobs","data_type":"txt"}'
+  -d '{"name":"jobs"}'
 ```
 
 ---
@@ -180,24 +180,31 @@ go test ./...
 
 **Create Collection**
 
+A collection is tagged with one tagger version: `tagger_version`, a string of 1-128 bytes that by convention is `<implementation>` or `<implementation>:<model>` (`grep`, `false`, `decisions/openai:zai-org/GLM-5.3-Flash`). Leave it out to use the version of the tagger that runs now. Tags are only evaluated by a tagger that runs the collection's version: asking for an evaluation from another one answers `409 tagger_version_mismatch` (`details`: `expected`, `running`), while `evaluate=false` still answers from the tags the collection has. Objects are plain bytes, so a collection has no data type.
+
 Request:
 ```json
-{"name":"jobs","data_type":"txt"}
+{"name":"jobs","tagger_version":"decisions/openai:zai-org/GLM-5.3-Flash"}
 ```
 
 Response `201 Created`:
 ```json
-{"name":"jobs","data_type":"txt"}
+{"id":"...","name":"jobs","tagger_version":"decisions/openai:zai-org/GLM-5.3-Flash","created_at":"2026-06-13T12:00:00Z"}
 ```
 
+Errors: `400` `invalid_name`, `invalid_tagger_version`, `invalid_json`; `409 already_exists`; `502 tag_engine_error` when `tagger_version` was left out and the running tagger's version could not be determined.
+
 **List Collections**
+
+Newest first. Query parameters: `limit` (default `100`, max `1000`, else `400 invalid_limit`) and `cursor` (the `next` value of the previous page; `next` is absent on the last page, else `400 invalid_cursor`).
 
 Response `200 OK`:
 ```json
 {
   "collections": [
-    {"id":"...","name":"jobs","data_type":"txt","created_at":"2026-06-13T12:00:00Z"}
-  ]
+    {"id":"...","name":"jobs","tagger_version":"grep","created_at":"2026-06-13T12:00:00Z"}
+  ],
+  "next": "..."
 }
 ```
 
@@ -239,7 +246,9 @@ Response `200 OK`:
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/v1/collections/{collection}/objects` | Upload an object |
-| `GET` | `/v1/collections/{collection}/objects/{id}` | Get metadata |
+| `GET` | `/v1/collections/{collection}/objects/{id}` | Get the object and its metadata |
+| `PUT` | `/v1/collections/{collection}/objects/{id}/metadata` | Replace the metadata |
+| `PATCH` | `/v1/collections/{collection}/objects/{id}/metadata` | Change some metadata |
 | `GET` | `/v1/collections/{collection}/objects/{id}/data` | Download payload |
 | `GET` | `/v1/collections/{collection}/objects/{id}/tags` | Get tags |
 | `POST` | `/v1/collections/{collection}/objects/query` | Query by tags |
@@ -248,22 +257,42 @@ Response `200 OK`:
 **Upload**
 
 ```bash
-curl -X POST "http://localhost:8080/v1/collections/jobs/objects?data_type=txt&date=2026-06-07T12:00:00Z&ttl_seconds=3600" \
+curl -X POST "http://localhost:8080/v1/collections/jobs/objects?date=2026-06-07T12:00:00Z&ttl_seconds=3600&metadata=%7B%22name%22%3A%22hello.txt%22%7D" \
   -H "Content-Type: application/octet-stream" \
   -d 'hello world'
 ```
 
-**Response `201 Created`**
+The body is the raw payload. Query parameters (all optional): `date` (RFC 3339, default the upload time), `ttl_seconds` (see the OpenAPI document for the expiry rules) and `metadata` (URL-encoded JSON object of string values, here `{"name":"hello.txt"}`).
+
+**Response `201 Created`** (`200 OK` with the existing object when the same bytes were uploaded before)
 ```json
 {
   "id": "...",
   "collection": "jobs",
-  "data_type": "txt",
   "date": "2026-06-07T12:00:00Z",
   "size_bytes": 11,
-  "content_hash": "..."
+  "content_hash": "...",
+  "metadata": {"name": "hello.txt"}
 }
 ```
+
+**Metadata**
+
+An object carries metadata, string keys to string values that the uploader chooses (at most 32 entries, keys of 1-64 bytes, values of at most 1024 bytes; `400 invalid_metadata`). It is returned wherever the object is and is not searchable. Uploading bytes that already exist returns the existing object with its own metadata; change it with `PUT` or `PATCH`:
+
+```bash
+# replace all metadata
+curl -X PUT http://localhost:8080/v1/collections/jobs/objects/$ID/metadata \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"name":"cute-dog.png","photographer":"Sam"}'
+
+# set some keys, remove others (null)
+curl -X PATCH http://localhost:8080/v1/collections/jobs/objects/$ID/metadata \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"name":"dog.png","photographer":null}'
+```
+
+Both answer `200 OK` with the object. Values must be strings (`400 invalid_json` otherwise; `null` is only for `PATCH`).
 
 **Query by Tags**
 
@@ -292,7 +321,8 @@ curl -X POST http://localhost:8080/v1/collections/jobs/objects/query \
 - Tags are ANDed: all provided tags must match exactly.
 - Missing tags are evaluated on-demand via the tagging engine.
 - Ordering: `date DESC`, then `id ASC`.
-- Cursor: `base64url(<unix_millis>|<uuid>)` of the last returned object.
+- Pagination: the answer holds at most `limit` objects (default and maximum are configured on the server: 5 and 100) and carries `next` when more match. Send the same query with `cursor` set to it for the next page, and repeat until an answer has no `next`; `tags`, `date` and `evaluate` must stay the same. The cursor marks a position in the order (`date`, then `id`), so objects uploaded or deleted between pages do not shift it.
+- Evaluating needs the tagger that the collection is tagged with: another one answers `409 tagger_version_mismatch`.
 - `timeout_ms`: query timeout in milliseconds. Defaults to `30000` (30s). Must be between `1000` (1s) and `300000` (5m); otherwise a `400 invalid_timeout` error is returned. If reached and `best_effort` is `false`, a `query_timeout` error is returned.
 - `best_effort`: when `true` and the query times out, the server returns whatever objects were found up to that point instead of failing. A pagination `next` cursor is included.
 - `evaluate` (default `true`): when `false`, the query is answered from tags that are **already known** and the tagging engine is never called. An object is returned only if every requested tag is known for it and matches, so objects whose requested tags have not been evaluated yet are left out (the result is a subset of what `evaluate: true` would return, and it can grow as tags get evaluated). It is fast and cheap, independent of the tagger's availability and speed, and does not register any new tags in the collection. Pagination (`cursor`/`next`) and the `date` filter work as usual; `best_effort` has no effect because there is no partial result to return.

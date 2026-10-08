@@ -44,12 +44,12 @@ type tagQueryResp struct {
 }
 
 type objMeta struct {
-	ID          string    `json:"id"`
-	Collection  string    `json:"collection"`
-	DataType    string    `json:"data_type"`
-	Date        time.Time `json:"date"`
-	SizeBytes   int64     `json:"size_bytes"`
-	ContentHash string    `json:"content_hash"`
+	ID          string            `json:"id"`
+	Collection  string            `json:"collection"`
+	Date        time.Time         `json:"date"`
+	SizeBytes   int64             `json:"size_bytes"`
+	ContentHash string            `json:"content_hash"`
+	Metadata    map[string]string `json:"metadata"`
 }
 
 type apiErrorResp struct {
@@ -102,7 +102,7 @@ func deleteAPIKey(t *testing.T, id string) {
 
 func createCollection(t *testing.T, apiKey, name string) {
 	t.Helper()
-	createBody := []byte(fmt.Sprintf(`{"name":"%s","data_type":"txt"}`, name))
+	createBody := []byte(fmt.Sprintf(`{"name":"%s"}`, name))
 	req, err := http.NewRequest(http.MethodPost, storageURL+"/v1/collections", bytes.NewReader(createBody))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
@@ -133,7 +133,7 @@ func TestEndToEnd(t *testing.T) {
 
 	// 2. Upload first object
 	payload1 := []byte("a golang job description")
-	obj1 := uploadObject(t, creds.Key, coll, "txt", payload1)
+	obj1 := uploadObject(t, creds.Key, coll, payload1)
 
 	// 3. Query without tags — should return obj1
 	result := queryObjects(t, creds.Key, coll, tagQueryReq{Limit: 10})
@@ -151,7 +151,7 @@ func TestEndToEnd(t *testing.T) {
 
 	// 6. Upload second object
 	payload2 := []byte("a golang and java job description")
-	obj2 := uploadObject(t, creds.Key, coll, "txt", payload2)
+	obj2 := uploadObject(t, creds.Key, coll, payload2)
 
 	// 7. Query no tags — both present
 	result = queryObjects(t, creds.Key, coll, tagQueryReq{Limit: 10})
@@ -205,7 +205,7 @@ func TestPagination(t *testing.T) {
 	}
 	objs := make([]objMeta, len(payloads))
 	for i, p := range payloads {
-		objs[i] = uploadObject(t, creds.Key, coll, "txt", p)
+		objs[i] = uploadObject(t, creds.Key, coll, p)
 	}
 
 	// 3. Query page 1 with limit=2 (no tag filter -> all objects)
@@ -243,7 +243,7 @@ func TestPagination(t *testing.T) {
 
 func TestAuthRequired(t *testing.T) {
 	// (a) /v1 call without a key → 401 missing_api_key
-	resp, err := http.Post(storageURL+"/v1/collections", "application/json", bytes.NewReader([]byte(`{"name":"noauth","data_type":"txt"}`)))
+	resp, err := http.Post(storageURL+"/v1/collections", "application/json", bytes.NewReader([]byte(`{"name":"noauth"}`)))
 	require.NoError(t, err)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -277,9 +277,9 @@ func TestAuthRequired(t *testing.T) {
 	assert.Equal(t, "invalid_admin_credentials", errorCode(t, body))
 }
 
-func uploadObject(t *testing.T, apiKey, collection, dataType string, data []byte) objMeta {
+func uploadObject(t *testing.T, apiKey, collection string, data []byte) objMeta {
 	t.Helper()
-	url := fmt.Sprintf("%s/v1/collections/%s/objects?data_type=%s", storageURL, collection, dataType)
+	url := fmt.Sprintf("%s/v1/collections/%s/objects", storageURL, collection)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/octet-stream")
@@ -399,9 +399,9 @@ func TestCollectionTags(t *testing.T) {
 	require.NotNil(t, got.Tags)
 	assert.Empty(t, got.Tags)
 
-	obj1 := uploadObject(t, creds.Key, coll, "txt", []byte("a golang job"))
-	uploadObject(t, creds.Key, coll, "txt", []byte("a golang and java job"))
-	uploadObject(t, creds.Key, coll, "txt", []byte("a rust job"))
+	obj1 := uploadObject(t, creds.Key, coll, []byte("a golang job"))
+	uploadObject(t, creds.Key, coll, []byte("a golang and java job"))
+	uploadObject(t, creds.Key, coll, []byte("a rust job"))
 
 	// Tags are sparse and lazily evaluated: nothing is registered until a
 	// query needs a tag.
@@ -422,7 +422,7 @@ func TestCollectionTags(t *testing.T) {
 	assert.Equal(t, tagStat{Tag: "java", TrueCount: 1, FalseCount: 2}, byName["java"])
 
 	// A new object has not been evaluated for the known tags yet.
-	uploadObject(t, creds.Key, coll, "txt", []byte("a golang and kotlin job"))
+	uploadObject(t, creds.Key, coll, []byte("a golang and kotlin job"))
 	got = collectionTags(t, creds.Key, coll, "")
 	assert.EqualValues(t, 4, got.TotalObjects)
 	byName = tagsByName(got.Tags)
@@ -506,8 +506,8 @@ func TestEvaluateFalse(t *testing.T) {
 		}
 	}()
 
-	goObj := uploadObject(t, creds.Key, coll, "txt", []byte("a golang job"))
-	rustObj := uploadObject(t, creds.Key, coll, "txt", []byte("a rust job"))
+	goObj := uploadObject(t, creds.Key, coll, []byte("a golang job"))
+	rustObj := uploadObject(t, creds.Key, coll, []byte("a rust job"))
 	noEval := boolPtr(false)
 
 	// Nothing has been evaluated yet, so a known-only query finds nothing...

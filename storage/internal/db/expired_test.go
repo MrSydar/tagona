@@ -12,7 +12,7 @@ func TestListExpiredObjects(t *testing.T) {
 	coll := mustCollection(t, d, "jobs")
 	now := time.Now().UTC()
 	insert := func(hash string, expires *time.Time) string {
-		o, err := d.InsertObject(ctx, coll, hash, now, 1, "txt", "jobs/"+hash, expires)
+		o, err := d.InsertObject(ctx, coll, hash, now, 1, "jobs/"+hash, nil, expires)
 		if err != nil {
 			t.Fatalf("insert %s: %v", hash, err)
 		}
@@ -71,7 +71,7 @@ func TestListExpiredObjectsPagesThroughTies(t *testing.T) {
 	same := time.Now().UTC().Add(-time.Hour)
 	want := map[string]bool{}
 	for _, h := range []string{"a", "b", "c", "d", "e"} {
-		o, err := d.InsertObject(ctx, coll, h, same, 1, "txt", "jobs/"+h, &same)
+		o, err := d.InsertObject(ctx, coll, h, same, 1, "jobs/"+h, nil, &same)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -129,7 +129,7 @@ func (r *Runner) Query(ctx context.Context, collection *models.Collection, req m
 			}
 			if len(missing) > 0 {
 				// Call tagging engine.
-				resp, err := r.client.Tag(ctx, collection.Name, cand.ID, missing)
+				resp, err := r.client.Tag(ctx, collection.Name, cand.ID, collection.TaggerVersion, missing)
 				if err != nil {
 					if req.BestEffort && ctx.Err() != nil {
 						return buildPartialResponse(results, req.Limit, scanCursorDate, scanCursorID)

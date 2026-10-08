@@ -68,32 +68,37 @@ func (c *Client) setAuth(req *http.Request) {
 
 // Collection represents a collection from the storage service.
 type Collection struct {
-	Name     string `json:"name"`
-	DataType string `json:"data_type"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// TaggerVersion is the version of the tagger the collection is tagged with, "<implementation>" or
+	// "<implementation>:<model>".
+	TaggerVersion string    `json:"tagger_version"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // Object represents object metadata from the storage service.
 type Object struct {
-	ID          string          `json:"id"`
-	Collection  string          `json:"collection"`
-	DataType    string          `json:"data_type"`
-	Date        time.Time       `json:"date"`
-	SizeBytes   int64           `json:"size_bytes"`
-	ContentHash string          `json:"content_hash"`
-	CreatedAt   time.Time       `json:"created_at"`
-	ExpiresAt   *time.Time      `json:"expires_at,omitempty"`
-	PayloadKey  string          `json:"payload_key,omitempty"`
-	Tags        map[string]bool `json:"tags,omitempty"`
+	ID          string     `json:"id"`
+	Collection  string     `json:"collection"`
+	Date        time.Time  `json:"date"`
+	SizeBytes   int64      `json:"size_bytes"`
+	ContentHash string     `json:"content_hash"`
+	CreatedAt   time.Time  `json:"created_at"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	PayloadKey  string     `json:"payload_key,omitempty"`
+	// Metadata is what the uploader attached to the object (never nil in a response).
+	Metadata map[string]string `json:"metadata"`
+	Tags     map[string]bool   `json:"tags,omitempty"`
 }
 
 // ObjectUploadResponse is returned after uploading an object.
 type ObjectUploadResponse struct {
-	ID          string    `json:"id"`
-	Collection  string    `json:"collection"`
-	DataType    string    `json:"data_type"`
-	Date        time.Time `json:"date"`
-	SizeBytes   int64     `json:"size_bytes"`
-	ContentHash string    `json:"content_hash"`
+	ID          string            `json:"id"`
+	Collection  string            `json:"collection"`
+	Date        time.Time         `json:"date"`
+	SizeBytes   int64             `json:"size_bytes"`
+	ContentHash string            `json:"content_hash"`
+	Metadata    map[string]string `json:"metadata"`
 }
 
 // TagsQueryRequest is the request for querying objects by tags.
@@ -191,11 +196,35 @@ func httpError(prefix string, resp *http.Response) error {
 	return fmt.Errorf("%s: status %d: %s", prefix, resp.StatusCode, string(body))
 }
 
-// ListCollections returns all collections.
-func (c *Client) ListCollections(ctx context.Context) ([]Collection, error) {
-	slog.Debug("ListCollections: called")
-	url := c.baseURL + c.prefix + "/collections"
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+// ListCollectionsOptions pages ListCollectionsPage. Zero values use the server defaults.
+type ListCollectionsOptions struct {
+	Limit  int
+	Cursor string
+}
+
+// CollectionsPage is one page of collections, newest first. Next is the cursor of the following page, empty
+// on the last one.
+type CollectionsPage struct {
+	Collections []Collection `json:"collections"`
+	Next        string       `json:"next,omitempty"`
+}
+
+// ListCollectionsPage returns one page of collections. When the result has a Next cursor, pass it in
+// opts.Cursor to fetch the next page.
+func (c *Client) ListCollectionsPage(ctx context.Context, opts ListCollectionsOptions) (*CollectionsPage, error) {
+	slog.Debug("ListCollectionsPage", "limit", opts.Limit, "paged", opts.Cursor != "")
+	params := url.Values{}
+	if opts.Limit > 0 {
+		params.Set("limit", strconv.Itoa(opts.Limit))
+	}
+	if opts.Cursor != "" {
+		params.Set("cursor", opts.Cursor)
+	}
+	target := c.baseURL + c.prefix + "/collections"
+	if len(params) > 0 {
+		target += "?" + params.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", target, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -208,13 +237,29 @@ func (c *Client) ListCollections(ctx context.Context) ([]Collection, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, httpError("list collections", resp)
 	}
-	var result struct {
-		Collections []Collection `json:"collections"`
-	}
+	var result CollectionsPage
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode collections: %w", err)
 	}
-	return result.Collections, nil
+	return &result, nil
+}
+
+// ListCollections returns all collections, newest first, following the server's pages.
+func (c *Client) ListCollections(ctx context.Context) ([]Collection, error) {
+	slog.Debug("ListCollections: called")
+	var all []Collection
+	opts := ListCollectionsOptions{}
+	for {
+		page, err := c.ListCollectionsPage(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page.Collections...)
+		if page.Next == "" {
+			return all, nil
+		}
+		opts.Cursor = page.Next
+	}
 }
 
 // ListCollectionTags returns the total number of objects in a collection and the
@@ -256,10 +301,15 @@ func (c *Client) ListCollectionTags(ctx context.Context, collection string, opts
 	return &result, nil
 }
 
-// CreateCollection creates a new collection.
-func (c *Client) CreateCollection(ctx context.Context, name, dataType string) (*Collection, error) {
-	slog.Debug("CreateCollection", "name", name, "dataType", dataType)
-	reqBody, err := json.Marshal(map[string]string{"name": name, "data_type": dataType})
+// CreateCollection creates a new collection tagged with taggerVersion. An empty taggerVersion tags it with
+// the version of the tagger that runs now.
+func (c *Client) CreateCollection(ctx context.Context, name, taggerVersion string) (*Collection, error) {
+	slog.Debug("CreateCollection", "name", name, "taggerVersion", taggerVersion)
+	body := map[string]string{"name": name}
+	if taggerVersion != "" {
+		body["tagger_version"] = taggerVersion
+	}
+	reqBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
@@ -415,15 +465,41 @@ func (c *Client) QueryObjects(ctx context.Context, collection string, req TagsQu
 	return &result, nil
 }
 
+// UploadOptions are the optional parameters of an upload.
+type UploadOptions struct {
+	// Date is the object date; the zero value means the upload time.
+	Date time.Time
+	// TTLSeconds is the object's lifetime; 0 uses the server default.
+	TTLSeconds int
+	// Metadata is attached to the object: string keys and string values.
+	Metadata map[string]string
+}
+
 // UploadObject uploads an object body to the storage service.
-func (c *Client) UploadObject(ctx context.Context, collection, dataType string, data []byte, date time.Time, ttlSeconds int) (*ObjectUploadResponse, error) {
-	slog.Debug("UploadObject", "collection", collection, "dataType", dataType, "dataLen", len(data), "ttl", ttlSeconds)
-	q := fmt.Sprintf("%s%s/collections/%s/objects?data_type=%s", c.baseURL, c.prefix, collection, dataType)
-	if !date.IsZero() {
-		q += fmt.Sprintf("&date=%s", date.Format(time.RFC3339))
+func (c *Client) UploadObject(ctx context.Context, collection string, data []byte, date time.Time, ttlSeconds int) (*ObjectUploadResponse, error) {
+	return c.UploadObjectWithOptions(ctx, collection, data, UploadOptions{Date: date, TTLSeconds: ttlSeconds})
+}
+
+// UploadObjectWithOptions uploads an object body with a date, a lifetime and metadata.
+func (c *Client) UploadObjectWithOptions(ctx context.Context, collection string, data []byte, opts UploadOptions) (*ObjectUploadResponse, error) {
+	slog.Debug("UploadObject", "collection", collection, "dataLen", len(data), "ttl", opts.TTLSeconds, "metadataKeys", len(opts.Metadata))
+	params := url.Values{}
+	if !opts.Date.IsZero() {
+		params.Set("date", opts.Date.Format(time.RFC3339))
 	}
-	if ttlSeconds > 0 {
-		q += fmt.Sprintf("&ttl_seconds=%d", ttlSeconds)
+	if opts.TTLSeconds > 0 {
+		params.Set("ttl_seconds", strconv.Itoa(opts.TTLSeconds))
+	}
+	if len(opts.Metadata) > 0 {
+		raw, err := json.Marshal(opts.Metadata)
+		if err != nil {
+			return nil, err
+		}
+		params.Set("metadata", string(raw))
+	}
+	q := fmt.Sprintf("%s%s/collections/%s/objects", c.baseURL, c.prefix, collection)
+	if len(params) > 0 {
+		q += "?" + params.Encode()
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", q, bytes.NewReader(data))
 	if err != nil {
@@ -444,6 +520,45 @@ func (c *Client) UploadObject(ctx context.Context, collection, dataType string, 
 		return nil, fmt.Errorf("decode upload response: %w", err)
 	}
 	return &result, nil
+}
+
+// ReplaceObjectMetadata replaces all metadata of an object (PUT) and returns the object.
+func (c *Client) ReplaceObjectMetadata(ctx context.Context, collection, id string, metadata map[string]string) (*Object, error) {
+	return c.sendMetadata(ctx, "PUT", collection, id, metadata)
+}
+
+// MergeObjectMetadata changes some metadata of an object (PATCH): the keys of changes are set, those whose
+// value is nil are removed, and the others stay. It returns the object.
+func (c *Client) MergeObjectMetadata(ctx context.Context, collection, id string, changes map[string]*string) (*Object, error) {
+	return c.sendMetadata(ctx, "PATCH", collection, id, changes)
+}
+
+func (c *Client) sendMetadata(ctx context.Context, method, collection, id string, body any) (*Object, error) {
+	slog.Debug("sendMetadata", "method", method, "collection", collection, "id", id)
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	target := fmt.Sprintf("%s%s/collections/%s/objects/%s/metadata", c.baseURL, c.prefix, collection, id)
+	req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.setAuth(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("update metadata: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, httpError("update metadata", resp)
+	}
+	var obj Object
+	if err := json.NewDecoder(resp.Body).Decode(&obj); err != nil {
+		return nil, fmt.Errorf("decode object: %w", err)
+	}
+	return &obj, nil
 }
 
 // DeleteCollection deletes a collection by name.

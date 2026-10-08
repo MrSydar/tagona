@@ -2,6 +2,7 @@ package query_test
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,17 +11,24 @@ import (
 	"mrsydar/tagona/storage/internal/dbtest"
 	"mrsydar/tagona/storage/internal/models"
 	"mrsydar/tagona/storage/internal/query"
+	"mrsydar/tagona/storage/pkg/client"
 )
 
-// fakeTagger counts calls and evaluates every requested tag as true.
-type fakeTagger struct{ calls atomic.Int32 }
-
-func (f *fakeTagger) GetSupportedTypes(ctx context.Context) ([]string, error) {
-	return []string{"txt"}, nil
+// fakeTagger counts calls and evaluates every requested tag as true. It runs version "grep": a request that
+// asks for another is refused, like the real engine does.
+type fakeTagger struct {
+	calls    atomic.Int32
+	lastSeen atomic.Value // the tagger version of the last request
 }
 
-func (f *fakeTagger) Tag(ctx context.Context, collection, objectID string, tags []string) (map[string]bool, error) {
+func (f *fakeTagger) Version(ctx context.Context) (string, error) { return "grep", nil }
+
+func (f *fakeTagger) Tag(ctx context.Context, collection, objectID, taggerVersion string, tags []string) (map[string]bool, error) {
 	f.calls.Add(1)
+	f.lastSeen.Store(taggerVersion)
+	if taggerVersion != "" && taggerVersion != "grep" {
+		return nil, &client.VersionMismatchError{Expected: taggerVersion, Running: "grep"}
+	}
 	out := make(map[string]bool, len(tags))
 	for _, tag := range tags {
 		out[tag] = true
@@ -41,7 +49,7 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	d, _ := dbtest.New(t)
 	ctx := context.Background()
-	coll, err := d.CreateCollection(ctx, "jobs", "txt")
+	coll, err := d.CreateCollection(ctx, "jobs", "grep")
 	if err != nil {
 		t.Fatalf("create collection: %v", err)
 	}
@@ -49,7 +57,7 @@ func newFixture(t *testing.T) *fixture {
 	f := &fixture{tagger: &fakeTagger{}, coll: coll}
 	f.runner = query.NewRunner(d, f.tagger)
 	for i, h := range []string{"a", "b", "c"} {
-		o, err := d.InsertObject(ctx, coll.ID, h, base.Add(-time.Duration(i)*time.Hour), 1, "txt", "key/"+h, nil)
+		o, err := d.InsertObject(ctx, coll.ID, h, base.Add(-time.Duration(i)*time.Hour), 1, "key/"+h, nil, nil)
 		if err != nil {
 			t.Fatalf("insert object: %v", err)
 		}
@@ -200,5 +208,35 @@ func TestEvaluateDefaultStillCallsTagger(t *testing.T) {
 				t.Errorf("after evaluation, known-only results = %v err %v", ids(resp.Objects), err)
 			}
 		})
+	}
+}
+
+// The tagger is asked for the version the collection is tagged with, and a tagger that runs another version
+// is not allowed to answer for it.
+func TestEvaluationUsesTheCollectionsTaggerVersion(t *testing.T) {
+	f := newFixture(t) // the collection is tagged with "grep", which is what the fake tagger runs
+	ctx := context.Background()
+
+	if _, err := f.runner.Query(ctx, f.coll, models.TagsQueryRequest{Tags: map[string]bool{"rust": true}, Limit: 10}); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if got := f.tagger.lastSeen.Load(); got != "grep" {
+		t.Fatalf("the tagger was asked for version %v", got)
+	}
+
+	other := *f.coll
+	other.TaggerVersion = "decisions/openai:m"
+	f.tagger.calls.Store(0)
+	_, err := f.runner.Query(ctx, &other, models.TagsQueryRequest{Tags: map[string]bool{"java": true}, Limit: 10}) // not known yet
+	var mismatch *client.VersionMismatchError
+	if !errors.As(err, &mismatch) || mismatch.Expected != "decisions/openai:m" {
+		t.Fatalf("err = %v", err)
+	}
+
+	// what is already known still answers, and nothing reaches the tagger
+	f.tagger.calls.Store(0)
+	resp, err := f.runner.Query(ctx, &other, models.TagsQueryRequest{Tags: map[string]bool{"golang": true}, Limit: 10, Evaluate: ptr(false)})
+	if err != nil || !same(ids(resp.Objects), f.ids[0:1]) || f.tagger.calls.Load() != 0 {
+		t.Fatalf("evaluate=false under a mismatch: %v, %v, %d tagger calls", ids(resp.Objects), err, f.tagger.calls.Load())
 	}
 }

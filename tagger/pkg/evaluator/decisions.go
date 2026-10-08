@@ -87,15 +87,15 @@ func newDecisions(label, prefix string, defaults HTTPDefaults, dialect decisions
 	}, nil
 }
 
-// Evaluate asks one question per tag. A tag the vendor does not answer is false. For now, only the
-// txt data type is supported.
-func (e *Decisions) Evaluate(ctx context.Context, dataType DataType, content []byte, tags []string) (map[string]bool, error) {
-	slog.Debug("Decisions.Evaluate", "label", e.label, "data_type", dataType, "tags_count", len(tags))
+// Evaluate asks one question per tag about the content, read as text. A tag the vendor does not answer is
+// false.
+func (e *Decisions) Evaluate(ctx context.Context, content []byte, tags []string) (map[string]bool, error) {
+	slog.Debug("Decisions.Evaluate", "label", e.label, "tags_count", len(tags))
 	result := make(map[string]bool, len(tags))
 	for _, tag := range tags {
 		result[tag] = false
 	}
-	if dataType != DataTypeTxt || len(tags) == 0 {
+	if len(tags) == 0 {
 		return result, nil
 	}
 
@@ -130,7 +130,5 @@ func (e *Decisions) Evaluate(ctx context.Context, dataType DataType, content []b
 	return result, nil
 }
 
-// GetSupportedDataTypes returns the data types supported by this evaluator.
-func (e *Decisions) GetSupportedDataTypes() []string {
-	return []string{string(DataTypeTxt)}
-}
+// Version is "<label>:<model>", e.g. "decisions/openai:gpt-6-luna".
+func (e *Decisions) Version() string { return versionOf(e.label, e.cfg.Model) }

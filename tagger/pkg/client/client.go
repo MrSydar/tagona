@@ -33,16 +33,25 @@ func New(baseURL string, timeout time.Duration) *Client {
 	}
 }
 
-// supportedTypesResponse matches the /supported-types response shape.
-type supportedTypesResponse struct {
-	Types []string `json:"types"`
+// versionResponse matches the /version response shape.
+type versionResponse struct {
+	Version string `json:"version"`
 }
 
 // tagRequest is the request body for /tag.
 type tagRequest struct {
-	Collection string   `json:"collection"`
-	ObjectID   string   `json:"object_id"`
-	Tags       []string `json:"tags"`
+	Collection    string   `json:"collection"`
+	ObjectID      string   `json:"object_id"`
+	TaggerVersion string   `json:"tagger_version"`
+	Tags          []string `json:"tags"`
+}
+
+// errorResponse is the shape of the engine's errors.
+type errorResponse struct {
+	Error struct {
+		Code    string            `json:"code"`
+		Details map[string]string `json:"details"`
+	} `json:"error"`
 }
 
 // tagResponse is the response body for /tag.
@@ -50,35 +59,39 @@ type tagResponse struct {
 	Tags map[string]bool `json:"tags"`
 }
 
-// GetSupportedTypes fetches supported data types from the tagging engine.
-func (c *Client) GetSupportedTypes(ctx context.Context) ([]string, error) {
-	slog.Debug("tagger client GetSupportedTypes")
-	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/supported-types", nil)
+// Version fetches the version of the tagging engine.
+func (c *Client) Version(ctx context.Context) (string, error) {
+	slog.Debug("tagger client Version")
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/version", nil)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch supported types: %w", err)
+		return "", fmt.Errorf("fetch version: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch supported types: status %d", resp.StatusCode)
+		return "", fmt.Errorf("fetch version: status %d", resp.StatusCode)
 	}
-	var result supportedTypesResponse
+	var result versionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode supported types: %w", err)
+		return "", fmt.Errorf("decode version: %w", err)
 	}
-	return result.Types, nil
+	if result.Version == "" {
+		return "", fmt.Errorf("the tagging engine reported no version")
+	}
+	return result.Version, nil
 }
 
 // Tag requests tag evaluation for an object with retries and exponential backoff.
-func (c *Client) Tag(ctx context.Context, collection, objectID string, tags []string) (map[string]bool, error) {
-	slog.Debug("tagger client Tag", "collection", collection, "object_id", objectID, "tags_count", len(tags))
+func (c *Client) Tag(ctx context.Context, collection, objectID, taggerVersion string, tags []string) (map[string]bool, error) {
+	slog.Debug("tagger client Tag", "collection", collection, "object_id", objectID, "tagger_version", taggerVersion, "tags_count", len(tags))
 	payload := tagRequest{
-		Collection: collection,
-		ObjectID:   objectID,
-		Tags:       tags,
+		Collection:    collection,
+		ObjectID:      objectID,
+		TaggerVersion: taggerVersion,
+		Tags:          tags,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -121,6 +134,15 @@ func (c *Client) Tag(ctx context.Context, collection, objectID string, tags []st
 			resp.Body.Close()
 			lastErr = fmt.Errorf("tag request server error: %d", resp.StatusCode)
 			continue
+		}
+		if resp.StatusCode == http.StatusConflict {
+			var e errorResponse
+			_ = json.NewDecoder(resp.Body).Decode(&e)
+			resp.Body.Close()
+			if e.Error.Code == "tagger_version_mismatch" {
+				return nil, &client.VersionMismatchError{Expected: e.Error.Details["expected"], Running: e.Error.Details["running"]}
+			}
+			return nil, fmt.Errorf("tag request unexpected status: %d", resp.StatusCode)
 		}
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()

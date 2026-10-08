@@ -51,6 +51,8 @@ func main() {
 		collectionTags(ctx, c, remaining[1:])
 	case "upload":
 		upload(ctx, c, remaining[1:])
+	case "metadata":
+		metadata(ctx, c, remaining[1:])
 	case "get":
 		get(ctx, c, remaining[1:])
 	case "data":
@@ -78,18 +80,26 @@ The API key is required for every request. Pass it with --token or the API_TOKEN
 env var; it is sent as "Authorization: Bearer <api-key>".
 
 commands:
-  list-collections   List all collections.
-  create-collection  --name <name> --data-type <type>
-                     Create a new collection with the given name and data type.
+  list-collections   [--limit <n>] [--cursor <cursor>]
+                     List collections, newest first. Without options every collection is listed;
+                     with --limit or --cursor one page is, and its "next" cursor fetches the following page.
+  create-collection  --name <name> [--tagger-version <version>]
+                     Create a new collection. Its tagger version names the tagger that tags it,
+                     "<implementation>" or "<implementation>:<model>"; it defaults to the version of
+                     the tagger that runs now.
   delete-collection  --collection <c>
                      Delete a collection and all its objects.
   collection-tags    --collection <c> [--prefix <p>] [--limit <n>] [--cursor <cursor>]
                      Show the total number of objects in a collection and the tags registered in it,
                      with how many objects each tag is true and false for.
                      Tags are ordered by name; pass the returned "next" cursor to fetch the next page.
-  upload             --collection <c> --data-type <type> --file <path> [--date <RFC3339>] [--ttl <seconds>]
+  upload             --collection <c> --file <path> [--date <RFC3339>] [--ttl <seconds>] [--metadata <json>]
                      Upload an object to a collection.
                      Use --file - to read from stdin.
+                     --metadata is a JSON object of string values, e.g. '{"name":"cute-dog.png"}'.
+  metadata           --collection <c> --id <id> --metadata <json> [--merge]
+                     Replace the metadata of an object. With --merge the keys of the JSON object are
+                     set and those whose value is null are removed; the other keys stay.
   get                --collection <c> --id <id>
                      Get object metadata.
   data               --collection <c> --id <id> [--out <path>]
@@ -148,13 +158,13 @@ func createCollection(ctx context.Context, c *client.Client, args []string) {
 	slog.Debug("createCollection called")
 	fs := flag.NewFlagSet("create-collection", flag.ExitOnError)
 	name := fs.String("name", "", "collection name")
-	dataType := fs.String("data-type", "", "data type")
+	taggerVersion := fs.String("tagger-version", "", "tagger version (default: the running tagger's)")
 	fs.Parse(args)
-	if *name == "" || *dataType == "" {
+	if *name == "" {
 		fs.Usage()
 		os.Exit(1)
 	}
-	coll, err := c.CreateCollection(ctx, *name, *dataType)
+	coll, err := c.CreateCollection(ctx, *name, *taggerVersion)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -164,6 +174,19 @@ func createCollection(ctx context.Context, c *client.Client, args []string) {
 
 func listCollections(ctx context.Context, c *client.Client, args []string) {
 	slog.Debug("listCollections called")
+	fs := flag.NewFlagSet("list-collections", flag.ExitOnError)
+	limit := fs.Int("limit", 0, "page size (server default if 0)")
+	cursor := fs.String("cursor", "", "pagination cursor from a previous response")
+	fs.Parse(args)
+	if *limit > 0 || *cursor != "" {
+		page, err := c.ListCollectionsPage(ctx, client.ListCollectionsOptions{Limit: *limit, Cursor: *cursor})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		printJSON(page)
+		return
+	}
 	colls, err := c.ListCollections(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -216,12 +239,12 @@ func upload(ctx context.Context, c *client.Client, args []string) {
 	slog.Debug("upload called")
 	fs := flag.NewFlagSet("upload", flag.ExitOnError)
 	collection := fs.String("collection", "", "collection name")
-	dataType := fs.String("data-type", "", "data type")
 	file := fs.String("file", "", "file to upload (use - for stdin)")
 	dateStr := fs.String("date", "", "object date (RFC3339)")
 	ttl := fs.Int("ttl", 0, "TTL in seconds")
+	metadataJSON := fs.String("metadata", "", `metadata, a JSON object of string values, e.g. {"name":"cute-dog.png"}`)
 	fs.Parse(args)
-	if *collection == "" || *dataType == "" || *file == "" {
+	if *collection == "" || *file == "" {
 		fs.Usage()
 		os.Exit(1)
 	}
@@ -244,12 +267,51 @@ func upload(ctx context.Context, c *client.Client, args []string) {
 			os.Exit(1)
 		}
 	}
-	resp, err := c.UploadObject(ctx, *collection, *dataType, data, t, *ttl)
+	var meta map[string]string
+	if *metadataJSON != "" {
+		if err := json.Unmarshal([]byte(*metadataJSON), &meta); err != nil {
+			fmt.Fprintf(os.Stderr, "error parsing metadata: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	resp, err := c.UploadObjectWithOptions(ctx, *collection, data, client.UploadOptions{Date: t, TTLSeconds: *ttl, Metadata: meta})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 	printJSON(resp)
+}
+
+func metadata(ctx context.Context, c *client.Client, args []string) {
+	slog.Debug("metadata called")
+	fs := flag.NewFlagSet("metadata", flag.ExitOnError)
+	collection := fs.String("collection", "", "collection name")
+	id := fs.String("id", "", "object id")
+	metadataJSON := fs.String("metadata", "", "a JSON object")
+	merge := fs.Bool("merge", false, "set the given keys and remove those whose value is null, keeping the others")
+	fs.Parse(args)
+	if *collection == "" || *id == "" || *metadataJSON == "" {
+		fs.Usage()
+		os.Exit(1)
+	}
+	var obj *client.Object
+	var err error
+	if *merge {
+		var changes map[string]*string
+		if err = json.Unmarshal([]byte(*metadataJSON), &changes); err == nil {
+			obj, err = c.MergeObjectMetadata(ctx, *collection, *id, changes)
+		}
+	} else {
+		var meta map[string]string
+		if err = json.Unmarshal([]byte(*metadataJSON), &meta); err == nil {
+			obj, err = c.ReplaceObjectMetadata(ctx, *collection, *id, meta)
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	printJSON(obj)
 }
 
 func get(ctx context.Context, c *client.Client, args []string) {

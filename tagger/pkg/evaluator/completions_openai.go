@@ -49,18 +49,10 @@ func newCompletionsOpenAI(cfg HTTPConfig, systemPrompt string) *CompletionsOpenA
 	return &CompletionsOpenAI{cfg: cfg, systemPrompt: systemPrompt, client: &http.Client{Timeout: cfg.Timeout}}
 }
 
-// Evaluate evaluates tags for the given content using an LLM.
-// For now, only txt data type is supported.
-func (e *CompletionsOpenAI) Evaluate(ctx context.Context, dataType DataType, content []byte, tags []string) (map[string]bool, error) {
-	slog.Debug("CompletionsOpenAI.Evaluate", "data_type", dataType, "tags_count", len(tags))
+// Evaluate evaluates tags for the given content using an LLM, which reads it as text.
+func (e *CompletionsOpenAI) Evaluate(ctx context.Context, content []byte, tags []string) (map[string]bool, error) {
+	slog.Debug("CompletionsOpenAI.Evaluate", "tags_count", len(tags))
 	result := make(map[string]bool, len(tags))
-	if dataType != DataTypeTxt {
-		slog.Debug("non-txt data type, returning false for all tags")
-		for _, tag := range tags {
-			result[tag] = false
-		}
-		return result, nil
-	}
 	if len(tags) == 0 {
 		slog.Debug("no tags provided, returning empty result")
 		return result, nil
@@ -186,8 +178,5 @@ populate:
 	return result, nil
 }
 
-// GetSupportedDataTypes returns the data types supported by this evaluator.
-func (e *CompletionsOpenAI) GetSupportedDataTypes() []string {
-	slog.Debug("CompletionsOpenAI.GetSupportedDataTypes called")
-	return []string{string(DataTypeTxt)}
-}
+// Version is "completions/openai:<model>".
+func (e *CompletionsOpenAI) Version() string { return versionOf("completions/openai", e.cfg.Model) }
