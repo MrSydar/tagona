@@ -32,7 +32,7 @@ anything is published under a release tag.
 All four services are released **together under one version** that follows [Semantic Versioning](https://semver.org/).
 
 They are tightly coupled (the tagger imports the storage client, storage and the tagger share an HTTP
-contract, the API and storage share the internal key endpoints, and storage owns the migrations), so
+contract, the API and keystorage share the key-validation endpoint, and storage owns the migrations), so
 independently versioned images would need a compatibility matrix nobody maintains. The cost is
 rebuilding an image whose code did not change, which is cheap.
 
@@ -56,7 +56,7 @@ flowchart LR
 | Job | What it does |
 |-----|--------------|
 | `verify` | Checks the version is valid semver, that the tagged commit is on `main`, and (for a stable release) that `CHANGELOG.md` has a `## [X.Y.Z]` section. |
-| `build` | One job per service (api, storage, tagger). Builds for `linux/amd64` and `linux/arm64` and pushes **only** `:sha-<commit>`, with a provenance attestation and an SBOM. |
+| `build` | One job per service (api, keystorage, storage, tagger). Builds for `linux/amd64` and `linux/arm64` and pushes **only** `:sha-<commit>`, with a provenance attestation and an SBOM. |
 | `e2e` | Starts the compose stack from those pushed images (`docker compose up --no-build --wait`) and runs the end-to-end tests. |
 | `promote` | Waits for approval on the `release` environment. Then, per service, adds the release tags to the tested image **without rebuilding** and signs it with cosign (keyless). |
 | `release` | Creates the GitHub Release with the changelog notes, the image digests, and run/verify instructions. |
@@ -94,7 +94,7 @@ GHCR creates a package as **private** on its first push. After the first release
 
 ### 4. Make the new CI jobs required
 
-The `main` ruleset requires specific check names. Add `docker-build (api)`, `docker-build (storage)`,
+The `main` ruleset requires specific check names. Add `docker-build (api)`, `docker-build (keystorage)`, `docker-build (storage)`,
 `docker-build (tagger)` and `release-scripts` once they exist on `main` (Settings → Rules → the `main` ruleset → Require status checks).
 
 ## Cutting a release
@@ -185,7 +185,7 @@ These run on every pull request, so a release should never be the first time som
 
 | Check | What it guards |
 |-------|----------------|
-| `docker-build (api/storage/tagger)` | Builds each image exactly as the release does (one platform, no push) and checks that it runs as non-root and carries the repository label. |
+| `docker-build (api/keystorage/storage/tagger)` | Builds each image exactly as the release does (one platform, no push) and checks that it runs as non-root and carries the repository label. |
 | `release-scripts` | Runs `.github/scripts/test-release-scripts.sh`: version parsing, floating tags, pre-releases, the changelog check, the "tag must be on main" check, and release-notes extraction. |
 
 ## Security of the pipeline

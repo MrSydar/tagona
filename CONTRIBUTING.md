@@ -15,13 +15,13 @@ Thank you for your interest in contributing! This document explains the workflow
 ```bash
 git clone git@github.com:MrSydar/tagona.git
 cd tagona
-make all                 # builds bin/api, bin/storage, bin/tagger, bin/tagona
+make all                 # builds bin/api, bin/keystorage, bin/storage, bin/tagger, bin/tagona
 ```
 
 ### Running the Stack
 
 ```bash
-make docker-up           # starts Postgres, Garage, tagger, storage, api, Prometheus, Grafana
+make docker-up           # starts Postgres, Garage, tagger, storage, keystorage, api, Prometheus, Grafana
 # wait ~15s for healthchecks
 make e2e                 # runs end-to-end tests
 make docker-down         # tears everything down
@@ -38,6 +38,7 @@ This is a **Go workspace monorepo** (`go.work` at the root).
 | Directory | Module | Description |
 |-----------|--------|-------------|
 | `api/` | `mrsydar/tagona/api` | Public API gateway: auth, strict request validation, rebuilds requests for storage and keystorage |
+| `keystorage/` | `mrsydar/tagona/keystorage` | API key service: stores keys (hashed), validates them and manages them, under its own database role |
 | `storage/` | `mrsydar/tagona/storage` | Internal data service, DB migrations, S3 client, Go client (`pkg/client`) and CLI |
 | `tagger/` | `mrsydar/tagona/tagger` | Tag-evaluation engine |
 | `e2e/` | standalone module | End-to-end tests (run with `GOWORK=off`) |
