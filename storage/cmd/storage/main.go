@@ -85,8 +85,8 @@ func main() {
 
 	slog.Debug("creating server")
 	database := db.New(pool)
-	instrumentedTagClient := client.NewInstrumentedTagger(tagClient)
-	srv := server.NewServer(cfg, database, store, instrumentedTagClient)
+	limitedTagClient := client.NewLimitedTagger(client.NewInstrumentedTagger(tagClient), cfg.TagEngineMaxConcurrency)
+	srv := server.NewServer(cfg, database, store, limitedTagClient)
 
 	// Retention sweeper.
 	slog.Debug("starting retention sweeper")

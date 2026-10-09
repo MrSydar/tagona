@@ -56,6 +56,8 @@ API keys are not stored here: the [keystorage](../keystorage/README.md) service 
 | `TAGONA_S3_FORCE_PATH_STYLE` | No | `true` | Use path-style S3 URLs |
 | `TAGONA_TAG_ENGINE_URL` | Yes | — | Tagging engine base URL |
 | `TAGONA_TAG_ENGINE_TIMEOUT` | No | `30s` | Tagging engine HTTP request timeout |
+| `TAGONA_QUERY_CONCURRENCY` | No | `4` | Objects one query has the tagging engine evaluate at once; `1` evaluates one after the other |
+| `TAGONA_TAG_ENGINE_MAX_CONCURRENCY` | No | `16` | Tagger calls in flight in the whole service, across all queries |
 | `TAGONA_DEFAULT_LIMIT` | No | `5` | Default query limit |
 | `TAGONA_MAX_LIMIT` | No | `100` | Hard cap on query limit |
 | `TAGONA_DEFAULT_TTL` | No | `0` | Default TTL in seconds or duration string (`0` = none) |

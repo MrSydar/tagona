@@ -10,46 +10,52 @@ import (
 
 // Config holds the application configuration.
 type Config struct {
-	HTTPAddr               string
-	PGDSN                  string
-	S3Endpoint             string
-	S3Region               string
-	S3Bucket               string
-	S3AccessKey            string
-	S3SecretKey            string
-	S3ForcePathStyle       bool
-	TagEngineURL           string
-	TagEngineTimeout       time.Duration
-	DefaultLimit           int
-	MaxLimit               int
-	DefaultTTL             time.Duration
-	MaxTagsPerQuery        int
-	MaxObjectSizeBytes     int64
-	RetentionSweepInterval time.Duration
-	RetentionBatchSize     int
+	HTTPAddr         string
+	PGDSN            string
+	S3Endpoint       string
+	S3Region         string
+	S3Bucket         string
+	S3AccessKey      string
+	S3SecretKey      string
+	S3ForcePathStyle bool
+	TagEngineURL     string
+	TagEngineTimeout time.Duration
+	// QueryConcurrency is how many objects one query has the tagger evaluate at once; TagEngineMaxConcurrency
+	// bounds the calls to the tagger in flight in the whole service.
+	QueryConcurrency        int
+	TagEngineMaxConcurrency int
+	DefaultLimit            int
+	MaxLimit                int
+	DefaultTTL              time.Duration
+	MaxTagsPerQuery         int
+	MaxObjectSizeBytes      int64
+	RetentionSweepInterval  time.Duration
+	RetentionBatchSize      int
 }
 
 // Load loads configuration from environment variables with defaults.
 func Load(prefix string) (*Config, error) {
 	slog.Debug("Load", "prefix", prefix)
 	cfg := &Config{
-		HTTPAddr:               envOrDefault(prefix+"HTTP_ADDR", ":8082"),
-		PGDSN:                  os.Getenv(prefix + "PG_DSN"),
-		S3Endpoint:             os.Getenv(prefix + "S3_ENDPOINT"),
-		S3Region:               envOrDefault(prefix+"S3_REGION", "us-east-1"),
-		S3Bucket:               os.Getenv(prefix + "S3_BUCKET"),
-		S3AccessKey:            os.Getenv(prefix + "S3_ACCESS_KEY"),
-		S3SecretKey:            os.Getenv(prefix + "S3_SECRET_KEY"),
-		S3ForcePathStyle:       true,
-		TagEngineURL:           os.Getenv(prefix + "TAG_ENGINE_URL"),
-		TagEngineTimeout:       30 * time.Second,
-		DefaultLimit:           5,
-		MaxLimit:               100,
-		DefaultTTL:             0,
-		MaxTagsPerQuery:        100,
-		MaxObjectSizeBytes:     10 * 1024 * 1024,
-		RetentionSweepInterval: 60 * time.Second,
-		RetentionBatchSize:     100,
+		HTTPAddr:                envOrDefault(prefix+"HTTP_ADDR", ":8082"),
+		PGDSN:                   os.Getenv(prefix + "PG_DSN"),
+		S3Endpoint:              os.Getenv(prefix + "S3_ENDPOINT"),
+		S3Region:                envOrDefault(prefix+"S3_REGION", "us-east-1"),
+		S3Bucket:                os.Getenv(prefix + "S3_BUCKET"),
+		S3AccessKey:             os.Getenv(prefix + "S3_ACCESS_KEY"),
+		S3SecretKey:             os.Getenv(prefix + "S3_SECRET_KEY"),
+		S3ForcePathStyle:        true,
+		TagEngineURL:            os.Getenv(prefix + "TAG_ENGINE_URL"),
+		TagEngineTimeout:        30 * time.Second,
+		QueryConcurrency:        4,
+		TagEngineMaxConcurrency: 16,
+		DefaultLimit:            5,
+		MaxLimit:                100,
+		DefaultTTL:              0,
+		MaxTagsPerQuery:         100,
+		MaxObjectSizeBytes:      10 * 1024 * 1024,
+		RetentionSweepInterval:  60 * time.Second,
+		RetentionBatchSize:      100,
 	}
 
 	if v := os.Getenv(prefix + "S3_FORCE_PATH_STYLE"); v != "" {
@@ -126,6 +132,19 @@ func Load(prefix string) (*Config, error) {
 			return nil, fmt.Errorf("invalid RETENTION_BATCH_SIZE %q: must be a positive integer", v)
 		}
 		cfg.RetentionBatchSize = n
+	}
+
+	for _, setting := range []struct {
+		name string
+		dst  *int
+	}{{"QUERY_CONCURRENCY", &cfg.QueryConcurrency}, {"TAG_ENGINE_MAX_CONCURRENCY", &cfg.TagEngineMaxConcurrency}} {
+		if v := os.Getenv(prefix + setting.name); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 1 {
+				return nil, fmt.Errorf("invalid %s %q: must be a positive integer", setting.name, v)
+			}
+			*setting.dst = n
+		}
 	}
 
 	slog.Debug("Load: config loaded", "HTTPAddr", cfg.HTTPAddr, "S3Bucket", cfg.S3Bucket, "TagEngineURL", cfg.TagEngineURL)

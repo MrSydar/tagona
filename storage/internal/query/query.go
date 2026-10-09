@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"mrsydar/tagona/storage/internal/cursor"
@@ -14,14 +15,16 @@ import (
 
 // Runner executes tag queries.
 type Runner struct {
-	db     *db.DB
-	client client.Tagger
+	db          *db.DB
+	client      client.Tagger
+	concurrency int
 }
 
-// NewRunner creates a new query runner.
-func NewRunner(database *db.DB, client client.Tagger) *Runner {
-	slog.Debug("NewRunner: created")
-	return &Runner{db: database, client: client}
+// NewRunner creates a new query runner. concurrency is how many objects a query has the tagger evaluate at
+// once (1: one after the other).
+func NewRunner(database *db.DB, client client.Tagger, concurrency int) *Runner {
+	slog.Debug("NewRunner: created", "concurrency", concurrency)
+	return &Runner{db: database, client: client, concurrency: max(1, concurrency)}
 }
 
 // Query executes a tag query.
@@ -55,7 +58,21 @@ func (r *Runner) Query(ctx context.Context, collection *models.Collection, req m
 		return buildResponse(objs, req.Limit)
 	}
 
+	// The tagger is asked about several objects at once: evaluations run ahead of the scan, at most
+	// r.concurrency of them in flight, while the answers are taken strictly in the order of the scan. So the
+	// results, the early stop at limit+1 matches and the cursors are what a sequential scan gives; only the
+	// waiting overlaps. Objects after the last match that were already started may be evaluated for nothing
+	// (fewer than r.concurrency of them); what finishes is stored all the same.
+	ctx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	defer func() {
+		cancel() // whatever is still in flight is not needed
+		wg.Wait()
+	}()
+
 	results := make([]models.Object, 0, targetLimit)
+	// The scan cursor is the last object that is fully dealt with: a partial answer (a timeout) resumes
+	// after it, so an object that was being evaluated is looked at again, not skipped.
 	scanCursorDate := cursorDate
 	scanCursorID := cursorID
 
@@ -72,19 +89,19 @@ func (r *Runner) Query(ctx context.Context, collection *models.Collection, req m
 			}
 			return nil, fmt.Errorf("query timeout: %w", err)
 		}
-		candidates, err := r.db.ScanCandidateObjects(ctx, collection.ID, req.Date, scanCursorDate, scanCursorID, batchSize)
+		objects, err := r.db.ScanCandidateObjects(ctx, collection.ID, req.Date, scanCursorDate, scanCursorID, batchSize)
 		if err != nil {
 			if req.BestEffort && ctx.Err() != nil {
 				return buildPartialResponse(results, req.Limit, scanCursorDate, scanCursorID)
 			}
 			return nil, fmt.Errorf("scan candidates: %w", err)
 		}
-		if len(candidates) == 0 {
+		if len(objects) == 0 {
 			break
 		}
 
-		candidateIDs := make([]string, len(candidates))
-		for i, c := range candidates {
+		candidateIDs := make([]string, len(objects))
+		for i, c := range objects {
 			candidateIDs[i] = c.ID
 		}
 		knownTags, err := r.db.GetKnownTagsForObjects(ctx, candidateIDs)
@@ -95,7 +112,31 @@ func (r *Runner) Query(ctx context.Context, collection *models.Collection, req m
 			return nil, fmt.Errorf("get known tags: %w", err)
 		}
 
-		for _, cand := range candidates {
+		items := make([]*candidate, len(objects))
+		for i, obj := range objects {
+			items[i] = plan(obj, knownTags[obj.ID], req.Tags)
+		}
+
+		next, inflight := 0, 0 // the first item not started, and the started ones that are not taken yet
+		start := func() {
+			for next < len(items) && inflight < r.concurrency {
+				it := items[next]
+				next++
+				if it.missing == nil {
+					continue
+				}
+				inflight++
+				it.done = make(chan struct{})
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					defer close(it.done)
+					r.evaluate(ctx, collection, it)
+				}()
+			}
+		}
+
+		for _, it := range items {
 			if len(results) >= targetLimit {
 				break
 			}
@@ -105,72 +146,97 @@ func (r *Runner) Query(ctx context.Context, collection *models.Collection, req m
 				}
 				return nil, fmt.Errorf("query timeout: %w", err)
 			}
-			objKnown := knownTags[cand.ID]
-			contradicts := false
-			for tag, wanted := range req.Tags {
-				if val, has := objKnown[tag]; has && val != wanted {
-					contradicts = true
-					break
+			start()
+			if it.done != nil {
+				select {
+				case <-it.done:
+					inflight--
+				case <-ctx.Done():
+					if req.BestEffort {
+						return buildPartialResponse(results, req.Limit, scanCursorDate, scanCursorID)
+					}
+					return nil, fmt.Errorf("query timeout: %w", ctx.Err())
 				}
-			}
-
-			scanCursorDate = cand.Date
-			scanCursorID = cand.ID
-
-			if contradicts {
-				continue
-			}
-
-			var missing []string
-			for tag := range req.Tags {
-				if _, has := objKnown[tag]; !has {
-					missing = append(missing, tag)
-				}
-			}
-			if len(missing) > 0 {
-				// Call tagging engine.
-				resp, err := r.client.Tag(ctx, collection.Name, cand.ID, collection.TaggerVersion, missing)
-				if err != nil {
+				if it.err != nil {
 					if req.BestEffort && ctx.Err() != nil {
 						return buildPartialResponse(results, req.Limit, scanCursorDate, scanCursorID)
 					}
-					return nil, fmt.Errorf("tag engine error: %w", err)
+					return nil, it.err
 				}
-				if err := r.db.UpsertTags(ctx, collection.ID, cand.ID, resp); err != nil {
-					if req.BestEffort && ctx.Err() != nil {
-						return buildPartialResponse(results, req.Limit, scanCursorDate, scanCursorID)
-					}
-					return nil, fmt.Errorf("persist tags: %w", err)
+				if it.known == nil {
+					it.known = map[string]bool{}
 				}
-				if objKnown == nil {
-					objKnown = map[string]bool{}
-				}
-				for k, v := range resp {
-					objKnown[k] = v
+				for k, v := range it.tags {
+					it.known[k] = v
 				}
 			}
 
-			matches := true
-			for tag, wanted := range req.Tags {
-				val, has := objKnown[tag]
-				if !has {
-					matches = false
-					break
-				}
-				if val != wanted {
-					matches = false
-					break
-				}
-			}
-			if !matches {
+			scanCursorDate = it.obj.Date
+			scanCursorID = it.obj.ID
+			if it.skip || !matchesAll(it.known, req.Tags) {
 				continue
 			}
-			cand.Tags = req.Tags
-			results = append(results, cand)
+			it.obj.Tags = req.Tags
+			results = append(results, it.obj)
 		}
 	}
 
 	return buildResponse(results, req.Limit)
+}
+
+// candidate is an object of the scan and what is known about it for the query.
+type candidate struct {
+	obj     models.Object
+	known   map[string]bool
+	skip    bool     // a known tag contradicts the query: it cannot match
+	missing []string // tags to evaluate; nil when there is nothing to ask the tagger
+	// Set when an evaluation was started: done is closed when it has finished, tags and err are its outcome.
+	done chan struct{}
+	tags map[string]bool
+	err  error
+}
+
+// plan decides what a query needs to do for an object, from the tags already known for it.
+func plan(obj models.Object, known map[string]bool, wanted map[string]bool) *candidate {
+	c := &candidate{obj: obj, known: known}
+	for tag, want := range wanted {
+		have, ok := known[tag]
+		switch {
+		case !ok:
+			c.missing = append(c.missing, tag)
+		case have != want:
+			c.skip = true
+		}
+	}
+	if c.skip {
+		c.missing = nil
+	}
+	return c
+}
+
+// matchesAll reports whether every wanted tag is known with the value wanted.
+func matchesAll(known, wanted map[string]bool) bool {
+	for tag, want := range wanted {
+		if have, ok := known[tag]; !ok || have != want {
+			return false
+		}
+	}
+	return true
+}
+
+// evaluate asks the tagger for the missing tags of one object and stores the answer, so that it is kept even
+// when the query no longer needs it.
+func (r *Runner) evaluate(ctx context.Context, collection *models.Collection, c *candidate) {
+	resp, err := r.client.Tag(ctx, collection.Name, c.obj.ID, collection.TaggerVersion, c.missing)
+	if err != nil {
+		c.err = fmt.Errorf("tag engine error: %w", err)
+		return
+	}
+	if err := r.db.UpsertTags(ctx, collection.ID, c.obj.ID, resp); err != nil {
+		c.err = fmt.Errorf("persist tags: %w", err)
+		return
+	}
+	c.tags = resp
 }
 
 // queryKnown returns objects for which every requested tag is already known

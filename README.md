@@ -219,6 +219,8 @@ Every service is configured with environment variables. In Docker Compose they a
 | `TAGONA_TAG_ENGINE_URL` | required | URL of the tagger. Storage exits on startup if it cannot reach it. |
 | `TAGONA_TAG_ENGINE_TIMEOUT` | `30s` | Timeout of a single tagger request. |
 | `TAGONA_DEFAULT_LIMIT` / `TAGONA_MAX_LIMIT` | `5` / `100` | Default and maximum query page size. |
+| `TAGONA_QUERY_CONCURRENCY` | `4` | How many objects one query has the tagger evaluate at once (`1`: one after the other). The answer is the same as a sequential scan; a few objects after the last match may be evaluated for nothing, and their tags are kept. |
+| `TAGONA_TAG_ENGINE_MAX_CONCURRENCY` | `16` | The most tagger calls in flight in the whole storage service, so that many queries together cannot overwhelm the tagger or the LLM vendor behind it. Also exported as the `storage_tagger_inflight` metric. |
 | `TAGONA_MAX_TAGS_PER_QUERY` | `100` | Maximum tags in one query. |
 | `TAGONA_MAX_OBJECT_SIZE_BYTES` | `10485760` | Maximum object size (10 MiB). |
 | `TAGONA_DEFAULT_TTL` | `0` | Default object lifetime (seconds or a duration); `0` keeps objects forever. |
