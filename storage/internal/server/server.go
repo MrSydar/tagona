@@ -50,7 +50,7 @@ func NewServer(cfg *config.Config, database *db.DB, store *storage.S3Store, tagC
 		db:          database,
 		store:       store,
 		tagClient:   tagClient,
-		queryRunner: query.NewRunner(database, tagClient),
+		queryRunner: query.NewRunner(database, tagClient, cfg.QueryConcurrency),
 	}
 }
 

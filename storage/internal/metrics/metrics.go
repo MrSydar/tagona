@@ -31,6 +31,12 @@ var (
 	}, []string{"method"})
 )
 
+// TaggerInFlight is the number of tagger calls in progress.
+var TaggerInFlight = promauto.NewGauge(prometheus.GaugeOpts{
+	Name: "storage_tagger_inflight",
+	Help: "Number of tagger client calls in progress",
+})
+
 // RecordTaggerLatency records the duration of a tagger client call.
 func RecordTaggerLatency(method string, start time.Time) {
 	TaggerLatency.WithLabelValues(method).Observe(time.Since(start).Seconds())
