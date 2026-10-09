@@ -216,7 +216,7 @@ Every service is configured with environment variables. In Docker Compose they a
 | `TAGONA_S3_ENDPOINT`, `TAGONA_S3_BUCKET` | required | S3-compatible endpoint and bucket. |
 | `TAGONA_S3_ACCESS_KEY` / `TAGONA_S3_SECRET_KEY` | required | S3 credentials. |
 | `TAGONA_S3_REGION` / `TAGONA_S3_FORCE_PATH_STYLE` | `us-east-1` / `true` | S3 region and path-style addressing. |
-| `TAGONA_TAG_ENGINE_URL` | required | URL of the tagger. Storage exits on startup if it cannot reach it. |
+| `TAGONA_TAG_ENGINE_URL` | required | URL of the tagger (or of a tagger router). Storage does not call it at startup; it asks it for its version when a collection is created without a `tagger_version`, and when a query or a tags request has to evaluate tags. |
 | `TAGONA_TAG_ENGINE_TIMEOUT` | `30s` | Timeout of a single tagger request. |
 | `TAGONA_DEFAULT_LIMIT` / `TAGONA_MAX_LIMIT` | `5` / `100` | Default and maximum query page size. |
 | `TAGONA_QUERY_CONCURRENCY` | `4` | How many objects one query has the tagger evaluate at once (`1`: one after the other). The answer is the same as a sequential scan; a few objects after the last match may be evaluated for nothing, and their tags are kept. |
@@ -279,8 +279,9 @@ tagona/
 │   ├── pkg/client/         public Go client and the Tagger interface
 │   ├── internal/           db, query runner, config, validation, S3 store, retention
 │   └── migrations/         SQL migrations, applied on startup (idempotent)
-├── tagger/               Tag evaluation service
+├── tagger/               Tag evaluation service (also the tagger router: routes to other taggers)
 │   ├── cmd/tagger/         entry point
+│   ├── internal/           HTTP handlers, the router implementation, metrics
 │   ├── pkg/evaluator/      evaluators: grep, false, completions/openai, decisions/openai, decisions/vercel (implement your own here)
 │   └── pkg/client/         HTTP client that implements storage's Tagger interface
 ├── e2e/                  End-to-end tests against the running stack (separate Go module)
@@ -344,7 +345,7 @@ sequenceDiagram
     S-->>C: matching objects and a next cursor
 ```
 
-With `evaluate=false` the loop is skipped: the query reads known tags only and the tagger is never called.
+The loop keeps up to `TAGONA_QUERY_CONCURRENCY` evaluations in flight at once and takes their answers in order, so the result is the one a sequential scan would give. With `evaluate=false` the loop is skipped: the query reads known tags only and the tagger is never called.
 
 **Design notes**
 

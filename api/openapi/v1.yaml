@@ -6,10 +6,11 @@ info:
     Storage for collections of objects with sparse boolean tags that are evaluated on demand.
 
     **Contract version.** This document describes the `/v1` API. `info.version` is the
-    semantic version of this contract: backwards-compatible additions bump the minor
-    version, breaking changes will ship as `/v2` with its own document.
+    semantic version of this contract: additions bump the minor version. While Tagona is a draft, a
+    breaking change is announced in the changelog and also bumps the minor version; once it is stable,
+    breaking changes will ship as `/v2` with its own document.
 
-    **Authentication.** Every `/v1/collections...` request needs `Authorization: Bearer <api key>`.
+    **Authentication.** Every `/v1/collections...` and `/v1/taggers` request needs `Authorization: Bearer <api key>`.
     Keys are minted with the admin endpoints, which use HTTP Basic auth.
     The documentation endpoints (`/v1/docs`, `/v1/openapi.json`, `/v1/openapi.yaml`) are public.
 

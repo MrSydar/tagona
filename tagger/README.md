@@ -11,7 +11,7 @@ A standalone HTTP service that evaluates boolean tags for objects stored in the 
 - Report the versions it serves
 - Receive tag evaluation requests for specific objects
 - Refuse requests for a version it does not serve
-- Fetch the object payload from the storage service (dogfooding public APIs)
+- Fetch the object payload from the storage service (its internal API)
 - Evaluate tags against the payload
 - Return tag results synchronously
 
@@ -62,7 +62,7 @@ curl -X POST http://localhost:8081/tag \
 **Behavior**
 
 1. Compares `tagger_version` (the version the object's collection is tagged with) with its own: another version is refused with `409` `tagger_version_mismatch` (`details`: `expected`, `running`), because its answer must not be stored as that collection's
-2. Fetches object payload: `GET /v1/collections/{collection}/objects/{id}/data`
+2. Fetches the object payload from storage: `GET /collections/{collection}/objects/{id}/data` (storage's internal API, which has no `/v1` prefix)
 3. Evaluates tags against the payload
 4. Returns only the requested tags
 
@@ -152,7 +152,7 @@ TAGGER_COMPLETIONS_OPENAI_PARAMS='{"temperature":null,"max_completion_tokens":64
 |---------|----------|---------|-------------|
 | `TAGGER_HTTP_ADDR` | No | `:8081` | HTTP listen address |
 | `TAGGER_STORAGE_BASE_URL` | Yes | `http://localhost:8082` | Base URL of the storage service to fetch objects from |
-| `TAGGER_EVALUATOR_IMPL` | No | `grep` | Evaluator to use: `grep`, `false`, `completions/openai`, `decisions/openai` or `decisions/vercel` |
+| `TAGGER_EVALUATOR_IMPL` | No | `grep` | Evaluator to use: `grep`, `false`, `completions/openai`, `decisions/openai`, `decisions/vercel`, or `router` (routes to other taggers, see [Router](#router-several-taggers-in-one-deployment)) |
 | `TAGGER_VERSION` | No | the evaluator's own | The version the tagger reports and accepts, 1-128 bytes of text; see [Version](#version) |
 | `TAGGER_ROUTER_URLS` | With `router` | — | Base URLs of the taggers the router routes to, comma separated; see [Router](#router-several-taggers-in-one-deployment) |
 | `TAGGER_ROUTER_CACHE_TTL` | No | `5s` | How long the router remembers the versions its taggers serve (`0`: ask every time) |
@@ -197,12 +197,14 @@ The `pkg/client` package implements `storage/pkg/client.Tagger` — the interfac
 
 ```
 tagger/
-├── cmd/tagger/            # main entry point
+├── cmd/tagger/            # main entry point (runs a tagger, or the router)
 ├── internal/
-│   └── server/
-│       └── server.go        # HTTP handlers + tag evaluation logic
-└── pkg/client/              # public Go client (implements storage/client.Tagger)
-    └── client.go
+│   ├── server/            # HTTP handlers of a tagger: /version and /tag
+│   ├── router/            # the router implementation: routes to other taggers
+│   └── metrics/           # Prometheus metrics and the HTTP middleware
+└── pkg/
+    ├── evaluator/         # the evaluators and the version helpers
+    └── client/            # Go client (implements storage/client.Tagger)
 ```
 
 This service intentionally stays minimal. It has no database, no object storage client, and no caching (MVP). All state is fetched from the storage service on every request.
@@ -212,5 +214,5 @@ This service intentionally stays minimal. It has no database, no object storage 
 ## Design Decisions
 
 - **No caching (MVP)**: tag results are not cached. The storage service persists evaluated tags.
-- **Public API only**: the tagging engine uses the same public HTTP APIs as any external client. No internal/private endpoints are used.
+- **Storage API only**: the tagging engine reads objects through the storage service's HTTP API (the internal one, without the `/v1` prefix) and has no database or object-store access of its own.
 - **No interpretation of payload semantics**: the storage service stores bytes and does not understand them. The tagging engine is the only component that interprets content, and a collection records which tagger version it is tagged with.

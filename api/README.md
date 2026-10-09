@@ -15,7 +15,7 @@ This is the future home for cross-cutting concerns such as RBAC. Authentication 
 - `GET /metrics` — Prometheus metrics (`api_requests_total`, `api_errors_total`, unauthenticated)
 - `/v1/collections...` — the storage routes listed under [Public API](#public-api), each served by its own handler. Every request must carry `Authorization: Bearer <api key>`; the key is validated against the keystorage service first. The handler then checks the request: only the query parameters the endpoint defines are accepted, each at most once (`400 invalid_parameter`); JSON bodies are decoded strictly, with no unknown fields and nothing after the object (`400 invalid_json`); routes that take no body refuse one (`400 unexpected_body`); collection names, UUIDs, cursors, timestamps, numbers and booleans are checked for form and normalized. A new request is then built for the storage service (which has no `/v1` prefix): no client header is copied, uploads are streamed under a fixed `Content-Type` and the size cap, and only `Content-Type` and `Content-Length` are returned from the answer. Limits that are configured in storage (maximum page size, maximum tags per query) are enforced there
 - a short validation cache sits between the key check and the handlers (see Configuration); the storage and keystorage calls, the key client and the readiness probe share one pooled HTTP transport
-- request hardening: paths with dot segments, empty segments, backslashes, NUL bytes or encoded slashes are rejected with `400 invalid_path`; bodies above `API_MAX_BODY_BYTES` (uploads), 256 KiB (JSON) or 4 KiB (key management) get `413 payload_too_large`; no inbound header, cookie or forwarding header is ever passed to an internal service
+- request hardening: paths with dot segments, empty segments, backslashes, NUL bytes or encoded slashes are rejected with `400 invalid_path`; bodies above `API_MAX_BODY_BYTES` (uploads), 256 KiB (JSON), 16 KiB (metadata) or 4 KiB (key management) get `413 payload_too_large`; no inbound header, cookie or forwarding header is ever passed to an internal service
 - `GET /v1/docs` — interactive API documentation (Swagger UI), `GET /v1/openapi.json` / `GET /v1/openapi.yaml` — the OpenAPI 3 description of the `/v1` contract (all unauthenticated; see [API documentation](#api-documentation))
 - `/v1/admin/api-keys` — key management (create/list/delete), three handlers that validate the request and make a new one to the keystorage service (`/api-keys`, `/api-keys/{id}`). Only the `Authorization` header is passed on, and the admin credentials are checked by keystorage, not here; bodies over 4 KiB get `413`, and a key id that is not a UUID gets `404`. Keystorage's key validation endpoint is never reachable through the gateway
 - any other path — `404` with the standard error shape `{"error":{"code":"not_found","message":"not found"}}`; a listed path with the wrong method — `405 method_not_allowed`
@@ -34,7 +34,7 @@ They are public and unversioned-by-content: the document lives **under the versi
 
 The UI loads Swagger UI from jsDelivr at a pinned version with Subresource Integrity hashes, so the browser needs internet access to render it (the JSON/YAML documents do not). To upgrade the UI, see the comment in `cmd/api/docs.go`.
 
-**Keeping the spec honest:** `openapi/v1.yaml` is written by hand. A test (`TestOpenAPIMatchesRoutes`) fails when a route is added to or removed from the gateway without updating the spec, another checks that every `$ref` resolves, and CI lints the document with Redocly. Validate locally with `npx @redocly/cli lint api/openapi/v1.yaml`.
+**Keeping the spec honest:** `openapi/v1.yaml` is written by hand. A test (`TestOpenAPIMatchesRoutes`) fails when a route is added to or removed from the gateway without updating the spec, another checks that every `$ref` resolves, two more check that the query parameters and the query body fields the spec lists are exactly the ones the gateway accepts, and CI lints the document with Redocly. Validate locally with `npx @redocly/cli lint api/openapi/v1.yaml`.
 
 ---
 
@@ -87,7 +87,8 @@ Response `201 Created` — the raw key is shown only once, here:
   "id": "8f1a...",
   "name": "dev",
   "key": "tagona_3f9c...64 hex chars...",
-  "created_at": "2026-09-28T10:00:00Z"
+  "created_at": "2026-09-28T10:00:00Z",
+  "expires_at": null
 }
 ```
 
@@ -102,8 +103,9 @@ Response `200 OK`:
 ```json
 {
   "keys": [
-    {"id":"8f1a...","name":"dev","key_prefix":"tagona_3f9c1","created_at":"2026-09-28T10:00:00Z"}
-  ]
+    {"id":"8f1a...","name":"dev","key_prefix":"tagona_3f9c1","created_at":"2026-09-28T10:00:00Z","expires_at":null}
+  ],
+  "next": "..."
 }
 ```
 
@@ -193,7 +195,7 @@ Response `201 Created`:
 {"id":"...","name":"jobs","tagger_version":"decisions/openai:zai-org/GLM-5.3-Flash","created_at":"2026-06-13T12:00:00Z"}
 ```
 
-Errors: `400` `invalid_name`, `invalid_tagger_version`, `invalid_json`; `409 already_exists`; `502 tag_engine_error` when `tagger_version` was left out and the running tagger's version could not be determined.
+Errors: `400` `invalid_name`, `invalid_tagger_version`, `invalid_json`, and `tagger_version_required` (the tagging engine serves several versions and none was given; `details.available` lists them); `409 already_exists`; `502 tag_engine_error` when `tagger_version` was left out and the running tagger's version could not be determined.
 
 **List Collections**
 
@@ -334,7 +336,7 @@ curl -X POST http://localhost:8080/v1/collections/jobs/objects/query \
 curl "http://localhost:8080/v1/collections/jobs/objects/{id}/tags?tags=golang,qa"
 ```
 
-If any requested tag is missing, the storage service invokes the tagging engine before responding. Without `tags`, only the tags already known for the object are returned.
+If any requested tag is missing, the storage service invokes the tagging engine before responding (`409 tagger_version_mismatch` when the engine does not serve the collection's tagger version). Without `tags`, only the tags already known for the object are returned.
 
 Query parameter `evaluate` (default `true`): with `evaluate=false` the tagging engine is not called. Requested tags that are known come back as `true`/`false`; requested tags that have not been evaluated yet come back as `null`:
 
