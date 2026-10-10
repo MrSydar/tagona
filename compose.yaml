@@ -104,6 +104,10 @@ services:
       TAGONA_HTTP_ADDR: ":8082"
       TAGONA_PG_DSN: "postgres://tagona_storage:${TAGONA_STORAGE_DB_PASSWORD:-tagona_storage}@postgres:5432/tagona?sslmode=disable"
       TAGONA_S3_ENDPOINT: "http://garage:3900"
+      # the S3 address clients download payloads from (storage signs short-lived URLs for it); with an
+      # external object store, its own public address
+      TAGONA_S3_PUBLIC_ENDPOINT: "${TAGONA_S3_PUBLIC_ENDPOINT:-http://localhost:3900}"
+      TAGONA_DATA_URL_TTL: "${TAGONA_DATA_URL_TTL:-60s}"
       TAGONA_S3_REGION: "us-east-1"
       TAGONA_S3_BUCKET: "tagona"
       TAGONA_S3_ACCESS_KEY: "tagonadev"

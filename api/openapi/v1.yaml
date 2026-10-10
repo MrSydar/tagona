@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Tagona API
-  version: 1.6.0
+  version: 1.7.0
   description: |
     Storage for collections of objects with sparse boolean tags that are evaluated on demand.
 
@@ -440,14 +440,23 @@ paths:
       tags: [Objects]
       operationId: getObjectData
       summary: Download an object's payload
+      description: >-
+        Redirects (`307`) to a short-lived, signed URL of the object store, which serves the raw payload
+        (`application/octet-stream`) and supports `Range` requests; the payload does not pass through Tagona.
+        Follow the redirect without sending the API key on to the object store: the URL itself is the
+        credential, valid for `TAGONA_DATA_URL_TTL` (60 seconds by default, and never beyond the object's
+        expiry), and for this one payload and the GET method only. Do not cache or share it; ask again when
+        it has expired. The object store must be reachable by the client and allow its origin (CORS) for
+        downloads from a browser.
       responses:
-        "200":
-          description: The raw payload
-          content:
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
+        "307":
+          description: Where to download the payload from.
+          headers:
+            Location:
+              description: The signed URL.
+              schema: { type: string, format: uri }
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "401": { $ref: "#/components/responses/Unauthorized" }

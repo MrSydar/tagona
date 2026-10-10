@@ -36,7 +36,8 @@ This API is internal and has no version prefix: the api gateway maps each public
 | `GET` | `/collections/{collection}/objects/{id}` | Get the object and its metadata |
 | `PUT` | `/collections/{collection}/objects/{id}/metadata` | Replace the metadata |
 | `PATCH` | `/collections/{collection}/objects/{id}/metadata` | Change some metadata (`null` removes a key) |
-| `GET` | `/collections/{collection}/objects/{id}/data` | Download payload |
+| `GET` | `/collections/{collection}/objects/{id}/data` | Redirect (`307`) to a short-lived signed URL of the object store |
+| `GET` | `/collections/{collection}/objects/{id}/content` | Stream the payload (internal: the tagger reads objects this way; the api does not route it) |
 | `GET` | `/collections/{collection}/objects/{id}/tags` | Get tags |
 | `POST` | `/collections/{collection}/objects/query` | Query by tags |
 | `DELETE` | `/collections/{collection}/objects/{id}` | Hard delete |
@@ -52,6 +53,8 @@ API keys are not stored here: the [keystorage](../keystorage/README.md) service 
 | `TAGONA_HTTP_ADDR` | No | `:8082` | HTTP listen address |
 | `TAGONA_PG_DSN` | Yes | — | Postgres DSN |
 | `TAGONA_S3_ENDPOINT` | Yes | — | S3 endpoint URL |
+| `TAGONA_S3_PUBLIC_ENDPOINT` | No | `TAGONA_S3_ENDPOINT` | S3 address clients can reach; download URLs are signed for it |
+| `TAGONA_DATA_URL_TTL` | No | `60s` | How long a download URL is valid (1s to 7 days; also capped by the object's expiry) |
 | `TAGONA_S3_REGION` | No | `us-east-1` | S3 region |
 | `TAGONA_S3_BUCKET` | Yes | — | S3 bucket name |
 | `TAGONA_S3_ACCESS_KEY` | Yes | — | S3 access key |

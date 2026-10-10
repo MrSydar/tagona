@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -19,10 +20,15 @@ import (
 type S3Store struct {
 	client *s3.Client
 	bucket string
+	// presigner signs the URLs clients download from. It is built for the endpoint clients can reach
+	// (which may differ from the one this service uses), because the host is part of the signature.
+	presigner *s3.PresignClient
 }
 
 // NewS3Store creates a new S3 store.
-func NewS3Store(endpoint, region, bucket, accessKey, secretKey string, forcePathStyle bool) (*S3Store, error) {
+//
+// publicEndpoint is the S3 address clients use to download payloads; it defaults to endpoint.
+func NewS3Store(endpoint, publicEndpoint, region, bucket, accessKey, secretKey string, forcePathStyle bool) (*S3Store, error) {
 	slog.Debug("NewS3Store", "bucket", bucket, "region", region, "endpoint", endpoint)
 	cfg, err := config.LoadDefaultConfig(context.Background(),
 		config.WithRegion(region),
@@ -32,16 +38,40 @@ func NewS3Store(endpoint, region, bucket, accessKey, secretKey string, forcePath
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
 
-	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		if endpoint != "" {
-			// Use custom endpoint for local/S3-compatible storage
-			o.BaseEndpoint = aws.String(endpoint)
-			// For local Garage, we need path style
-			o.UsePathStyle = forcePathStyle
-		}
-	})
+	newClient := func(endpoint string) *s3.Client {
+		return s3.NewFromConfig(cfg, func(o *s3.Options) {
+			if endpoint != "" {
+				// Use custom endpoint for local/S3-compatible storage
+				o.BaseEndpoint = aws.String(endpoint)
+				// For local Garage, we need path style
+				o.UsePathStyle = forcePathStyle
+			}
+		})
+	}
+	if publicEndpoint == "" {
+		publicEndpoint = endpoint
+	}
 
-	return &S3Store{client: client, bucket: bucket}, nil
+	return &S3Store{
+		client:    newClient(endpoint),
+		bucket:    bucket,
+		presigner: s3.NewPresignClient(newClient(publicEndpoint)),
+	}, nil
+}
+
+// PresignGet returns a URL from which the payload stored under key can be downloaded without credentials
+// until it expires after ttl, and the time it expires. Signing is local: the payload is not touched.
+func (s *S3Store) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, time.Time, error) {
+	slog.Debug("S3Store.PresignGet", "key", key, "ttl", ttl)
+	expires := time.Now().Add(ttl)
+	req, err := s.presigner.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	}, s3.WithPresignExpires(ttl))
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("presign s3 get object: %w", err)
+	}
+	return req.URL, expires, nil
 }
 
 // Upload stores payload in S3.

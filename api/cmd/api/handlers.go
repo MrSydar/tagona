@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -186,7 +189,7 @@ func (g *gateway) putObject(w http.ResponseWriter, r *http.Request) {
 	g.forward(w, r, g.storage, ur, nil)
 }
 
-func (g *gateway) objectRequest(w http.ResponseWriter, r *http.Request, method, suffix string) {
+func (g *gateway) objectRequest(w http.ResponseWriter, r *http.Request, method, suffix string, onResponse ...func(*http.Response)) {
 	coll, e := collectionParam(r)
 	var id string
 	if e == nil {
@@ -199,14 +202,37 @@ func (g *gateway) objectRequest(w http.ResponseWriter, r *http.Request, method, 
 		reject(w, e)
 		return
 	}
-	g.forward(w, r, g.storage, upstreamRequest{method: method, path: "/collections/" + coll + "/objects/" + id + suffix}, nil)
+	var on func(*http.Response)
+	if len(onResponse) > 0 {
+		on = onResponse[0]
+	}
+	g.forward(w, r, g.storage, upstreamRequest{method: method, path: "/collections/" + coll + "/objects/" + id + suffix}, on)
 }
 
 func (g *gateway) getObject(w http.ResponseWriter, r *http.Request) {
 	g.objectRequest(w, r, http.MethodGet, "")
 }
+
+// getObjectData answers with a redirect to a short-lived URL of the object store, which storage signs: the
+// payload does not pass through the services. The redirect is the only case where storage's Location header
+// reaches a client, and only if it is an http(s) URL.
 func (g *gateway) getObjectData(w http.ResponseWriter, r *http.Request) {
-	g.objectRequest(w, r, http.MethodGet, "/data")
+	g.objectRequest(w, r, http.MethodGet, "/data", func(resp *http.Response) {
+		if resp.StatusCode != http.StatusTemporaryRedirect {
+			return
+		}
+		loc, err := url.Parse(resp.Header.Get("Location"))
+		if err != nil || (loc.Scheme != "http" && loc.Scheme != "https") || loc.Host == "" {
+			slog.Error("storage sent an unusable download URL", "error", err)
+			resp.StatusCode, resp.Body = http.StatusBadGateway, io.NopCloser(strings.NewReader(
+				`{"error":{"code":"bad_gateway","message":"storage service not available"}}`))
+			resp.ContentLength = -1
+			resp.Header = http.Header{"Content-Type": {"application/json"}}
+			return
+		}
+		w.Header().Set("Location", loc.String())
+		w.Header().Set("Cache-Control", "no-store") // the URL is a credential until it expires
+	})
 }
 func (g *gateway) deleteObject(w http.ResponseWriter, r *http.Request) {
 	g.objectRequest(w, r, http.MethodDelete, "")

@@ -536,3 +536,56 @@ func TestUploadPayloadIsRelayedUntouched(t *testing.T) {
 		t.Fatalf("payload changed in transit (%d bytes in, %d out)", len(payload), len(got))
 	}
 }
+
+// The payload is not relayed: storage's redirect to a signed object-store URL is, with no caching, and
+// the gateway does not follow it.
+func TestDataIsARedirectToTheObjectStore(t *testing.T) {
+	const signed = "https://s3.example.com/tagona/key?X-Amz-Signature=abc&X-Amz-Expires=60"
+	var answer func(w http.ResponseWriter)
+	backend, seen := newReplyingStorage(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/data") {
+			answer(w)
+			return
+		}
+		w.Header().Set("Location", signed) // any other route may not set it
+		w.Write([]byte(`{}`))
+	})
+	router := newGatewayRouter(t, backend.URL, gatewayConfig{})
+	get := func() *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, call{method: "GET", target: "/v1/collections/jobs/objects/" + objID + "/data"}.request())
+		return w
+	}
+
+	answer = func(w http.ResponseWriter) {
+		w.Header().Set("Location", signed)
+		w.Header().Set("Cache-Control", "private, max-age=600")
+		w.Header().Set("Set-Cookie", "internal=1")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}
+	w := get()
+	if w.Code != http.StatusTemporaryRedirect || w.Header().Get("Location") != signed {
+		t.Fatalf("status %d, Location %q", w.Code, w.Header().Get("Location"))
+	}
+	if w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Set-Cookie") != "" {
+		t.Errorf("headers = %v", w.Header())
+	}
+	if n := len(seen()); n != 1 {
+		t.Errorf("storage was called %d times: the redirect must not be followed", n)
+	}
+
+	for _, bad := range []string{"", "/relative", "file:///etc/passwd", "javascript:alert(1)", "http://"} {
+		answer = func(w http.ResponseWriter) {
+			w.Header().Set("Location", bad)
+			w.WriteHeader(http.StatusTemporaryRedirect)
+		}
+		if w := get(); w.Code != http.StatusBadGateway || w.Header().Get("Location") != "" {
+			t.Errorf("Location %q: status %d, Location %q", bad, w.Code, w.Header().Get("Location"))
+		}
+	}
+
+	answer = func(w http.ResponseWriter) { writeError(w, http.StatusNotFound, "not_found", "object not found") }
+	if w := get(); w.Code != http.StatusNotFound || w.Header().Get("Location") != "" {
+		t.Errorf("not found: %d", w.Code)
+	}
+}

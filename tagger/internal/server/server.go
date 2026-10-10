@@ -109,7 +109,7 @@ func (s *Server) tag(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch object data.
-	data, err := s.storage.GetObjectData(r.Context(), req.Collection, req.ObjectID)
+	data, err := s.storage.GetObjectContent(r.Context(), req.Collection, req.ObjectID)
 	if err != nil {
 		slog.Error("tagger: fetch data failed", "error", err)
 		http.Error(w, `{"error":{"code":"storage_error","message":"failed to fetch data"}}`, http.StatusBadGateway)

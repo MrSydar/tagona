@@ -3,6 +3,7 @@ package e2e_test
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -163,7 +164,7 @@ func TestCollectionTaggerVersion(t *testing.T) {
 func TestObjectMetadata(t *testing.T) {
 	key := newKey(t).Key
 	coll := fmt.Sprintf("e2e-meta-%d", time.Now().UnixNano()%1_000_000_000)
-	status, body := createCollectionWith(t, key, fmt.Sprintf(`{"name":"%s"}`, coll))
+	status, body := createCollectionWith(t, key, fmt.Sprintf(`{"name":"%s","tagger_version":"grep"}`, coll))
 	require.Equal(t, http.StatusCreated, status, string(body))
 	objects := "/v1/collections/" + coll + "/objects"
 
@@ -294,4 +295,69 @@ func TestTaggersAreListed(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, status)
 	status, _ = do(t, http.MethodGet, "/v1/taggers", "", nil)
 	assert.Equal(t, http.StatusUnauthorized, status)
+}
+
+// noRedirects shows a redirect instead of following it.
+var noRedirects = &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
+}}
+
+func TestObjectDataIsDownloadedFromTheObjectStore(t *testing.T) {
+	key := newKey(t).Key
+	coll := fmt.Sprintf("e2e-data-%d", time.Now().UnixNano()%1_000_000_000)
+	status, body := createCollectionWith(t, key, fmt.Sprintf(`{"name":"%s","tagger_version":"grep"}`, coll))
+	require.Equal(t, http.StatusCreated, status, string(body))
+	obj := uploadObject(t, key, coll, []byte("0123456789abcdef"))
+
+	req, err := http.NewRequest(http.MethodGet, storageURL+"/v1/collections/"+coll+"/objects/"+obj.ID+"/data", nil)
+	require.NoError(t, err)
+	setBearer(req, key)
+	resp, err := noRedirects.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
+	assert.Equal(t, "no-store", resp.Header.Get("Cache-Control"))
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	require.NoError(t, err)
+	assert.NotEqual(t, req.URL.Host, loc.Host, "the payload comes from the object store, not the api")
+	assert.NotEmpty(t, loc.Query().Get("X-Amz-Signature"))
+	assert.Equal(t, "60", loc.Query().Get("X-Amz-Expires"))
+
+	// the URL is the credential: no API key is sent, and a part of the payload can be asked for
+	get, err := http.NewRequest(http.MethodGet, loc.String(), nil)
+	require.NoError(t, err)
+	get.Header.Set("Range", "bytes=2-5")
+	dl, err := httpClient.Do(get)
+	require.NoError(t, err)
+	defer dl.Body.Close()
+	got, _ := io.ReadAll(dl.Body)
+	assert.Equal(t, http.StatusPartialContent, dl.StatusCode, string(got))
+	assert.Equal(t, "2345", string(got))
+
+	// a client that follows redirects gets the payload from the one request
+	status, got = do(t, http.MethodGet, "/v1/collections/"+coll+"/objects/"+obj.ID+"/data", "", asKey(key))
+	assert.Equal(t, http.StatusOK, status)
+	assert.Equal(t, "0123456789abcdef", string(got))
+
+	// a URL is good for the one payload it was signed for
+	other := strings.Replace(loc.String(), loc.Path, loc.Path+"x", 1)
+	bad, err := httpClient.Get(other)
+	require.NoError(t, err)
+	bad.Body.Close()
+	assert.Equal(t, http.StatusForbidden, bad.StatusCode, "a changed path invalidates the signature")
+
+	// a missing or foreign object is not given a URL
+	for _, target := range []string{
+		"/v1/collections/" + coll + "/objects/00000000-0000-4000-8000-000000000000/data",
+		"/v1/collections/other-" + coll + "/objects/" + obj.ID + "/data",
+	} {
+		r, err := http.NewRequest(http.MethodGet, storageURL+target, nil)
+		require.NoError(t, err)
+		setBearer(r, key)
+		resp, err := noRedirects.Do(r)
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode, target)
+		assert.Empty(t, resp.Header.Get("Location"), target)
+	}
 }

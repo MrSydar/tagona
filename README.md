@@ -214,6 +214,7 @@ Every service is configured with environment variables. In Docker Compose they a
 | `TAGONA_HTTP_ADDR` | `:8082` | Listen address. |
 | `TAGONA_PG_DSN` | required | Postgres connection string. |
 | `TAGONA_S3_ENDPOINT`, `TAGONA_S3_BUCKET` | required | S3-compatible endpoint and bucket. |
+| `TAGONA_S3_PUBLIC_ENDPOINT` / `TAGONA_DATA_URL_TTL` | `TAGONA_S3_ENDPOINT` / `60s` | The S3 address clients download payloads from (`GET …/data` redirects there, to a signed URL valid for the TTL), so it must be reachable by them and allow their origin (CORS) for browsers. |
 | `TAGONA_S3_ACCESS_KEY` / `TAGONA_S3_SECRET_KEY` | required | S3 credentials. |
 | `TAGONA_S3_REGION` / `TAGONA_S3_FORCE_PATH_STYLE` | `us-east-1` / `true` | S3 region and path-style addressing. |
 | `TAGONA_TAG_ENGINE_URL` | required | URL of the tagger (or of a tagger router). Storage does not call it at startup; it asks it for its version when a collection is created without a `tagger_version`, and when a query or a tags request has to evaluate tags. |

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`GET /v1/collections/{collection}/objects/{id}/data` redirects to the object store.** Instead of streaming the payload, the api answers `307` with a signed, short-lived URL of the S3 store in `Location` (and `Cache-Control: no-store`); the payload no longer passes through the api and storage, and the store answers `Range` requests. The URL is valid for `TAGONA_DATA_URL_TTL` (60s by default, never beyond the object's expiry), for that payload and GET only. **Behaviour change:** clients must follow redirects, without sending the API key to the store, and the store must be reachable by clients (`TAGONA_S3_PUBLIC_ENDPOINT`, defaulting to `TAGONA_S3_ENDPOINT`) and allow their origin (CORS) for browsers. Tagging still reads payloads through storage.
+
 ### Added
 
 - **Queries evaluate tags in parallel.** A query that has to evaluate tags used to ask the tagger about one object after the other. It now keeps up to `TAGONA_QUERY_CONCURRENCY` (default 4; `1` is the old behaviour) evaluations in flight and takes the answers in the order of the scan, so the results, the early stop at `limit + 1` matches and the `next` cursors are the same as before; at most that many minus one objects after the last match may be evaluated for nothing, and finished evaluations are stored anyway. `TAGONA_TAG_ENGINE_MAX_CONCURRENCY` (default 16, metric `storage_tagger_inflight`) bounds the tagger calls in the whole service. A `best_effort` query that times out now returns a cursor after the last object that was fully dealt with: the object being evaluated at that moment is looked at again on the next page instead of being skipped.
