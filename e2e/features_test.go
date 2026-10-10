@@ -402,3 +402,92 @@ func TestObjectDataDownloadUsesTheStoredTypeAndName(t *testing.T) {
 	assert.Equal(t, "application/octet-stream", none.Header.Get("Content-Type"))
 	assert.Empty(t, none.Header.Get("Content-Disposition"))
 }
+
+func TestForcedTags(t *testing.T) {
+	key := newKey(t).Key
+	coll := fmt.Sprintf("e2e-force-%d", time.Now().UnixNano()%1_000_000_000)
+	status, body := createCollectionWith(t, key, fmt.Sprintf(`{"name":"%s","tagger_version":"grep"}`, coll))
+	require.Equal(t, http.StatusCreated, status, string(body))
+	objects := "/v1/collections/" + coll + "/objects"
+
+	tagsOf := func(id string) map[string]*bool {
+		status, body := do(t, http.MethodGet, objects+"/"+id+"/tags", "", asKey(key))
+		require.Equal(t, http.StatusOK, status, string(body))
+		var out struct {
+			Tags map[string]*bool `json:"tags"`
+		}
+		require.NoError(t, json.Unmarshal(body, &out))
+		return out.Tags
+	}
+	yes, no := true, false
+
+	// forced on upload: stored, and visible without any evaluation
+	status, body = do(t, http.MethodPost, objects+"?tags="+url.QueryEscape(`{"forced-yes":true,"forced-no":false}`), "hello world", asKey(key))
+	require.Equal(t, http.StatusCreated, status, string(body))
+	var obj objMeta
+	require.NoError(t, json.Unmarshal(body, &obj))
+	assert.Equal(t, map[string]*bool{"forced-yes": &yes, "forced-no": &no}, tagsOf(obj.ID))
+
+	// a query uses a forced value instead of evaluating: grep would say "forced-yes" is not in the text
+	status, body = do(t, http.MethodPost, objects+"/query", `{"tags":{"forced-yes":true,"forced-no":false}}`, asKey(key))
+	require.Equal(t, http.StatusOK, status, string(body))
+	assert.Contains(t, string(body), obj.ID)
+
+	// the same bytes again: the existing object is returned and tags are ignored
+	status, _ = do(t, http.MethodPost, objects+"?tags="+url.QueryEscape(`{"other":true}`), "hello world", asKey(key))
+	assert.Equal(t, http.StatusOK, status)
+	assert.NotContains(t, tagsOf(obj.ID), "other")
+
+	// PATCH: add, flip and delete in one call
+	status, body = do(t, http.MethodPatch, objects+"/"+obj.ID+"/tags", `{"forced-yes":false,"hello":true,"forced-no":null}`, asKey(key))
+	require.Equal(t, http.StatusOK, status, string(body))
+	var patched struct {
+		ID   string           `json:"id"`
+		Tags map[string]*bool `json:"tags"`
+	}
+	require.NoError(t, json.Unmarshal(body, &patched))
+	assert.Equal(t, obj.ID, patched.ID)
+	assert.Equal(t, map[string]*bool{"forced-yes": &no, "hello": &yes}, patched.Tags)
+
+	// the collection's counters follow
+	status, body = do(t, http.MethodGet, "/v1/collections/"+coll+"/tags", "", asKey(key))
+	require.Equal(t, http.StatusOK, status, string(body))
+	var stats struct {
+		Tags []struct {
+			Tag        string `json:"tag"`
+			TrueCount  int    `json:"true_count"`
+			FalseCount int    `json:"false_count"`
+		} `json:"tags"`
+	}
+	require.NoError(t, json.Unmarshal(body, &stats))
+	got := map[string][2]int{}
+	for _, s := range stats.Tags {
+		got[s.Tag] = [2]int{s.TrueCount, s.FalseCount}
+	}
+	assert.Equal(t, [2]int{0, 1}, got["forced-yes"])
+	assert.Equal(t, [2]int{1, 0}, got["hello"])
+	assert.Equal(t, [2]int{0, 0}, got["forced-no"], "a deleted tag stays registered")
+
+	// a deleted tag is unknown, so asking for it evaluates it (grep: "world" is in the text)
+	status, body = do(t, http.MethodPatch, objects+"/"+obj.ID+"/tags", `{"world":null}`, asKey(key))
+	require.Equal(t, http.StatusOK, status, string(body))
+	status, body = do(t, http.MethodGet, objects+"/"+obj.ID+"/tags?tags=world", "", asKey(key))
+	require.Equal(t, http.StatusOK, status, string(body))
+	assert.JSONEq(t, `{"id":"`+obj.ID+`","tags":{"world":true}}`, string(body))
+
+	// refused
+	for name, c := range map[string]struct{ method, target, body, code string }{
+		"upload, not json":      {http.MethodPost, objects + "?tags=nope", "x", "invalid_tags"},
+		"upload, not booleans":  {http.MethodPost, objects + "?tags=" + url.QueryEscape(`{"a":"yes"}`), "x", "invalid_tags"},
+		"patch, not booleans":   {http.MethodPatch, objects + "/" + obj.ID + "/tags", `{"a":"yes"}`, "invalid_json"},
+		"patch, empty tag name": {http.MethodPatch, objects + "/" + obj.ID + "/tags", `{"":true}`, "invalid_tags"},
+	} {
+		status, body := do(t, c.method, c.target, c.body, asKey(key))
+		assert.Equal(t, http.StatusBadRequest, status, name+": "+string(body))
+		assert.Contains(t, string(body), c.code, name)
+	}
+	status, _ = do(t, http.MethodPatch, objects+"/00000000-0000-0000-0000-000000000000/tags", `{"a":true}`, asKey(key))
+	assert.Equal(t, http.StatusNotFound, status)
+	status, _ = do(t, http.MethodPatch, objects+"/"+obj.ID+"/tags", `{"a":true}`, nil)
+	assert.Equal(t, http.StatusUnauthorized, status)
+}

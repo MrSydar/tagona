@@ -239,3 +239,32 @@ func optionalMetadata(params map[string]string) (string, *requestError) {
 	out, _ := json.Marshal(m)
 	return string(out), nil
 }
+
+// optionalTags validates the tags parameter of an upload, a JSON object whose values are true or false, and
+// returns it re-encoded, like optionalMetadata. The limits on the tags are storage's.
+func optionalTags(params map[string]string) (string, *requestError) {
+	raw, ok := params["tags"]
+	if !ok || raw == "" {
+		return "", nil
+	}
+	if len(raw) > maxMetadataBytes {
+		return "", badRequest("invalid_tags", "tags is too large")
+	}
+	var in map[string]*bool // pointers, so that a null is told from false
+	dec := json.NewDecoder(strings.NewReader(raw))
+	if err := dec.Decode(&in); err != nil || in == nil {
+		return "", badRequest("invalid_tags", "tags must be a JSON object whose values are true or false")
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return "", badRequest("invalid_tags", "tags has data after the JSON object")
+	}
+	out := make(map[string]bool, len(in))
+	for tag, v := range in {
+		if v == nil {
+			return "", badRequest("invalid_tags", "tags must be a JSON object whose values are true or false")
+		}
+		out[tag] = *v
+	}
+	enc, _ := json.Marshal(out)
+	return string(enc), nil
+}

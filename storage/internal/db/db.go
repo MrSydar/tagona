@@ -327,7 +327,7 @@ func (d *DB) GetTagsForObject(ctx context.Context, objectID string) (map[string]
 	return tags, rows.Err()
 }
 
-// UpsertTags inserts or updates tags for an object.
+// UpsertTags sets tags of an object, overwriting a value that is already stored: the tags are forced.
 //
 // The collection_tags counters are row-locked by triggers, so every writer
 // follows one lock order to stay deadlock-free: the object row first (which is
@@ -335,8 +335,24 @@ func (d *DB) GetTagsForObject(ctx context.Context, objectID string) (map[string]
 // order, then the collection row. Deadlocks that still occur (two writers
 // racing to create the same brand-new counter) are retried.
 func (d *DB) UpsertTags(ctx context.Context, collectionID, objectID string, tags map[string]bool) error {
-	slog.Debug("UpsertTags", "collectionID", collectionID, "objectID", objectID, "tagCount", len(tags))
-	if len(tags) == 0 {
+	return d.ChangeTags(ctx, collectionID, objectID, tags, nil)
+}
+
+// FillTags stores tags an evaluator has answered, without touching a tag that already has a value: a tag forced
+// while the evaluator was working keeps its forced value.
+func (d *DB) FillTags(ctx context.Context, collectionID, objectID string, tags map[string]bool) error {
+	return d.writeTags(ctx, collectionID, objectID, tags, nil, false)
+}
+
+// ChangeTags forces tags of an object in one transaction: set overwrites or adds the given values, and remove
+// deletes the named tags (they are unknown again, and a later query evaluates them). A tag in both is set.
+func (d *DB) ChangeTags(ctx context.Context, collectionID, objectID string, set map[string]bool, remove []string) error {
+	return d.writeTags(ctx, collectionID, objectID, set, remove, true)
+}
+
+func (d *DB) writeTags(ctx context.Context, collectionID, objectID string, tags map[string]bool, remove []string, overwrite bool) error {
+	slog.Debug("writeTags", "collectionID", collectionID, "objectID", objectID, "tagCount", len(tags), "removeCount", len(remove), "overwrite", overwrite)
+	if len(tags) == 0 && len(remove) == 0 {
 		return nil
 	}
 	names := make([]string, 0, len(tags))
@@ -347,6 +363,13 @@ func (d *DB) UpsertTags(ctx context.Context, collectionID, objectID string, tags
 	values := make([]bool, len(names))
 	for i, tag := range names {
 		values[i] = tags[tag]
+	}
+	// counters to lock: every tag this call can touch
+	touched := append(append([]string{}, names...), remove...)
+	sort.Strings(touched)
+	onConflict := `ON CONFLICT (object_id, tag) DO NOTHING`
+	if overwrite {
+		onConflict = `ON CONFLICT (object_id, tag) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`
 	}
 
 	return retryOnDeadlock(ctx, func() error {
@@ -359,7 +382,7 @@ func (d *DB) UpsertTags(ctx context.Context, collectionID, objectID string, tags
 		var one int
 		if err := tx.QueryRow(ctx, `SELECT 1 FROM objects WHERE id = $1 FOR KEY SHARE`, objectID).Scan(&one); err != nil {
 			if err == pgx.ErrNoRows {
-				return fmt.Errorf("upsert tags: object not found: %w", err)
+				return fmt.Errorf("upsert tags: %w", ErrObjectNotFound)
 			}
 			return fmt.Errorf("lock object: %w", err)
 		}
@@ -371,20 +394,28 @@ func (d *DB) UpsertTags(ctx context.Context, collectionID, objectID string, tags
 			`SELECT 1 FROM collection_tags
 			 WHERE collection_id = $1 AND tag = ANY($2::text[])
 			 ORDER BY tag FOR UPDATE`,
-			collectionID, names,
+			collectionID, touched,
 		); err != nil {
 			return fmt.Errorf("lock tag counters: %w", err)
 		}
-		_, err = tx.Exec(ctx,
-			`INSERT INTO object_tags (object_id, collection_id, tag, value, updated_at)
-			 SELECT $1, $2, t.tag, t.value, NOW()
-			 FROM unnest($3::text[], $4::boolean[]) AS t(tag, value)
-			 ORDER BY t.tag
-			 ON CONFLICT (object_id, tag) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-			objectID, collectionID, names, values,
-		)
-		if err != nil {
-			return fmt.Errorf("upsert tags: %w", err)
+		if len(names) > 0 {
+			if _, err = tx.Exec(ctx,
+				`INSERT INTO object_tags (object_id, collection_id, tag, value, updated_at)
+				 SELECT $1, $2, t.tag, t.value, NOW()
+				 FROM unnest($3::text[], $4::boolean[]) AS t(tag, value)
+				 ORDER BY t.tag `+onConflict,
+				objectID, collectionID, names, values,
+			); err != nil {
+				return fmt.Errorf("upsert tags: %w", err)
+			}
+		}
+		if len(remove) > 0 {
+			if _, err = tx.Exec(ctx,
+				`DELETE FROM object_tags WHERE object_id = $1 AND tag = ANY($2::text[]) AND NOT tag = ANY($3::text[])`,
+				objectID, remove, names,
+			); err != nil {
+				return fmt.Errorf("delete tags: %w", err)
+			}
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return fmt.Errorf("commit tx: %w", err)

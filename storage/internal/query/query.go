@@ -232,7 +232,7 @@ func (r *Runner) evaluate(ctx context.Context, collection *models.Collection, c 
 		c.err = fmt.Errorf("tag engine error: %w", err)
 		return
 	}
-	if err := r.db.UpsertTags(ctx, collection.ID, c.obj.ID, resp); err != nil {
+	if err := r.db.FillTags(ctx, collection.ID, c.obj.ID, resp); err != nil {
 		c.err = fmt.Errorf("persist tags: %w", err)
 		return
 	}

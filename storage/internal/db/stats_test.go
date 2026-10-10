@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -383,5 +384,56 @@ func preStatsFixtures(t *testing.T, pool *pgxpool.Pool) (string, func(hash strin
 			t.Fatalf("seed object: %v", err)
 		}
 		return id
+	}
+}
+
+func TestForcedTagsKeepCountersAndBeatEvaluation(t *testing.T) {
+	d, pool := newTestDB(t)
+	ctx := context.Background()
+	coll := mustCollection(t, d, "jobs")
+	o1 := mustObject(t, d, coll, "h1", nil)
+	o2 := mustObject(t, d, coll, "h2", nil)
+
+	// add, flip and delete in one change
+	mustTag(t, d, coll, o1, map[string]bool{"golang": true, "qa": true})
+	mustTag(t, d, coll, o2, map[string]bool{"golang": true})
+	if err := d.ChangeTags(ctx, coll, o1, map[string]bool{"golang": false, "remote": true}, []string{"qa", "never-there"}); err != nil {
+		t.Fatalf("change tags: %v", err)
+	}
+	known, _ := d.GetTagsForObject(ctx, o1)
+	if len(known) != 2 || known["golang"] || !known["remote"] {
+		t.Errorf("tags of o1 = %v", known)
+	}
+	assertStats(t, d, coll, 2, map[string]counts{
+		"golang":      {1, 1},
+		"qa":          {0, 0}, // deleted: stays registered, with no objects
+		"remote":      {1, 0},
+		"never-there": {0, 0},
+	})
+	assertConsistent(t, pool, coll)
+
+	// a tag both set and removed is set
+	if err := d.ChangeTags(ctx, coll, o2, map[string]bool{"golang": false}, []string{"golang"}); err != nil {
+		t.Fatalf("change tags: %v", err)
+	}
+	if known, _ := d.GetTagsForObject(ctx, o2); len(known) != 1 || known["golang"] {
+		t.Errorf("tags of o2 = %v", known)
+	}
+	assertConsistent(t, pool, coll)
+
+	// an evaluator only fills what is unknown: it never overwrites a forced value
+	if err := d.FillTags(ctx, coll, o1, map[string]bool{"golang": true, "qa": true}); err != nil {
+		t.Fatalf("fill tags: %v", err)
+	}
+	known, _ = d.GetTagsForObject(ctx, o1)
+	if known["golang"] || !known["qa"] || !known["remote"] {
+		t.Errorf("tags of o1 after evaluation = %v", known)
+	}
+	assertStats(t, d, coll, 2, map[string]counts{"golang": {0, 2}, "qa": {1, 0}, "remote": {1, 0}})
+	assertConsistent(t, pool, coll)
+
+	// an unknown object is reported as such
+	if err := d.ChangeTags(ctx, coll, "00000000-0000-0000-0000-000000000000", map[string]bool{"a": true}, nil); !errors.Is(err, db.ErrObjectNotFound) {
+		t.Errorf("unknown object: err = %v", err)
 	}
 }

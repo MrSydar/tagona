@@ -76,6 +76,7 @@ func (s *Server) Router() chi.Router {
 	r.Get("/collections/{collection}/objects/{id}/tags", s.getObjectTags)
 	r.Put("/collections/{collection}/objects/{id}/metadata", s.replaceMetadata)
 	r.Patch("/collections/{collection}/objects/{id}/metadata", s.mergeMetadata)
+	r.Patch("/collections/{collection}/objects/{id}/tags", s.changeObjectTags)
 	r.Post("/collections/{collection}/objects/query", s.queryObjects)
 	r.Delete("/collections/{collection}/objects/{id}", s.deleteObject)
 
@@ -355,6 +356,12 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	forcedTags, err := parseTagsParam(r.URL.Query().Get("tags"), s.cfg.MaxTagsPerQuery)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_tags", err.Error())
+		return
+	}
+
 	ttlSecondsStr := r.URL.Query().Get("ttl_seconds")
 	var expiresAt *time.Time
 	if ttlSecondsStr != "" {
@@ -492,6 +499,14 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 		// Best effort cleanup
 		s.db.Pool().Exec(r.Context(), `DELETE FROM objects WHERE id = $1`, objectID)
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to update object")
+		return
+	}
+
+	// Forced tags go in before the payload, so a failure below removes them with the object (the tags cascade).
+	if err := s.db.UpsertTags(r.Context(), coll.ID, objectID, forcedTags); err != nil {
+		slog.Error("store forced tags failed", "error", err)
+		s.db.Pool().Exec(r.Context(), `DELETE FROM objects WHERE id = $1`, objectID)
+		writeError(w, http.StatusInternalServerError, "internal_error", "failed to store tags")
 		return
 	}
 
@@ -684,7 +699,7 @@ func (s *Server) getObjectTags(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadGateway, "tag_engine_error", "tag engine failed")
 				return
 			}
-			if err := s.db.UpsertTags(r.Context(), obj.CollectionID, id, resp); err != nil {
+			if err := s.db.FillTags(r.Context(), obj.CollectionID, id, resp); err != nil {
 				slog.Error("upsert tags failed", "error", err)
 				writeError(w, http.StatusInternalServerError, "internal_error", "failed to persist tags")
 				return
@@ -887,7 +902,77 @@ func parseMetadataParam(raw string) (map[string]string, error) {
 	return m, nil
 }
 
+// parseTagsParam reads the tags query parameter of an upload: a JSON object of tag name to boolean, or nothing.
+func parseTagsParam(raw string, maxCount int) (map[string]bool, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	var in map[string]*bool // pointers, so that a null is told from false
+	dec := json.NewDecoder(strings.NewReader(raw))
+	if err := dec.Decode(&in); err != nil || dec.More() || in == nil {
+		return nil, errors.New("tags must be a JSON object whose values are true or false")
+	}
+	m := make(map[string]bool, len(in))
+	for tag, v := range in {
+		if v == nil {
+			return nil, errors.New("tags must be a JSON object whose values are true or false")
+		}
+		m[tag] = *v
+	}
+	if err := validate.ValidateTags(m, maxCount); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 const maxMetadataBodyBytes = 16 << 10
+
+// changeObjectTags (PATCH) forces tags of an object: a boolean sets the tag, null deletes it (it is then unknown, and
+// a later query evaluates it). The tagging engine is not involved. Answers with all the tags the object has now.
+func (s *Server) changeObjectTags(w http.ResponseWriter, r *http.Request) {
+	obj, ok := s.objectOfRequest(w, r)
+	if !ok {
+		return
+	}
+	var body map[string]*bool
+	dec := json.NewDecoder(io.LimitReader(r.Body, maxMetadataBodyBytes))
+	if err := dec.Decode(&body); err != nil || body == nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "the body must be a JSON object whose values are true, false or null")
+		return
+	}
+	set := map[string]bool{}
+	var remove []string
+	all := make(map[string]bool, len(body))
+	for tag, v := range body {
+		all[tag] = true
+		if v == nil {
+			remove = append(remove, tag)
+		} else {
+			set[tag] = *v
+		}
+	}
+	if err := validate.ValidateTags(all, s.cfg.MaxTagsPerQuery); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_tags", err.Error())
+		return
+	}
+	if err := s.db.ChangeTags(r.Context(), obj.CollectionID, obj.ID, set, remove); err != nil {
+		if errors.Is(err, db.ErrObjectNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "object not found")
+			return
+		}
+		slog.Error("change tags failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "failed to change tags")
+		return
+	}
+	known, err := s.db.GetTagsForObject(r.Context(), obj.ID)
+	if err != nil {
+		slog.Error("get tags failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "failed to get tags")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"id": obj.ID, "tags": known})
+}
 
 // objectOfRequest finds the object a metadata request is about, or answers 404.
 func (s *Server) objectOfRequest(w http.ResponseWriter, r *http.Request) (*models.Object, bool) {

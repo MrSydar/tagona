@@ -159,7 +159,7 @@ func (g *gateway) putObject(w http.ResponseWriter, r *http.Request) {
 		reject(w, e)
 		return
 	}
-	params, e := queryParams(r, "date", "ttl_seconds", "metadata")
+	params, e := queryParams(r, "date", "ttl_seconds", "metadata", "tags")
 	if e != nil {
 		reject(w, e)
 		return
@@ -167,12 +167,15 @@ func (g *gateway) putObject(w http.ResponseWriter, r *http.Request) {
 	q := url.Values{}
 	date, e := optionalDate(params, "date", "invalid_date")
 	if e == nil {
-		var ttl, metadata string
+		var ttl, metadata, tags string
 		if ttl, e = optionalInt(params, "ttl_seconds", "invalid_ttl"); e == nil {
 			if metadata, e = optionalMetadata(params); e == nil {
-				set(q, "date", date)
-				set(q, "ttl_seconds", ttl)
-				set(q, "metadata", metadata)
+				if tags, e = optionalTags(params); e == nil {
+					set(q, "date", date)
+					set(q, "ttl_seconds", ttl)
+					set(q, "metadata", metadata)
+					set(q, "tags", tags)
+				}
 			}
 		}
 	}
@@ -242,7 +245,7 @@ func (g *gateway) deleteObject(w http.ResponseWriter, r *http.Request) {
 func (g *gateway) replaceMetadata(w http.ResponseWriter, r *http.Request) {
 	// Decoded with pointer values, because a JSON null would become an empty string in a plain string.
 	var body map[string]*string
-	g.metadataRequest(w, r, http.MethodPut, &body, func() (any, *requestError) {
+	g.metadataRequest(w, r, http.MethodPut, "metadata", &body, func() (any, *requestError) {
 		if body == nil {
 			return nil, badRequest("invalid_json", "the request body must be a JSON object")
 		}
@@ -259,7 +262,7 @@ func (g *gateway) replaceMetadata(w http.ResponseWriter, r *http.Request) {
 
 func (g *gateway) mergeMetadata(w http.ResponseWriter, r *http.Request) {
 	var body map[string]*string
-	g.metadataRequest(w, r, http.MethodPatch, &body, func() (any, *requestError) {
+	g.metadataRequest(w, r, http.MethodPatch, "metadata", &body, func() (any, *requestError) {
 		if body == nil {
 			return nil, badRequest("invalid_json", "the request body must be a JSON object")
 		}
@@ -267,9 +270,20 @@ func (g *gateway) mergeMetadata(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// metadataRequest validates the path and the JSON object body of a metadata request and makes a clean one
-// to storage from what value builds out of the decoded body.
-func (g *gateway) metadataRequest(w http.ResponseWriter, r *http.Request, method string, dst any, value func() (any, *requestError)) {
+// changeObjectTags (PATCH) forces tags of an object: true or false sets one, null deletes it.
+func (g *gateway) changeObjectTags(w http.ResponseWriter, r *http.Request) {
+	var body map[string]*bool
+	g.metadataRequest(w, r, http.MethodPatch, "tags", &body, func() (any, *requestError) {
+		if body == nil {
+			return nil, badRequest("invalid_json", "the request body must be a JSON object")
+		}
+		return body, nil
+	})
+}
+
+// metadataRequest validates the path and the JSON object body of a metadata or tags request (what is changed is
+// the object's `what`) and makes a clean one to storage from what value builds out of the decoded body.
+func (g *gateway) metadataRequest(w http.ResponseWriter, r *http.Request, method, what string, dst any, value func() (any, *requestError)) {
 	coll, e := collectionParam(r)
 	var id string
 	if e == nil {
@@ -289,7 +303,7 @@ func (g *gateway) metadataRequest(w http.ResponseWriter, r *http.Request, method
 		reject(w, e)
 		return
 	}
-	ur := upstreamRequest{method: method, path: "/collections/" + coll + "/objects/" + id + "/metadata"}
+	ur := upstreamRequest{method: method, path: "/collections/" + coll + "/objects/" + id + "/" + what}
 	jsonBody(&ur, out)
 	g.forward(w, r, g.storage, ur, nil)
 }

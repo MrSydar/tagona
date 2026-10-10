@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Tagona API
-  version: 1.7.0
+  version: 1.8.0
   description: |
     Storage for collections of objects with sparse boolean tags that are evaluated on demand.
 
@@ -25,6 +25,10 @@ info:
     (by a query or a tags request). A tag that was not evaluated is *unknown*. Both tag-aware
     endpoints accept `evaluate=false` to answer from known tags only, without calling the
     tagging engine.
+
+    **Forced tags.** A tag does not have to be evaluated: it can be set by hand, on upload (`tags`) or on an
+    existing object (*Change some tags of an object*). A forced value is stored like an evaluated one, so the
+    tagging engine never replaces it; deleting it makes the tag unknown again.
 
     **Strict requests.** The gateway checks every request against what its endpoint accepts and refuses
     anything else with `400` before it reaches an internal service: a query parameter the endpoint does not
@@ -270,6 +274,14 @@ paths:
             `{"name":"cute-dog.png"}`. Omit it for no metadata. Limits: at most 32 entries, keys of 1-64
             bytes, values of at most 1024 bytes (`400 invalid_metadata`).
           schema: { type: string, example: '{"name":"cute-dog.png"}' }
+        - name: tags
+          in: query
+          description: |
+            Tags to force on the new object, a JSON object from tag name to `true` or `false`, URL-encoded, for example
+            `{"golang":true,"remote":false}`. They are stored with the object and never evaluated. Omit it for none. At
+            most as many tags as a query may hold, each of 1-128 bytes (`400 invalid_tags`). When the content already
+            exists, the existing object is returned as it is and `tags` is ignored: use *Change some tags of an object*.
+          schema: { type: string, example: '{"golang":true,"remote":false}' }
         - name: date
           in: query
           description: Object date (RFC 3339). Defaults to the upload time. Queries order by it, newest first.
@@ -309,7 +321,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ObjectUploadResponse" }
         "400":
-          description: "`invalid_ttl`, `invalid_date`, `invalid_metadata`, `invalid_parameter` or `invalid_collection_name`."
+          description: "`invalid_ttl`, `invalid_date`, `invalid_metadata`, `invalid_tags`, `invalid_parameter` or `invalid_collection_name`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -573,6 +585,35 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+    patch:
+      tags: [Tags]
+      operationId: changeObjectTags
+      summary: Change some tags of an object
+      description: >-
+        Forces tags: a boolean sets the tag (adding it or overwriting its value) and `null` deletes it, so that it is
+        unknown again and a later query evaluates it; all other tags stay. The tagging engine is not called. A forced
+        value is never replaced by an evaluation. At most as many tags as a query may hold, each of 1-128 bytes.
+        Answers with every tag the object has now.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TagChanges" }
+            example: { golang: true, qa: false, old-tag: null }
+      responses:
+        "200":
+          description: The tags the object has now.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ObjectTags" }
+        "400":
+          description: "`invalid_json` (not a JSON object of booleans and nulls), `invalid_tags` (a limit was exceeded), `invalid_parameter` or `invalid_collection_name`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
 
   /v1/admin/api-keys:
     post:
@@ -813,6 +854,12 @@ components:
       description: Keys to set (string values) or to remove (`null`).
       additionalProperties: { type: string, nullable: true, maxLength: 1024 }
       example: { name: dog.png, photographer: null }
+
+    TagChanges:
+      type: object
+      description: Tags to set (`true` or `false`) or to delete (`null`).
+      additionalProperties: { type: boolean, nullable: true }
+      example: { golang: true, qa: false, old-tag: null }
 
     Object:
       type: object
