@@ -39,9 +39,13 @@ func newUpstream(name, baseURL string, rt http.RoundTripper, status int, code, m
 	// No client-side timeout: uploads and long queries are bounded by the inbound request's
 	// context and the server's limits, not cut off here.
 	return &upstream{
-		name:               name,
-		base:               base,
-		client:             &http.Client{Transport: rt},
+		name: name,
+		base: base,
+		// A redirect from an internal service is the answer, not something to follow: storage sends a
+		// client to a download URL, and the gateway hands that on.
+		client: &http.Client{Transport: rt, CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}},
 		passHeaders:        passHeaders,
 		unavailableStatus:  status,
 		unavailableCode:    code,

@@ -252,7 +252,7 @@ Response `200 OK`:
 | `GET` | `/v1/collections/{collection}/objects/{id}` | Get the object and its metadata |
 | `PUT` | `/v1/collections/{collection}/objects/{id}/metadata` | Replace the metadata |
 | `PATCH` | `/v1/collections/{collection}/objects/{id}/metadata` | Change some metadata |
-| `GET` | `/v1/collections/{collection}/objects/{id}/data` | Download payload |
+| `GET` | `/v1/collections/{collection}/objects/{id}/data` | Redirect (`307`) to a short-lived signed URL of the object store, from which the payload is downloaded |
 | `GET` | `/v1/collections/{collection}/objects/{id}/tags` | Get tags |
 | `POST` | `/v1/collections/{collection}/objects/query` | Query by tags |
 | `DELETE` | `/v1/collections/{collection}/objects/{id}` | Hard delete |

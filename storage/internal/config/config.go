@@ -10,9 +10,14 @@ import (
 
 // Config holds the application configuration.
 type Config struct {
-	HTTPAddr         string
-	PGDSN            string
-	S3Endpoint       string
+	HTTPAddr   string
+	PGDSN      string
+	S3Endpoint string
+	// S3PublicEndpoint is the S3 address clients can reach, which download URLs are signed for.
+	// Empty means S3Endpoint.
+	S3PublicEndpoint string
+	// DataURLTTL is how long a download URL is valid.
+	DataURLTTL       time.Duration
 	S3Region         string
 	S3Bucket         string
 	S3AccessKey      string
@@ -40,6 +45,8 @@ func Load(prefix string) (*Config, error) {
 		HTTPAddr:                envOrDefault(prefix+"HTTP_ADDR", ":8082"),
 		PGDSN:                   os.Getenv(prefix + "PG_DSN"),
 		S3Endpoint:              os.Getenv(prefix + "S3_ENDPOINT"),
+		S3PublicEndpoint:        os.Getenv(prefix + "S3_PUBLIC_ENDPOINT"),
+		DataURLTTL:              60 * time.Second,
 		S3Region:                envOrDefault(prefix+"S3_REGION", "us-east-1"),
 		S3Bucket:                os.Getenv(prefix + "S3_BUCKET"),
 		S3AccessKey:             os.Getenv(prefix + "S3_ACCESS_KEY"),
@@ -60,6 +67,14 @@ func Load(prefix string) (*Config, error) {
 
 	if v := os.Getenv(prefix + "S3_FORCE_PATH_STYLE"); v != "" {
 		cfg.S3ForcePathStyle = v == "true" || v == "1"
+	}
+
+	if v := os.Getenv(prefix + "DATA_URL_TTL"); v != "" {
+		d, err := parseDuration(v)
+		if err != nil || d < time.Second || d > 7*24*time.Hour {
+			return nil, fmt.Errorf("invalid %sDATA_URL_TTL %q: want 1s to 7 days", prefix, v)
+		}
+		cfg.DataURLTTL = d
 	}
 
 	if v := os.Getenv(prefix + "TAG_ENGINE_TIMEOUT"); v != "" {
@@ -157,4 +172,12 @@ func envOrDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// parseDuration reads a Go duration ("90s", "5m") or a whole number of seconds.
+func parseDuration(v string) (time.Duration, error) {
+	if sec, err := strconv.Atoi(v); err == nil {
+		return time.Duration(sec) * time.Second, nil
+	}
+	return time.ParseDuration(v)
 }

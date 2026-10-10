@@ -385,10 +385,21 @@ func (c *Client) GetObjectMetadata(ctx context.Context, collection, id string) (
 	return &obj, nil
 }
 
-// GetObjectData downloads object payload by collection and ID.
+// GetObjectData downloads object payload by collection and ID. Through the api this follows the redirect
+// to the object store, which the caller must be able to reach; a service inside uses GetObjectContent.
 func (c *Client) GetObjectData(ctx context.Context, collection, id string) ([]byte, error) {
-	slog.Debug("GetObjectData", "collection", collection, "id", id)
-	url := fmt.Sprintf("%s%s/collections/%s/objects/%s/data", c.baseURL, c.prefix, collection, id)
+	return c.download(ctx, collection, id, "data")
+}
+
+// GetObjectContent downloads the payload from storage itself, which streams it. Only storage has this route
+// (the api does not), for services inside the deployment such as the tagger.
+func (c *Client) GetObjectContent(ctx context.Context, collection, id string) ([]byte, error) {
+	return c.download(ctx, collection, id, "content")
+}
+
+func (c *Client) download(ctx context.Context, collection, id, route string) ([]byte, error) {
+	slog.Debug("download", "collection", collection, "id", id, "route", route)
+	url := fmt.Sprintf("%s%s/collections/%s/objects/%s/%s", c.baseURL, c.prefix, collection, id, route)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err

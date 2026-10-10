@@ -72,6 +72,7 @@ func (s *Server) Router() chi.Router {
 	r.Post("/collections/{collection}/objects", s.putObject)
 	r.Get("/collections/{collection}/objects/{id}", s.getObjectMetadata)
 	r.Get("/collections/{collection}/objects/{id}/data", s.getObjectData)
+	r.Get("/collections/{collection}/objects/{id}/content", s.getObjectContent)
 	r.Get("/collections/{collection}/objects/{id}/tags", s.getObjectTags)
 	r.Put("/collections/{collection}/objects/{id}/metadata", s.replaceMetadata)
 	r.Patch("/collections/{collection}/objects/{id}/metadata", s.mergeMetadata)
@@ -555,6 +556,36 @@ func (s *Server) getObjectData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The payload is not streamed through the service: the client is sent to a short-lived URL of the
+	// object store, which also answers Range requests. The URL stops working no later than the object does.
+	ttl := s.cfg.DataURLTTL
+	if obj.ExpiresAt != nil {
+		if left := time.Until(*obj.ExpiresAt); left < ttl {
+			ttl = max(left, time.Second) // S3 signs whole seconds
+		}
+	}
+	url, _, err := s.store.PresignGet(r.Context(), obj.PayloadKey, ttl.Truncate(time.Second))
+	if err != nil {
+		slog.Error("presign failed", "error", err, "key", obj.PayloadKey)
+		writeError(w, http.StatusInternalServerError, "internal_error", "failed to retrieve payload")
+		return
+	}
+	// The URL is a bearer credential for its lifetime: it must not be cached or reused.
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Location", url)
+	w.WriteHeader(http.StatusTemporaryRedirect)
+}
+
+// getObjectContent streams the payload. It is for the services inside (the tagger reads what it evaluates this
+// way); the api does not route it, and clients download from getObjectData's URL.
+func (s *Server) getObjectContent(w http.ResponseWriter, r *http.Request) {
+	slog.Debug("getObjectContent handler called")
+	id := chi.URLParam(r, "id")
+	obj, err := s.db.GetObjectByID(r.Context(), id)
+	if err != nil || obj.Collection != chi.URLParam(r, "collection") {
+		writeError(w, http.StatusNotFound, "not_found", "object not found")
+		return
+	}
 	reader, size, err := s.store.Download(r.Context(), obj.PayloadKey)
 	if err != nil {
 		slog.Error("download failed", "error", err, "key", obj.PayloadKey)

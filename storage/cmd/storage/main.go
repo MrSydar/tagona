@@ -56,7 +56,7 @@ func main() {
 
 	// S3.
 	slog.Debug("initializing S3 store", "bucket", cfg.S3Bucket, "endpoint", cfg.S3Endpoint)
-	store, err := storage.NewS3Store(cfg.S3Endpoint, cfg.S3Region, cfg.S3Bucket, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3ForcePathStyle)
+	store, err := storage.NewS3Store(cfg.S3Endpoint, cfg.S3PublicEndpoint, cfg.S3Region, cfg.S3Bucket, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3ForcePathStyle)
 	if err != nil {
 		slog.Error("s3 store error", "error", err)
 		os.Exit(1)
