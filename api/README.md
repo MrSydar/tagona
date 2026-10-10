@@ -254,6 +254,7 @@ Response `200 OK`:
 | `PATCH` | `/v1/collections/{collection}/objects/{id}/metadata` | Change some metadata |
 | `GET` | `/v1/collections/{collection}/objects/{id}/data` | Redirect (`307`) to a short-lived signed URL of the object store, from which the payload is downloaded |
 | `GET` | `/v1/collections/{collection}/objects/{id}/tags` | Get tags |
+| `PATCH` | `/v1/collections/{collection}/objects/{id}/tags` | Force tags: set (`true`/`false`) or delete (`null`) |
 | `POST` | `/v1/collections/{collection}/objects/query` | Query by tags |
 | `DELETE` | `/v1/collections/{collection}/objects/{id}` | Hard delete |
 
@@ -265,7 +266,7 @@ curl -X POST "http://localhost:8080/v1/collections/jobs/objects?date=2026-06-07T
   -d 'hello world'
 ```
 
-The body is the raw payload. Query parameters (all optional): `date` (RFC 3339, default the upload time), `ttl_seconds` (see the OpenAPI document for the expiry rules) and `metadata` (URL-encoded JSON object of string values, here `{"name":"hello.txt"}`).
+The body is the raw payload. Query parameters (all optional): `date` (RFC 3339, default the upload time), `ttl_seconds` (see the OpenAPI document for the expiry rules), `metadata` (URL-encoded JSON object of string values, here `{"name":"hello.txt"}`) and `tags` (URL-encoded JSON object of tag to `true`/`false`, forced on the new object).
 
 **Response `201 Created`** (`200 OK` with the existing object when the same bytes were uploaded before)
 ```json
@@ -296,6 +297,17 @@ curl -X PATCH http://localhost:8080/v1/collections/jobs/objects/$ID/metadata \
 ```
 
 Both answer `200 OK` with the object. Values must be strings (`400 invalid_json` otherwise; `null` is only for `PATCH`).
+
+**Forcing tags**
+
+Tags are normally evaluated, but you can also set them by hand: with `tags` on an upload, or later with `PATCH …/tags`, where a boolean sets (or overwrites) a tag and `null` deletes it. A forced value is stored like an evaluated one, so queries use it and the tagging engine never replaces it; a deleted tag is unknown again and the next query evaluates it. The tagging engine is not called, so this works whatever the collection's tagger. At most `TAGONA_MAX_TAGS_PER_QUERY` tags per request, each of 1-128 bytes (`400 invalid_tags`). `tags` on an upload is ignored when the bytes already exist (the existing object is returned as it is).
+
+```bash
+curl -X PATCH http://localhost:8080/v1/collections/jobs/objects/$ID/tags \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"golang":true,"remote":false,"old-tag":null}'
+# {"id":"…","tags":{"golang":true,"remote":false}}   <- every tag the object has now
+```
 
 **Query by Tags**
 

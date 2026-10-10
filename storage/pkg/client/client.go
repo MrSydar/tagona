@@ -510,6 +510,8 @@ type UploadOptions struct {
 	TTLSeconds int
 	// Metadata is attached to the object: string keys and string values.
 	Metadata map[string]string
+	// Tags are forced on the new object: they are stored with it and never evaluated.
+	Tags map[string]bool
 }
 
 // UploadObject uploads an object body to the storage service.
@@ -533,6 +535,13 @@ func (c *Client) UploadObjectWithOptions(ctx context.Context, collection string,
 			return nil, err
 		}
 		params.Set("metadata", string(raw))
+	}
+	if len(opts.Tags) > 0 {
+		raw, err := json.Marshal(opts.Tags)
+		if err != nil {
+			return nil, err
+		}
+		params.Set("tags", string(raw))
 	}
 	q := fmt.Sprintf("%s%s/collections/%s/objects", c.baseURL, c.prefix, collection)
 	if len(params) > 0 {
@@ -596,6 +605,36 @@ func (c *Client) sendMetadata(ctx context.Context, method, collection, id string
 		return nil, fmt.Errorf("decode object: %w", err)
 	}
 	return &obj, nil
+}
+
+// ChangeObjectTags forces tags of an object (PATCH): the tags of changes are set to their value, those whose value is
+// nil are deleted (unknown again), and the others stay. It returns the tags the object has now.
+func (c *Client) ChangeObjectTags(ctx context.Context, collection, id string, changes map[string]*bool) (*ObjectTags, error) {
+	slog.Debug("ChangeObjectTags", "collection", collection, "id", id, "changes", len(changes))
+	raw, err := json.Marshal(changes)
+	if err != nil {
+		return nil, err
+	}
+	target := fmt.Sprintf("%s%s/collections/%s/objects/%s/tags", c.baseURL, c.prefix, collection, id)
+	req, err := http.NewRequestWithContext(ctx, "PATCH", target, bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.setAuth(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("change tags: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, httpError("change tags", resp)
+	}
+	var out ObjectTags
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode tags: %w", err)
+	}
+	return &out, nil
 }
 
 // DeleteCollection deletes a collection by name.

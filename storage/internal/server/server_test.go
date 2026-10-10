@@ -117,3 +117,29 @@ func TestCreateCollectionNeedsAVersionWhenSeveralAreServed(t *testing.T) {
 		t.Fatalf("a tagger that is down: %d %s", rec.Code, rec.Body)
 	}
 }
+
+func TestParseTagsParam(t *testing.T) {
+	got, err := parseTagsParam(`{"golang":true,"qa":false}`, 100)
+	if err != nil || len(got) != 2 || !got["golang"] || got["qa"] {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	if got, err := parseTagsParam("", 100); err != nil || len(got) != 0 {
+		t.Fatalf("empty: got %v, %v", got, err)
+	}
+	for name, raw := range map[string]string{
+		"not json":     "{x",
+		"not booleans": `{"a":"yes"}`,
+		"null value":   `{"a":null}`,
+		"an array":     `["a"]`,
+		"trailing":     `{"a":true} {"b":true}`,
+		"empty name":   `{"":true}`,
+		"long name":    `{"` + strings.Repeat("a", 129) + `":true}`,
+	} {
+		if _, err := parseTagsParam(raw, 100); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+	}
+	if _, err := parseTagsParam(`{"a":true,"b":true}`, 1); err == nil {
+		t.Error("more tags than the limit: no error")
+	}
+}
