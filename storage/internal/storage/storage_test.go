@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -19,7 +20,7 @@ func TestPresignGet(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			raw, expires, err := s.PresignGet(context.Background(), "ab/cdef", 90*time.Second)
+			raw, expires, err := s.PresignGet(context.Background(), "ab/cdef", 90*time.Second, "", "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -41,5 +42,28 @@ func TestPresignGet(t *testing.T) {
 				t.Errorf("expires in %s", d)
 			}
 		})
+	}
+}
+
+// The type and file name of a download are signed into the URL.
+func TestPresignGetOverridesTheResponseHeaders(t *testing.T) {
+	s, err := NewS3Store("http://garage:3900", "", "us-east-1", "tagona", "key", "secret", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _, err := s.PresignGet(context.Background(), "k", time.Minute, "image/png", `attachment; filename=cat.png`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(raw)
+	if got := u.Query().Get("response-content-type"); got != "image/png" {
+		t.Errorf("response-content-type = %q", got)
+	}
+	if got := u.Query().Get("response-content-disposition"); got != "attachment; filename=cat.png" {
+		t.Errorf("response-content-disposition = %q", got)
+	}
+	plain, _, _ := s.PresignGet(context.Background(), "k", time.Minute, "", "")
+	if strings.Contains(plain, "response-content") {
+		t.Errorf("no overrides were asked for: %s", plain)
 	}
 }

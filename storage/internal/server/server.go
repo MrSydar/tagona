@@ -564,7 +564,8 @@ func (s *Server) getObjectData(w http.ResponseWriter, r *http.Request) {
 			ttl = max(left, time.Second) // S3 signs whole seconds
 		}
 	}
-	url, _, err := s.store.PresignGet(r.Context(), obj.PayloadKey, ttl.Truncate(time.Second))
+	contentType, disposition := downloadHeaders(obj.Metadata)
+	url, _, err := s.store.PresignGet(r.Context(), obj.PayloadKey, ttl.Truncate(time.Second), contentType, disposition)
 	if err != nil {
 		slog.Error("presign failed", "error", err, "key", obj.PayloadKey)
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to retrieve payload")

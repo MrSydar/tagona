@@ -61,13 +61,19 @@ func NewS3Store(endpoint, publicEndpoint, region, bucket, accessKey, secretKey s
 
 // PresignGet returns a URL from which the payload stored under key can be downloaded without credentials
 // until it expires after ttl, and the time it expires. Signing is local: the payload is not touched.
-func (s *S3Store) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, time.Time, error) {
+// contentType and disposition, when not empty, are the Content-Type and Content-Disposition the store answers
+// with instead of the ones it holds; they are part of the signature, so a client cannot change them.
+func (s *S3Store) PresignGet(ctx context.Context, key string, ttl time.Duration, contentType, disposition string) (string, time.Time, error) {
 	slog.Debug("S3Store.PresignGet", "key", key, "ttl", ttl)
 	expires := time.Now().Add(ttl)
-	req, err := s.presigner.PresignGetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
-	}, s3.WithPresignExpires(ttl))
+	in := &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)}
+	if contentType != "" {
+		in.ResponseContentType = aws.String(contentType)
+	}
+	if disposition != "" {
+		in.ResponseContentDisposition = aws.String(disposition)
+	}
+	req, err := s.presigner.PresignGetObject(ctx, in, s3.WithPresignExpires(ttl))
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("presign s3 get object: %w", err)
 	}
