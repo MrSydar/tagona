@@ -361,3 +361,44 @@ func TestObjectDataIsDownloadedFromTheObjectStore(t *testing.T) {
 		assert.Empty(t, resp.Header.Get("Location"), target)
 	}
 }
+
+// An object's content_type and name metadata become the type and file name of the download.
+func TestObjectDataDownloadUsesTheStoredTypeAndName(t *testing.T) {
+	key := newKey(t).Key
+	coll := fmt.Sprintf("e2e-dl-%d", time.Now().UnixNano()%1_000_000_000)
+	status, body := createCollectionWith(t, key, fmt.Sprintf(`{"name":"%s","tagger_version":"grep"}`, coll))
+	require.Equal(t, http.StatusCreated, status, string(body))
+
+	download := func(id string) *http.Response {
+		status, _ := do(t, http.MethodGet, "/v1/collections/"+coll+"/objects/"+id+"/data", "", asKey(key))
+		require.Equal(t, http.StatusOK, status)
+		req, _ := http.NewRequest(http.MethodGet, storageURL+"/v1/collections/"+coll+"/objects/"+id+"/data", nil)
+		setBearer(req, key)
+		red, err := noRedirects.Do(req)
+		require.NoError(t, err)
+		red.Body.Close()
+		resp, err := httpClient.Get(red.Header.Get("Location"))
+		require.NoError(t, err)
+		resp.Body.Close()
+		return resp
+	}
+	upload := func(data, metadata string) string {
+		status, out := do(t, http.MethodPost, "/v1/collections/"+coll+"/objects?metadata="+url.QueryEscape(metadata), data, asKey(key))
+		require.Equal(t, http.StatusCreated, status, string(out))
+		var o struct{ ID string }
+		require.NoError(t, json.Unmarshal(out, &o))
+		return o.ID
+	}
+
+	both := download(upload("png bytes", `{"content_type":"image/png","name":"../cat.png"}`))
+	assert.Equal(t, "image/png", both.Header.Get("Content-Type"))
+	assert.Equal(t, `attachment; filename=_cat.png`, both.Header.Get("Content-Disposition"))
+
+	typeOnly := download(upload("<b>html</b>", `{"content_type":"text/html"}`))
+	assert.Equal(t, "text/html", typeOnly.Header.Get("Content-Type"))
+	assert.Equal(t, "attachment", typeOnly.Header.Get("Content-Disposition"), "never rendered from the object store")
+
+	none := download(upload("plain", `{"other":"x"}`))
+	assert.Equal(t, "application/octet-stream", none.Header.Get("Content-Type"))
+	assert.Empty(t, none.Header.Get("Content-Disposition"))
+}

@@ -446,7 +446,10 @@ paths:
         Follow the redirect without sending the API key on to the object store: the URL itself is the
         credential, valid for `TAGONA_DATA_URL_TTL` (60 seconds by default, and never beyond the object's
         expiry), and for this one payload and the GET method only. Do not cache or share it; ask again when
-        it has expired. The object store must be reachable by the client and allow its origin (CORS) for
+        it has expired. If the object's metadata has `content_type` (a media type) the store answers with that
+        `Content-Type`, and if it has `name` the download is an `attachment` with that file name (cleaned: no
+        directories or control characters); a type without a name is a plain `attachment`, so it is never rendered
+        from the store's origin. Values that are not usable are ignored, leaving `application/octet-stream`. The object store must be reachable by the client and allow its origin (CORS) for
         downloads from a browser.
       responses:
         "307":
