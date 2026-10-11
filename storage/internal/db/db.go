@@ -487,23 +487,26 @@ func (d *DB) GetCollectionTagStats(ctx context.Context, collectionID, prefix, af
 		return 0, nil, fmt.Errorf("get collection object count: %w", err)
 	}
 
+	// One row per bucket the tag has counts in, the objects that have expired but are not swept yet taken out.
 	rows, err := tx.Query(ctx,
 		`WITH expired AS (
-		     SELECT t.tag,
-		            count(*) FILTER (WHERE t.score >= 0.5) AS true_count,
-		            count(*) FILTER (WHERE t.score < 0.5) AS false_count
+		     SELECT t.tag, tagona_score_bucket(t.score) AS bucket, count(*) AS n
 		     FROM objects o JOIN object_tags t ON t.object_id = o.id
 		     WHERE o.collection_id = $1 AND o.expires_at IS NOT NULL AND o.expires_at <= NOW()
-		     GROUP BY t.tag
+		     GROUP BY t.tag, tagona_score_bucket(t.score)
+		 ),
+		 page AS (
+		     SELECT ct.tag, ct.first_seen_at
+		     FROM collection_tags ct
+		     WHERE ct.collection_id = $1 AND starts_with(ct.tag, $2) AND ct.tag COLLATE "C" > $3
+		     ORDER BY ct.tag COLLATE "C"
+		     LIMIT $4
 		 )
-		 SELECT ct.tag,
-		        ct.true_count - COALESCE(e.true_count, 0),
-		        ct.false_count - COALESCE(e.false_count, 0),
-		        ct.first_seen_at
-		 FROM collection_tags ct LEFT JOIN expired e ON e.tag = ct.tag
-		 WHERE ct.collection_id = $1 AND starts_with(ct.tag, $2) AND ct.tag COLLATE "C" > $3
-		 ORDER BY ct.tag COLLATE "C"
-		 LIMIT $4`,
+		 SELECT p.tag, p.first_seen_at, b.bucket, b.count - COALESCE(e.n, 0)
+		 FROM page p
+		 LEFT JOIN collection_tag_buckets b ON b.collection_id = $1 AND b.tag = p.tag
+		 LEFT JOIN expired e ON e.tag = b.tag AND e.bucket = b.bucket
+		 ORDER BY p.tag COLLATE "C", b.bucket`,
 		collectionID, prefix, afterTag, limit,
 	)
 	if err != nil {
@@ -512,16 +515,34 @@ func (d *DB) GetCollectionTagStats(ctx context.Context, collectionID, prefix, af
 	defer rows.Close()
 
 	var stats []models.TagStat
+	var tag string
+	var firstSeen time.Time
+	var histogram []int64
+	flush := func() {
+		if histogram != nil {
+			stats = append(stats, models.NewTagStat(tag, histogram, firstSeen))
+		}
+	}
 	for rows.Next() {
-		var st models.TagStat
-		if err := rows.Scan(&st.Tag, &st.TrueCount, &st.FalseCount, &st.FirstSeenAt); err != nil {
+		var name string
+		var seen time.Time
+		var bucket *int16
+		var count *int64
+		if err := rows.Scan(&name, &seen, &bucket, &count); err != nil {
 			return 0, nil, fmt.Errorf("scan tag stat: %w", err)
 		}
-		stats = append(stats, st)
+		if histogram == nil || name != tag {
+			flush()
+			tag, firstSeen, histogram = name, seen, make([]int64, models.HistogramBuckets)
+		}
+		if bucket != nil && count != nil {
+			histogram[*bucket] = max(*count, 0)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return 0, nil, fmt.Errorf("iterate tag stats: %w", err)
 	}
+	flush()
 	return total, stats, nil
 }
 

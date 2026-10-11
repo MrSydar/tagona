@@ -1,13 +1,28 @@
 -- Per-collection statistics maintained by triggers:
---   collections.object_count  number of objects in the collection
---   collection_tags           registry of tags seen in a collection, with the
---                             number of objects each tag is known true (score of
---                             at least 0.5) and false (below 0.5) for
+--   collections.object_count     number of objects in the collection
+--   collection_tags              registry of tags seen in a collection; a row is also the lock that serializes the
+--                                writers of one tag's counters
+--   collection_tag_buckets       how many objects have a score in each bucket, per tag: the distribution of the
+--                                tag's scores, from which the API derives the number of evaluated objects and
+--                                the percentiles
 --
--- Migrations are re-run on every startup, so everything here is idempotent. The
--- one-off backfill runs only when the schema is first created, under a lock
--- that blocks concurrent writes; the whole file executes in a single
+-- A score falls in one of 22 buckets: 0 is exactly 0, 21 is exactly 1 (grep, forced tags and yes/no taggers
+-- produce nothing else), and 1..20 are the twenty bins of width 0.05 in between, from 0 (exclusive) to 1
+-- (exclusive).
+--
+-- Migrations are re-run on every startup, so everything here is idempotent. The one-off backfill runs only when
+-- the schema is first created, under a lock that blocks concurrent writes; the whole file executes in a single
 -- transaction, so the triggers below take over atomically.
+
+CREATE OR REPLACE FUNCTION tagona_score_bucket(score DOUBLE PRECISION) RETURNS SMALLINT
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+    SELECT CASE
+        WHEN score <= 0 THEN 0
+        WHEN score >= 1 THEN 21
+        ELSE 1 + LEAST(floor(score * 20)::int, 19)
+    END::smallint
+$$;
+
 DO $migrate$
 BEGIN
     IF NOT EXISTS (
@@ -23,44 +38,60 @@ BEGIN
         CREATE TABLE IF NOT EXISTS collection_tags (
             collection_id UUID NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
             tag TEXT NOT NULL,
-            true_count BIGINT NOT NULL DEFAULT 0,
-            false_count BIGINT NOT NULL DEFAULT 0,
             first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             PRIMARY KEY (collection_id, tag)
+        );
+
+        CREATE TABLE IF NOT EXISTS collection_tag_buckets (
+            collection_id UUID NOT NULL,
+            tag TEXT NOT NULL,
+            bucket SMALLINT NOT NULL CHECK (bucket BETWEEN 0 AND 21),
+            count BIGINT NOT NULL DEFAULT 0,
+            PRIMARY KEY (collection_id, tag, bucket),
+            FOREIGN KEY (collection_id, tag) REFERENCES collection_tags(collection_id, tag) ON DELETE CASCADE
         );
 
         UPDATE collections c
         SET object_count = (SELECT count(*) FROM objects o WHERE o.collection_id = c.id);
 
-        INSERT INTO collection_tags (collection_id, tag, true_count, false_count, first_seen_at)
-        SELECT collection_id, tag,
-               count(*) FILTER (WHERE score >= 0.5),
-               count(*) FILTER (WHERE score < 0.5),
-               min(updated_at)
+        INSERT INTO collection_tags (collection_id, tag, first_seen_at)
+        SELECT collection_id, tag, min(updated_at)
         FROM object_tags
         GROUP BY collection_id, tag;
+
+        INSERT INTO collection_tag_buckets (collection_id, tag, bucket, count)
+        SELECT collection_id, tag, tagona_score_bucket(score), count(*)
+        FROM object_tags
+        GROUP BY collection_id, tag, tagona_score_bucket(score);
     END IF;
 END
 $migrate$;
 
--- Statement-level triggers with transition tables aggregate a statement's rows
--- into one counter update per (collection, tag). Rows are locked in sorted
--- order so concurrent writers cannot deadlock on counters. Decrements only
--- UPDATE existing rows, so cascading deletes of a collection stay harmless.
+-- Statement-level triggers with transition tables aggregate a statement's rows into one counter update per
+-- (collection, tag, bucket). A tag's registry row is locked first, rows in sorted order, so concurrent writers of a
+-- tag take its counters one after the other and cannot deadlock on them. Decrements only UPDATE existing rows, so
+-- cascading deletes of a collection stay harmless.
 
 CREATE OR REPLACE FUNCTION tagona_object_tags_inserted() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-    INSERT INTO collection_tags (collection_id, tag, true_count, false_count)
-    SELECT collection_id, tag,
-           count(*) FILTER (WHERE score >= 0.5),
-           count(*) FILTER (WHERE score < 0.5)
-    FROM new_rows
-    GROUP BY collection_id, tag
+    INSERT INTO collection_tags (collection_id, tag)
+    SELECT DISTINCT collection_id, tag FROM new_rows
     ORDER BY collection_id, tag
-    ON CONFLICT (collection_id, tag) DO UPDATE
-    SET true_count = collection_tags.true_count + EXCLUDED.true_count,
-        false_count = collection_tags.false_count + EXCLUDED.false_count;
+    ON CONFLICT (collection_id, tag) DO NOTHING;
+
+    PERFORM 1 FROM collection_tags ct
+    WHERE (ct.collection_id, ct.tag) IN (SELECT collection_id, tag FROM new_rows)
+    ORDER BY ct.collection_id, ct.tag
+    FOR UPDATE;
+
+    INSERT INTO collection_tag_buckets (collection_id, tag, bucket, count)
+    SELECT collection_id, tag, tagona_score_bucket(score), count(*)
+    FROM new_rows
+    GROUP BY collection_id, tag, tagona_score_bucket(score)
+    ORDER BY collection_id, tag, tagona_score_bucket(score)
+    ON CONFLICT (collection_id, tag, bucket) DO UPDATE
+    SET count = collection_tag_buckets.count + EXCLUDED.count;
     RETURN NULL;
 END
 $$;
@@ -73,19 +104,22 @@ BEGIN
     ORDER BY ct.collection_id, ct.tag
     FOR UPDATE;
 
-    UPDATE collection_tags ct
-    SET true_count = ct.true_count + d.t,
-        false_count = ct.false_count + d.f
+    UPDATE collection_tag_buckets b
+    SET count = b.count - d.n
     FROM (
-        SELECT collection_id, tag, sum(t) AS t, sum(f) AS f
-        FROM (
-            SELECT collection_id, tag, -((score >= 0.5)::int) AS t, -((score < 0.5)::int) AS f FROM old_rows
-            UNION ALL
-            SELECT collection_id, tag, (score >= 0.5)::int, (score < 0.5)::int FROM new_rows
-        ) x
-        GROUP BY collection_id, tag
+        SELECT collection_id, tag, tagona_score_bucket(score) AS bucket, count(*) AS n
+        FROM old_rows
+        GROUP BY collection_id, tag, tagona_score_bucket(score)
     ) d
-    WHERE ct.collection_id = d.collection_id AND ct.tag = d.tag;
+    WHERE b.collection_id = d.collection_id AND b.tag = d.tag AND b.bucket = d.bucket;
+
+    INSERT INTO collection_tag_buckets (collection_id, tag, bucket, count)
+    SELECT collection_id, tag, tagona_score_bucket(score), count(*)
+    FROM new_rows
+    GROUP BY collection_id, tag, tagona_score_bucket(score)
+    ORDER BY collection_id, tag, tagona_score_bucket(score)
+    ON CONFLICT (collection_id, tag, bucket) DO UPDATE
+    SET count = collection_tag_buckets.count + EXCLUDED.count;
     RETURN NULL;
 END
 $$;
@@ -98,17 +132,14 @@ BEGIN
     ORDER BY ct.collection_id, ct.tag
     FOR UPDATE;
 
-    UPDATE collection_tags ct
-    SET true_count = ct.true_count - d.t,
-        false_count = ct.false_count - d.f
+    UPDATE collection_tag_buckets b
+    SET count = b.count - d.n
     FROM (
-        SELECT collection_id, tag,
-               count(*) FILTER (WHERE score >= 0.5) AS t,
-               count(*) FILTER (WHERE score < 0.5) AS f
+        SELECT collection_id, tag, tagona_score_bucket(score) AS bucket, count(*) AS n
         FROM old_rows
-        GROUP BY collection_id, tag
+        GROUP BY collection_id, tag, tagona_score_bucket(score)
     ) d
-    WHERE ct.collection_id = d.collection_id AND ct.tag = d.tag;
+    WHERE b.collection_id = d.collection_id AND b.tag = d.tag AND b.bucket = d.bucket;
     RETURN NULL;
 END
 $$;

@@ -145,9 +145,15 @@ type TagResponse struct {
 // object has a value for a tag only once the tag was evaluated for it.
 type TagStat struct {
 	Tag string `json:"tag"`
-	// TrueCount and FalseCount are the objects the tag is known true/false for.
-	TrueCount   int64     `json:"true_count"`
-	FalseCount  int64     `json:"false_count"`
+	// Evaluated is the number of objects the tag has a score for.
+	Evaluated int64 `json:"evaluated"`
+	// P10, P50 and P90 are percentiles of the tag's scores, nil when Evaluated is 0.
+	P10 *float64 `json:"p10"`
+	P50 *float64 `json:"p50"`
+	P90 *float64 `json:"p90"`
+	// Histogram counts the objects per bucket of score: index 0 is exactly 0, index 21 exactly 1, and 1 to 20 the
+	// bins of width 0.05 in between.
+	Histogram   []int64   `json:"histogram"`
 	FirstSeenAt time.Time `json:"first_seen_at"`
 }
 

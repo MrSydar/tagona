@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Tagona API
-  version: 1.9.0
+  version: 1.10.0
   description: |
     Storage for collections of objects with sparse tags, each with a confidence score, that are evaluated on demand.
 
@@ -215,9 +215,9 @@ paths:
       operationId: listCollectionTags
       summary: Object count and registered tags of a collection
       description: |
-        Returns the number of objects in the collection and every tag registered in it, with how
-        many objects the tag is known true for (a score of at least 0.5), known false for (below 0.5), and not
-        yet evaluated for.
+        Returns the number of objects in the collection and every tag registered in it, with how many objects
+        the tag has a score for (`evaluated`; the others, `total_objects - evaluated`, are not yet evaluated for
+        it), the 10th, 50th and 90th percentile of those scores and their distribution as a histogram of 22 buckets.
         Tags are ordered by name (byte order). A tag stays registered once seen, even if all objects
         carrying it are later deleted. Expired objects are excluded even before they are removed.
         Tags are listed at most `limit` per page (default 100, at most 1000); when more follow, the answer
@@ -993,11 +993,24 @@ components:
 
     TagStat:
       type: object
-      required: [tag, true_count, false_count, first_seen_at]
+      required: [tag, evaluated, p10, p50, p90, histogram, first_seen_at]
       properties:
         tag: { type: string }
-        true_count: { type: integer, format: int64, description: Objects the tag is known for with a score of at least 0.5. }
-        false_count: { type: integer, format: int64, description: Objects the tag is known for with a score below 0.5. }
+        evaluated: { type: integer, format: int64, description: Objects the tag has a score for. }
+        p10: { type: number, nullable: true, minimum: 0, maximum: 1, description: "10th percentile of the tag's scores; `null` when `evaluated` is 0." }
+        p50: { type: number, nullable: true, minimum: 0, maximum: 1, description: "Median of the tag's scores; `null` when `evaluated` is 0." }
+        p90: { type: number, nullable: true, minimum: 0, maximum: 1, description: "90th percentile of the tag's scores; `null` when `evaluated` is 0." }
+        histogram:
+          type: array
+          minItems: 22
+          maxItems: 22
+          items: { type: integer, format: int64 }
+          description: >-
+            Objects per bucket of score. Index 0 is exactly 0 and index 21 exactly 1 (what `grep`, forced tags and
+            yes/no taggers give); indices 1 to 20 are the twenty bins of width 0.05 in between, from 0
+            (exclusive): index 1 is (0, 0.05), index 2 is [0.05, 0.1) and index 20 is [0.95, 1). The percentiles
+            are interpolated inside a bin, so they are exact at 0 and 1 and good to about 0.05 otherwise. The
+            counts add up to `evaluated`.
         first_seen_at: { type: string, format: date-time }
 
     CollectionTags:

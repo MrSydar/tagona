@@ -506,7 +506,7 @@ func TestConcurrentEvaluationKeepsTheCollectionStatsConsistent(t *testing.T) {
 		}
 	}
 	for _, st := range stats {
-		if st.Tag == "golang" && (st.TrueCount != wantTrue || st.TrueCount+st.FalseCount != int64(len(known))) {
+		if st.Tag == "golang" && (st.Histogram[models.HistogramBuckets-1] != wantTrue || st.Evaluated != int64(len(known))) {
 			t.Fatalf("golang counters %+v, want %d true of %d known", st, wantTrue, len(known))
 		}
 	}

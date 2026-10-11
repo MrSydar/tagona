@@ -1,6 +1,7 @@
 package models
 
 import (
+	"math"
 	"time"
 )
 
@@ -56,14 +57,75 @@ func Forced(tags map[string]bool) map[string]float64 {
 	return out
 }
 
+// HistogramBuckets is the number of buckets of a tag's score distribution: 0 is exactly 0, 21 is exactly 1, and
+// 1 to 20 are the bins of width 0.05 in between ((0, 0.05), [0.05, 0.1), …, [0.95, 1)). Scores of 0 and 1 are all
+// that grep, forced tags and yes/no taggers produce, so they get buckets of their own.
+const HistogramBuckets = 22
+
+// ScoreBucket is the bucket of a score; the database's tagona_score_bucket does the same.
+func ScoreBucket(score float64) int {
+	switch {
+	case score <= 0:
+		return 0
+	case score >= 1:
+		return HistogramBuckets - 1
+	}
+	return 1 + min(int(score*20), 19)
+}
+
 // TagStat describes one tag registered in a collection. Tags are sparse: an
 // object has a score for a tag only once the tag was evaluated for it.
 type TagStat struct {
 	Tag string `json:"tag"`
-	// TrueCount and FalseCount are the objects the tag is known for with a score of at least 0.5 and below it.
-	TrueCount   int64     `json:"true_count"`
-	FalseCount  int64     `json:"false_count"`
+	// Evaluated is the number of objects the tag has a score for.
+	Evaluated int64 `json:"evaluated"`
+	// P10, P50 and P90 are the percentiles of the tag's scores, nil when no object has been evaluated for it.
+	// They are interpolated inside a bin, so they are exact only at 0 and 1 and otherwise good to about 0.05.
+	P10 *float64 `json:"p10"`
+	P50 *float64 `json:"p50"`
+	P90 *float64 `json:"p90"`
+	// Histogram is the number of objects in each of the HistogramBuckets buckets of scores.
+	Histogram   []int64   `json:"histogram"`
 	FirstSeenAt time.Time `json:"first_seen_at"`
+}
+
+// NewTagStat builds the statistics of a tag from its histogram.
+func NewTagStat(tag string, histogram []int64, firstSeen time.Time) TagStat {
+	st := TagStat{Tag: tag, Histogram: histogram, FirstSeenAt: firstSeen}
+	for _, n := range histogram {
+		st.Evaluated += n
+	}
+	if st.Evaluated > 0 {
+		st.P10, st.P50, st.P90 = percentile(histogram, st.Evaluated, 0.1), percentile(histogram, st.Evaluated, 0.5), percentile(histogram, st.Evaluated, 0.9)
+	}
+	return st
+}
+
+// percentile is the q-th quantile (0 < q <= 1) of the scores in a histogram with n scores in all, rounded to three
+// decimals: the bucket that holds the rank, 0 or 1 for the exact buckets, and a position inside a bin otherwise.
+func percentile(histogram []int64, n int64, q float64) *float64 {
+	rank := q * float64(n)
+	var before int64
+	for b, c := range histogram {
+		if c == 0 || float64(before+c) < rank {
+			before += c
+			continue
+		}
+		var v float64
+		switch b {
+		case 0:
+			v = 0
+		case HistogramBuckets - 1:
+			v = 1
+		default:
+			lower := float64(b-1) * 0.05
+			v = lower + 0.05*(rank-float64(before))/float64(c)
+		}
+		v = math.Round(v*1000) / 1000
+		return &v
+	}
+	one := 1.0
+	return &one
 }
 
 // CollectionTagsResponse is the response for listing a collection's tags.

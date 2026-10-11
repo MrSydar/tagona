@@ -58,7 +58,21 @@ func mustTag(t *testing.T, d *db.DB, collID, objID string, tags map[string]bool)
 	}
 }
 
+// counts is how many objects score at least 0.5 (t) and below it (f); the tests that only force tags, or
+// store scores far from the middle, read the histogram through it.
 type counts struct{ t, f int64 }
+
+func countsOf(histogram []int64) counts {
+	var c counts
+	for b, n := range histogram {
+		if b >= 11 { // the bins from 0.5 up, and the bucket of exactly 1
+			c.t += n
+		} else {
+			c.f += n
+		}
+	}
+	return c
+}
 
 // assertStats checks the API-facing stats for a collection.
 func assertStats(t *testing.T, d *db.DB, collID string, wantTotal int64, want map[string]counts) {
@@ -72,7 +86,7 @@ func assertStats(t *testing.T, d *db.DB, collID string, wantTotal int64, want ma
 	}
 	got := map[string]counts{}
 	for _, st := range stats {
-		got[st.Tag] = counts{st.TrueCount, st.FalseCount}
+		got[st.Tag] = countsOf(st.Histogram)
 	}
 	for tag, w := range want {
 		if got[tag] != w {
@@ -103,42 +117,56 @@ func assertConsistent(t *testing.T, pool *pgxpool.Pool, collID string) {
 		t.Errorf("object_count = %d, actual %d", counter, actual)
 	}
 
-	truth := map[string]counts{}
+	truth := map[string]map[int]int64{}
 	rows, err := pool.Query(ctx,
-		`SELECT tag, count(*) FILTER (WHERE score >= 0.5), count(*) FILTER (WHERE score < 0.5)
-		 FROM object_tags WHERE collection_id = $1 GROUP BY tag`, collID)
+		`SELECT tag, tagona_score_bucket(score), count(*)
+		 FROM object_tags WHERE collection_id = $1 GROUP BY tag, tagona_score_bucket(score)`, collID)
 	if err != nil {
 		t.Fatalf("recompute: %v", err)
 	}
 	for rows.Next() {
 		var tag string
-		var c counts
-		rows.Scan(&tag, &c.t, &c.f)
-		truth[tag] = c
+		var bucket int
+		var n int64
+		rows.Scan(&tag, &bucket, &n)
+		if truth[tag] == nil {
+			truth[tag] = map[int]int64{}
+		}
+		truth[tag][bucket] = n
 	}
 	rows.Close()
 
-	registered := map[string]counts{}
-	rows, err = pool.Query(ctx, `SELECT tag, true_count, false_count FROM collection_tags WHERE collection_id = $1`, collID)
+	registered := map[string]map[int]int64{}
+	rows, err = pool.Query(ctx,
+		`SELECT ct.tag, b.bucket, b.count FROM collection_tags ct
+		 LEFT JOIN collection_tag_buckets b ON b.collection_id = ct.collection_id AND b.tag = ct.tag
+		 WHERE ct.collection_id = $1`, collID)
 	if err != nil {
 		t.Fatalf("read registry: %v", err)
 	}
 	for rows.Next() {
 		var tag string
-		var c counts
-		rows.Scan(&tag, &c.t, &c.f)
-		registered[tag] = c
+		var bucket *int
+		var n *int64
+		rows.Scan(&tag, &bucket, &n)
+		if registered[tag] == nil {
+			registered[tag] = map[int]int64{}
+		}
+		if bucket != nil && *n != 0 { // a bucket that was emptied stays as a row with 0
+			registered[tag][*bucket] = *n
+		}
 	}
 	rows.Close()
 
 	for tag, want := range truth {
-		if got, ok := registered[tag]; !ok || got != want {
-			t.Errorf("tag %q: registry %+v (present=%v), actual %+v", tag, got, ok, want)
+		got, ok := registered[tag]
+		if !ok || fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("tag %q: buckets %v (present=%v), actual %v", tag, got, ok, want)
 		}
 	}
 	for tag, got := range registered {
-		if _, ok := truth[tag]; !ok && (got.t != 0 || got.f != 0) {
-			t.Errorf("tag %q: registry %+v but no object_tags rows", tag, got)
+		if _, ok := truth[tag]; !ok && len(got) != 0 {
+			t.Errorf("tag %q: buckets %v but no object_tags rows", tag, got)
 		}
 	}
 }
@@ -436,5 +464,66 @@ func TestForcedTagsKeepCountersAndBeatEvaluation(t *testing.T) {
 	// an unknown object is reported as such
 	if err := d.ChangeTags(ctx, coll, "00000000-0000-0000-0000-000000000000", map[string]float64{"a": 1}, nil); !errors.Is(err, db.ErrObjectNotFound) {
 		t.Errorf("unknown object: err = %v", err)
+	}
+}
+
+// The scores are kept as a distribution: the database's bucket function agrees with models.ScoreBucket, and the
+// stats of a tag carry its histogram, the number of evaluated objects and the percentiles.
+func TestCollectionStatsHistogram(t *testing.T) {
+	d, pool := newTestDB(t)
+	ctx := context.Background()
+	coll := mustCollection(t, d, "jobs")
+
+	for _, score := range []float64{0, 1e-9, 0.04999, 0.05, 0.5, 0.7, 0.95, 0.999999, 1} {
+		var got int
+		if err := pool.QueryRow(ctx, `SELECT tagona_score_bucket($1::float8)`, score).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if want := models.ScoreBucket(score); got != want {
+			t.Errorf("tagona_score_bucket(%v) = %d, Go says %d", score, got, want)
+		}
+	}
+
+	scores := []float64{0, 0.12, 0.12, 0.55, 0.93, 1}
+	var ids []string
+	for i := range scores {
+		ids = append(ids, mustObject(t, d, coll, fmt.Sprintf("h%d", i), nil))
+	}
+	for i, id := range ids {
+		if err := d.FillTags(ctx, coll, id, map[string]float64{"golang": scores[i]}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertConsistent(t, pool, coll)
+
+	stat := func() models.TagStat {
+		t.Helper()
+		_, stats, err := d.GetCollectionTagStats(ctx, coll, "", "", 10)
+		if err != nil || len(stats) != 1 {
+			t.Fatalf("stats = %v, %v", stats, err)
+		}
+		return stats[0]
+	}
+	st := stat()
+	want := make([]int64, models.HistogramBuckets)
+	want[0], want[3], want[12], want[19], want[21] = 1, 2, 1, 1, 1 // 0; 0.12 twice; 0.55; 0.93; 1
+	if st.Evaluated != 6 || fmt.Sprint(st.Histogram) != fmt.Sprint(want) {
+		t.Fatalf("evaluated %d, histogram %v, want 6 and %v", st.Evaluated, st.Histogram, want)
+	}
+	if st.P50 == nil || *st.P50 <= 0.1 || *st.P50 >= 0.2 {
+		t.Errorf("median = %v, want a value in the bin of 0.12", st.P50)
+	}
+
+	// a forced value moves an object from one bucket to another, and a deleted tag leaves the distribution
+	if err := d.ChangeTags(ctx, coll, ids[1], map[string]float64{"golang": 1}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.ChangeTags(ctx, coll, ids[0], nil, []string{"golang"}); err != nil {
+		t.Fatal(err)
+	}
+	assertConsistent(t, pool, coll)
+	st = stat()
+	if st.Evaluated != 5 || st.Histogram[0] != 0 || st.Histogram[3] != 1 || st.Histogram[21] != 2 {
+		t.Errorf("after the changes: evaluated %d, histogram %v", st.Evaluated, st.Histogram)
 	}
 }

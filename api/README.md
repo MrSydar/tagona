@@ -217,7 +217,7 @@ Response `204 No Content` — cascades to all objects and tags, and deletes S3 p
 
 **Collection Tags**
 
-Tags are sparse: an object only has a score for a tag once the tag was evaluated for it (lazily, by a query or a tags request). This endpoint shows the collection's total object count and every tag registered in it, with how many objects the tag is true for (a score of at least 0.5), false for (below 0.5), or not yet evaluated for.
+Tags are sparse: an object only has a score for a tag once the tag was evaluated for it (lazily, by a query or a tags request). This endpoint shows the collection's total object count and every tag registered in it, with how many objects the tag has a score for, the percentiles of those scores and their distribution.
 
 ```bash
 curl -H "Authorization: Bearer $KEY" \
@@ -230,16 +230,20 @@ Response `200 OK`:
   "collection": "jobs",
   "total_objects": 120,
   "tags": [
-    {"tag":"golang","true_count":40,"false_count":55,"first_seen_at":"2026-10-02T07:29:19Z"},
-    {"tag":"lang:rust","true_count":3,"false_count":20,"first_seen_at":"2026-10-02T08:01:42Z"}
+    {"tag":"golang","evaluated":95,"p10":0.04,"p50":0.31,"p90":0.97,
+     "histogram":[41,6,3,2,1,1,1,2,3,3,1,2,1,2,3,4,5,6,8,0,0,0],"first_seen_at":"2026-10-02T07:29:19Z"},
+    {"tag":"lang:rust","evaluated":0,"p10":null,"p50":null,"p90":null,
+     "histogram":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"first_seen_at":"2026-10-02T08:01:42Z"}
   ],
   "next": "bGFuZzpydXN0"
 }
 ```
 
 - `total_objects` — objects currently in the collection (expired objects are excluded even before the retention sweep removes them). It counts the whole collection, not just the tags returned.
-- `true_count` / `false_count` — objects the tag is known for with a score of at least / below `0.5`; the remaining `total_objects - true_count - false_count` objects have not been evaluated for the tag yet.
-- A tag stays registered once seen, even if every object carrying it is later deleted (its counts drop to `0`).
+- `evaluated` — objects the tag has a score for; the remaining `total_objects - evaluated` objects have not been evaluated for the tag yet.
+- `histogram` — how many of those objects are in each of 22 buckets of score: index `0` is exactly `0` and index `21` exactly `1` (all that `grep`, forced tags and yes/no taggers give), and indices `1` to `20` are the bins of width `0.05` in between, from `0` (exclusive): index `1` is (0, 0.05), index `2` is [0.05, 0.1) and index `20` is [0.95, 1). The counts add up to `evaluated`; the number of objects at or above a threshold on a bin boundary is the sum of the buckets from there up.
+- `p10`, `p50` (the median) and `p90` — percentiles of the scores, `null` while `evaluated` is `0`. They are interpolated inside a bin, so they are exact at `0` and `1` and good to about `0.05` otherwise.
+- A tag stays registered once seen, even if every object carrying it is later deleted (`evaluated` drops to `0`).
 - Tags are ordered by name (byte order). Query parameters: `prefix` (literal prefix filter, max 128 bytes), `limit` (default `100`, max `1000`, else `400 invalid_limit`), `cursor` (the `next` value of the previous page; absent on the last page).
 - Errors: `404 not_found` for an unknown collection, `400 invalid_collection_name`, `invalid_limit`, `invalid_prefix`, `invalid_cursor`.
 - Counts are maintained by database triggers in the same transaction as every write, so reads are cheap and always consistent with the data.
