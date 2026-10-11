@@ -88,7 +88,8 @@ type Object struct {
 	PayloadKey  string     `json:"payload_key,omitempty"`
 	// Metadata is what the uploader attached to the object (never nil in a response).
 	Metadata map[string]string `json:"metadata"`
-	Tags     map[string]bool   `json:"tags,omitempty"`
+	// Tags are the scores (0 to 1) of the tags a query asked about.
+	Tags map[string]float64 `json:"tags,omitempty"`
 }
 
 // ObjectUploadResponse is returned after uploading an object.
@@ -103,12 +104,15 @@ type ObjectUploadResponse struct {
 
 // TagsQueryRequest is the request for querying objects by tags.
 type TagsQueryRequest struct {
-	Tags       map[string]bool `json:"tags,omitempty"`
-	Date       *DateFilter     `json:"date,omitempty"`
-	Limit      int             `json:"limit"`
-	Cursor     string          `json:"cursor,omitempty"`
-	TimeoutMs  int             `json:"timeout_ms,omitempty"`
-	BestEffort bool            `json:"best_effort,omitempty"`
+	// Tags are the tags to match: true wants a score of at least Threshold, false one below it.
+	Tags map[string]bool `json:"tags,omitempty"`
+	// Threshold is the score a tag needs to count as true; nil is the server's default, 0.5.
+	Threshold  *float64    `json:"threshold,omitempty"`
+	Date       *DateFilter `json:"date,omitempty"`
+	Limit      int         `json:"limit"`
+	Cursor     string      `json:"cursor,omitempty"`
+	TimeoutMs  int         `json:"timeout_ms,omitempty"`
+	BestEffort bool        `json:"best_effort,omitempty"`
 	// Evaluate controls whether tags that are not yet known are evaluated by the
 	// tagging engine. Nil (the default) and true evaluate them; false answers from
 	// already-known tags only, so objects with an unevaluated requested tag are
@@ -133,8 +137,8 @@ type TagsQueryResponse struct {
 
 // TagResponse is returned when getting tags for an object.
 type TagResponse struct {
-	ID   string          `json:"id"`
-	Tags map[string]bool `json:"tags"`
+	ID   string             `json:"id"`
+	Tags map[string]float64 `json:"tags"`
 }
 
 // TagStat describes one tag registered in a collection. Tags are sparse: an
@@ -167,8 +171,8 @@ type CollectionTagsOptions struct {
 // was requested but has not been evaluated for the object (only possible with
 // Evaluate set to false).
 type ObjectTags struct {
-	ID   string           `json:"id"`
-	Tags map[string]*bool `json:"tags"`
+	ID   string              `json:"id"`
+	Tags map[string]*float64 `json:"tags"`
 }
 
 // GetObjectTagsOptions are the parameters of GetObjectTagsWithOptions.

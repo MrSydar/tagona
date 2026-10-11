@@ -113,10 +113,12 @@ commands:
                      With --tags, evaluates only the given tag names.
                      With --evaluate=false nothing is evaluated: requested tags that are
                      not yet known are returned as null.
-  query              --collection <c> [--tag <name=value>] [--tag <name=value>] [--limit <n>] [--cursor <cursor>] [--timeout <ms>] [--best-effort] [--evaluate=false]
+  query              --collection <c> [--tag <name=value>] [--tag <name=value>] [--limit <n>] [--cursor <cursor>] [--timeout <ms>] [--best-effort] [--evaluate=false] [--threshold <0..1>]
                      Query objects in a collection by tag criteria.
                      Use --tag multiple times: --tag \"working with kids=true\" --tag golang=false
                      If no =value is given, the tag defaults to true.
+                     A tag has a score from 0 to 1. A tag wanted true needs a score of at least
+                     --threshold (default 0.5), a tag wanted false one below it.
                      With --evaluate=false the tagger is not called: only objects whose requested
                      tags are already known and match are returned.
   delete             --collection <c> --id <id>
@@ -442,12 +444,13 @@ func query(ctx context.Context, c *client.Client, args []string) {
 	timeout := fs.Int("timeout", 30000, "query timeout in milliseconds")
 	bestEffort := fs.Bool("best-effort", false, "return partial results on timeout")
 	evaluate := fs.Bool("evaluate", true, "evaluate tags that are not yet known; false answers from already-known tags only")
+	threshold := fs.Float64("threshold", 0.5, "score a tag needs to count as true (a tag wanted false needs a lower one)")
 	fs.Parse(args)
 	if *collection == "" {
 		fs.Usage()
 		os.Exit(1)
 	}
-	req := client.TagsQueryRequest{Limit: *limit, Cursor: *cursor, TimeoutMs: *timeout, BestEffort: *bestEffort}
+	req := client.TagsQueryRequest{Limit: *limit, Cursor: *cursor, TimeoutMs: *timeout, BestEffort: *bestEffort, Threshold: threshold}
 	if !*evaluate {
 		req.Evaluate = evaluate
 	}

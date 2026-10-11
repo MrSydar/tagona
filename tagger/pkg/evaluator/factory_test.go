@@ -70,7 +70,7 @@ func TestNewListsTheAvailableEvaluators(t *testing.T) {
 func TestNewReportsBadSettingsOfTheSelectedEvaluator(t *testing.T) {
 	for impl, key := range map[string]string{
 		"completions/openai": "TAGGER_COMPLETIONS_OPENAI_PARAMS",
-		"decisions/openai":   "TAGGER_DECISIONS_OPENAI_THRESHOLD",
+		"decisions/openai":   "TAGGER_DECISIONS_OPENAI_BATCH_SIZE",
 		"decisions/vercel":   "TAGGER_DECISIONS_VERCEL_BATCH_SIZE",
 	} {
 		ev, err := New(impl, settings(map[string]string{key: "nonsense"}))
@@ -79,7 +79,7 @@ func TestNewReportsBadSettingsOfTheSelectedEvaluator(t *testing.T) {
 		}
 	}
 	// Settings of one evaluator do not affect another.
-	if _, err := New("decisions/openai", settings(map[string]string{"TAGGER_DECISIONS_VERCEL_THRESHOLD": "nonsense"})); err != nil {
+	if _, err := New("decisions/openai", settings(map[string]string{"TAGGER_DECISIONS_VERCEL_BATCH_SIZE": "nonsense"})); err != nil {
 		t.Errorf("a vercel setting broke decisions/openai: %v", err)
 	}
 }

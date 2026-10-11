@@ -25,7 +25,7 @@ type fakeTagger struct {
 
 	// for the tests of concurrency: how long an answer takes, what it is, and how many ran at once
 	delay    time.Duration
-	answer   func(objectID string, tags []string) (map[string]bool, error)
+	answer   func(objectID string, tags []string) (map[string]float64, error)
 	inflight atomic.Int32
 	maxSeen  atomic.Int32
 	mu       sync.Mutex
@@ -34,7 +34,7 @@ type fakeTagger struct {
 
 func (f *fakeTagger) Versions(ctx context.Context) ([]string, error) { return []string{"grep"}, nil }
 
-func (f *fakeTagger) Tag(ctx context.Context, collection, objectID, taggerVersion string, tags []string) (map[string]bool, error) {
+func (f *fakeTagger) Tag(ctx context.Context, collection, objectID, taggerVersion string, tags []string) (map[string]float64, error) {
 	f.calls.Add(1)
 	f.lastSeen.Store(taggerVersion)
 	f.mu.Lock()
@@ -61,9 +61,9 @@ func (f *fakeTagger) Tag(ctx context.Context, collection, objectID, taggerVersio
 	if f.answer != nil {
 		return f.answer(objectID, tags)
 	}
-	out := make(map[string]bool, len(tags))
+	out := make(map[string]float64, len(tags))
 	for _, tag := range tags {
-		out[tag] = true
+		out[tag] = 1
 	}
 	return out, nil
 }
@@ -95,12 +95,12 @@ func newFixture(t *testing.T) *fixture {
 		}
 		f.ids = append(f.ids, o.ID)
 	}
-	mustUpsert(t, d, coll.ID, f.ids[0], map[string]bool{"golang": true})
-	mustUpsert(t, d, coll.ID, f.ids[1], map[string]bool{"golang": false})
+	mustUpsert(t, d, coll.ID, f.ids[0], map[string]float64{"golang": 1})
+	mustUpsert(t, d, coll.ID, f.ids[1], map[string]float64{"golang": 0})
 	return f
 }
 
-func mustUpsert(t *testing.T, d *db.DB, collID, objID string, tags map[string]bool) {
+func mustUpsert(t *testing.T, d *db.DB, collID, objID string, tags map[string]float64) {
 	t.Helper()
 	if err := d.UpsertTags(context.Background(), collID, objID, tags); err != nil {
 		t.Fatalf("upsert tags: %v", err)
@@ -142,8 +142,8 @@ func TestEvaluateFalseNeverCallsTagger(t *testing.T) {
 	if !same(ids(resp.Objects), f.ids[0:1]) {
 		t.Errorf("results = %v, want %v", ids(resp.Objects), f.ids[0:1])
 	}
-	if got := resp.Objects[0].Tags; len(got) != 1 || !got["golang"] {
-		t.Errorf("result tags = %v, want the requested filter", got)
+	if got := resp.Objects[0].Tags; len(got) != 1 || got["golang"] != 1 {
+		t.Errorf("result tags = %v, want the score of the requested tag", got)
 	}
 	if n := f.tagger.calls.Load(); n != 0 {
 		t.Errorf("tagger was called %d times with evaluate=false", n)
@@ -306,10 +306,14 @@ func newBulk(t *testing.T, n int) *bulk {
 }
 
 // evenGolang answers golang=true for the objects with an even index.
-func (b *bulk) evenGolang(objectID string, tags []string) (map[string]bool, error) {
-	out := map[string]bool{}
+func (b *bulk) evenGolang(objectID string, tags []string) (map[string]float64, error) {
+	out := map[string]float64{}
 	for _, tag := range tags {
-		out[tag] = b.idx[objectID]%2 == 0
+		if b.idx[objectID]%2 == 0 {
+			out[tag] = 1
+		} else {
+			out[tag] = 0
+		}
 	}
 	return out, nil
 }
@@ -382,7 +386,7 @@ func TestConcurrentQueryIsFaster(t *testing.T) {
 func TestConcurrentQueryEvaluatesLittleMoreThanItNeeds(t *testing.T) {
 	const k = 4
 	b := newBulk(t, 60)
-	tagger := &fakeTagger{answer: func(string, []string) (map[string]bool, error) { return map[string]bool{"golang": true}, nil }, delay: 10 * time.Millisecond}
+	tagger := &fakeTagger{answer: func(string, []string) (map[string]float64, error) { return map[string]float64{"golang": 1}, nil }, delay: 10 * time.Millisecond}
 	got, err := b.ask(t, k, tagger, models.TagsQueryRequest{Tags: map[string]bool{"golang": true}, Limit: 5})
 	if err != nil || len(got.Objects) != 5 {
 		t.Fatalf("%v, %v", got, err)
@@ -396,7 +400,7 @@ func TestConcurrentQueryEvaluatesLittleMoreThanItNeeds(t *testing.T) {
 // An evaluation that finished is kept even when the query did not need it.
 func TestFinishedEvaluationsAreStoredEvenIfUnused(t *testing.T) {
 	b := newBulk(t, 40)
-	tagger := &fakeTagger{answer: func(string, []string) (map[string]bool, error) { return map[string]bool{"golang": true}, nil }}
+	tagger := &fakeTagger{answer: func(string, []string) (map[string]float64, error) { return map[string]float64{"golang": 1}, nil }}
 	if _, err := b.ask(t, 6, tagger, models.TagsQueryRequest{Tags: map[string]bool{"golang": true}, Limit: 2}); err != nil {
 		t.Fatal(err)
 	}
@@ -419,11 +423,11 @@ func TestFinishedEvaluationsAreStoredEvenIfUnused(t *testing.T) {
 func TestTaggerErrorFailsTheQueryAndStopsTheRest(t *testing.T) {
 	b := newBulk(t, 30)
 	boom := errors.New("boom")
-	tagger := &fakeTagger{delay: 5 * time.Millisecond, answer: func(id string, tags []string) (map[string]bool, error) {
+	tagger := &fakeTagger{delay: 5 * time.Millisecond, answer: func(id string, tags []string) (map[string]float64, error) {
 		if b.idx[id] == 2 {
 			return nil, boom
 		}
-		return map[string]bool{"golang": true}, nil
+		return map[string]float64{"golang": 1}, nil
 	}}
 	_, err := b.ask(t, 4, tagger, models.TagsQueryRequest{Tags: map[string]bool{"golang": true}, Limit: 20})
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "tag engine error") {
@@ -449,7 +453,7 @@ func TestVersionMismatchSurfacesFromAConcurrentQuery(t *testing.T) {
 // object: the next page evaluates the object that was in progress, it is not skipped.
 func TestBestEffortTimeoutCursorSkipsNothing(t *testing.T) {
 	b := newBulk(t, 40)
-	tagger := &fakeTagger{answer: func(string, []string) (map[string]bool, error) { return map[string]bool{"golang": true}, nil }, delay: 40 * time.Millisecond}
+	tagger := &fakeTagger{answer: func(string, []string) (map[string]float64, error) { return map[string]float64{"golang": 1}, nil }, delay: 40 * time.Millisecond}
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 	req := models.TagsQueryRequest{Tags: map[string]bool{"golang": true}, Limit: 30, BestEffort: true}
@@ -497,7 +501,7 @@ func TestConcurrentEvaluationKeepsTheCollectionStatsConsistent(t *testing.T) {
 	var wantTrue int64
 	known, _ := b.d.GetKnownTagsForObjects(context.Background(), b.ids)
 	for _, tags := range known {
-		if tags["golang"] {
+		if tags["golang"] >= 0.5 {
 			wantTrue++
 		}
 	}
@@ -505,5 +509,56 @@ func TestConcurrentEvaluationKeepsTheCollectionStatsConsistent(t *testing.T) {
 		if st.Tag == "golang" && (st.TrueCount != wantTrue || st.TrueCount+st.FalseCount != int64(len(known))) {
 			t.Fatalf("golang counters %+v, want %d true of %d known", st, wantTrue, len(known))
 		}
+	}
+}
+
+// The tagger's confidence is stored as it is, and the threshold of a query is applied to it afterwards: asking again
+// with another threshold needs no new evaluation.
+func TestThresholdIsAppliedToStoredScores(t *testing.T) {
+	b := newBulk(t, 6)
+	tagger := &fakeTagger{answer: func(string, []string) (map[string]float64, error) {
+		return map[string]float64{"golang": 0.7}, nil
+	}}
+	ask := func(want bool, threshold *float64, evaluate *bool) *models.TagsQueryResponse {
+		t.Helper()
+		resp, err := b.ask(t, 2, tagger, models.TagsQueryRequest{
+			Tags: map[string]bool{"golang": want}, Threshold: threshold, Limit: 100, Evaluate: evaluate,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	if got := ask(true, nil, nil); len(got.Objects) != 6 || got.Objects[0].Tags["golang"] != 0.7 {
+		t.Fatalf("default threshold: %d objects, tags %v; want 6 with golang=0.7", len(got.Objects), got.Objects[0].Tags)
+	}
+	asked := tagger.calls.Load()
+
+	for _, tc := range []struct {
+		want      bool
+		threshold float64
+		matches   int
+	}{
+		{true, 0.7, 6}, {true, 0.8, 0}, {false, 0.8, 6}, {false, 0.7, 0}, {true, 0, 6},
+	} {
+		th := tc.threshold
+		got := ask(tc.want, &th, ptr(false))
+		if len(got.Objects) != tc.matches {
+			t.Errorf("golang=%v at %v: %d objects, want %d", tc.want, tc.threshold, len(got.Objects), tc.matches)
+		}
+		for _, o := range got.Objects {
+			if o.Tags["golang"] != 0.7 {
+				t.Errorf("answer tags = %v", o.Tags)
+			}
+		}
+	}
+	// a query that evaluates too: known scores that do not match are not asked about again
+	th := 0.9
+	if got := ask(true, &th, nil); len(got.Objects) != 0 {
+		t.Errorf("golang=true at 0.9: %d objects, want 0", len(got.Objects))
+	}
+	if n := tagger.calls.Load(); n != asked {
+		t.Errorf("the tagger was asked %d more times for tags that were known", n-asked)
 	}
 }

@@ -76,7 +76,7 @@ type tagRequest struct {
 }
 
 type tagResponse struct {
-	Tags map[string]bool `json:"tags"`
+	Tags map[string]float64 `json:"tags"`
 }
 
 func (s *Server) tag(w http.ResponseWriter, r *http.Request) {

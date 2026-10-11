@@ -247,6 +247,9 @@ func (d *DB) InsertObject(ctx context.Context, collectionID string, hash string,
 // ErrObjectNotFound is returned by UpdateObjectMetadata for an object that does not exist or has expired.
 var ErrObjectNotFound = errors.New("object not found")
 
+// ErrInvalidScore is returned when a tag's score is not a number from 0 to 1.
+var ErrInvalidScore = errors.New("score must be a number from 0 to 1")
+
 // UpdateObjectMetadata changes the metadata of an object in one transaction: change receives the current
 // metadata and returns the new one, which replaces it. An error from change is returned as it is, and
 // nothing is written. It returns the metadata that was stored.
@@ -303,11 +306,11 @@ func (d *DB) DeleteObject(ctx context.Context, id string) (string, error) {
 	return payloadKey, nil
 }
 
-// GetTagsForObject returns known tags for an object.
-func (d *DB) GetTagsForObject(ctx context.Context, objectID string) (map[string]bool, error) {
+// GetTagsForObject returns the known tags of an object with their scores.
+func (d *DB) GetTagsForObject(ctx context.Context, objectID string) (map[string]float64, error) {
 	slog.Debug("GetTagsForObject", "objectID", objectID)
 	rows, err := d.pool.Query(ctx,
-		`SELECT tag, value FROM object_tags WHERE object_id = $1`,
+		`SELECT tag, score FROM object_tags WHERE object_id = $1`,
 		objectID,
 	)
 	if err != nil {
@@ -315,61 +318,64 @@ func (d *DB) GetTagsForObject(ctx context.Context, objectID string) (map[string]
 	}
 	defer rows.Close()
 
-	tags := make(map[string]bool)
+	tags := make(map[string]float64)
 	for rows.Next() {
 		var tag string
-		var value bool
-		if err := rows.Scan(&tag, &value); err != nil {
+		var score float64
+		if err := rows.Scan(&tag, &score); err != nil {
 			return nil, fmt.Errorf("scan tag: %w", err)
 		}
-		tags[tag] = value
+		tags[tag] = score
 	}
 	return tags, rows.Err()
 }
 
-// UpsertTags sets tags of an object, overwriting a value that is already stored: the tags are forced.
+// UpsertTags sets tags of an object, overwriting a score that is already stored: the tags are forced (1 or 0).
 //
 // The collection_tags counters are row-locked by triggers, so every writer
 // follows one lock order to stay deadlock-free: the object row first (which is
 // also what DeleteObject's cascade takes), then the counter rows in sorted tag
 // order, then the collection row. Deadlocks that still occur (two writers
 // racing to create the same brand-new counter) are retried.
-func (d *DB) UpsertTags(ctx context.Context, collectionID, objectID string, tags map[string]bool) error {
+func (d *DB) UpsertTags(ctx context.Context, collectionID, objectID string, tags map[string]float64) error {
 	return d.ChangeTags(ctx, collectionID, objectID, tags, nil)
 }
 
-// FillTags stores tags an evaluator has answered, without touching a tag that already has a value: a tag forced
+// FillTags stores the scores an evaluator has answered, without touching a tag that already has one: a tag forced
 // while the evaluator was working keeps its forced value.
-func (d *DB) FillTags(ctx context.Context, collectionID, objectID string, tags map[string]bool) error {
+func (d *DB) FillTags(ctx context.Context, collectionID, objectID string, tags map[string]float64) error {
 	return d.writeTags(ctx, collectionID, objectID, tags, nil, false)
 }
 
 // ChangeTags forces tags of an object in one transaction: set overwrites or adds the given values, and remove
 // deletes the named tags (they are unknown again, and a later query evaluates them). A tag in both is set.
-func (d *DB) ChangeTags(ctx context.Context, collectionID, objectID string, set map[string]bool, remove []string) error {
+func (d *DB) ChangeTags(ctx context.Context, collectionID, objectID string, set map[string]float64, remove []string) error {
 	return d.writeTags(ctx, collectionID, objectID, set, remove, true)
 }
 
-func (d *DB) writeTags(ctx context.Context, collectionID, objectID string, tags map[string]bool, remove []string, overwrite bool) error {
+func (d *DB) writeTags(ctx context.Context, collectionID, objectID string, tags map[string]float64, remove []string, overwrite bool) error {
 	slog.Debug("writeTags", "collectionID", collectionID, "objectID", objectID, "tagCount", len(tags), "removeCount", len(remove), "overwrite", overwrite)
 	if len(tags) == 0 && len(remove) == 0 {
 		return nil
 	}
 	names := make([]string, 0, len(tags))
-	for tag := range tags {
+	for tag, score := range tags {
+		if !(score >= 0 && score <= 1) { // also rejects NaN
+			return fmt.Errorf("tag %q: %w", tag, ErrInvalidScore)
+		}
 		names = append(names, tag)
 	}
 	sort.Strings(names)
-	values := make([]bool, len(names))
+	scores := make([]float64, len(names))
 	for i, tag := range names {
-		values[i] = tags[tag]
+		scores[i] = tags[tag]
 	}
 	// counters to lock: every tag this call can touch
 	touched := append(append([]string{}, names...), remove...)
 	sort.Strings(touched)
 	onConflict := `ON CONFLICT (object_id, tag) DO NOTHING`
 	if overwrite {
-		onConflict = `ON CONFLICT (object_id, tag) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`
+		onConflict = `ON CONFLICT (object_id, tag) DO UPDATE SET score = EXCLUDED.score, updated_at = NOW()`
 	}
 
 	return retryOnDeadlock(ctx, func() error {
@@ -400,11 +406,11 @@ func (d *DB) writeTags(ctx context.Context, collectionID, objectID string, tags 
 		}
 		if len(names) > 0 {
 			if _, err = tx.Exec(ctx,
-				`INSERT INTO object_tags (object_id, collection_id, tag, value, updated_at)
-				 SELECT $1, $2, t.tag, t.value, NOW()
-				 FROM unnest($3::text[], $4::boolean[]) AS t(tag, value)
+				`INSERT INTO object_tags (object_id, collection_id, tag, score, updated_at)
+				 SELECT $1, $2, t.tag, t.score, NOW()
+				 FROM unnest($3::text[], $4::float8[]) AS t(tag, score)
 				 ORDER BY t.tag `+onConflict,
-				objectID, collectionID, names, values,
+				objectID, collectionID, names, scores,
 			); err != nil {
 				return fmt.Errorf("upsert tags: %w", err)
 			}
@@ -484,8 +490,8 @@ func (d *DB) GetCollectionTagStats(ctx context.Context, collectionID, prefix, af
 	rows, err := tx.Query(ctx,
 		`WITH expired AS (
 		     SELECT t.tag,
-		            count(*) FILTER (WHERE t.value) AS true_count,
-		            count(*) FILTER (WHERE NOT t.value) AS false_count
+		            count(*) FILTER (WHERE t.score >= 0.5) AS true_count,
+		            count(*) FILTER (WHERE t.score < 0.5) AS false_count
 		     FROM objects o JOIN object_tags t ON t.object_id = o.id
 		     WHERE o.collection_id = $1 AND o.expires_at IS NOT NULL AND o.expires_at <= NOW()
 		     GROUP BY t.tag
@@ -562,11 +568,12 @@ func (d *DB) ListExpiredObjects(ctx context.Context, after *ExpiredObject, limit
 	return out, rows.Err()
 }
 
-// QueryObjectsKnownTags returns objects that already have all tags known and matching.
-func (d *DB) QueryObjectsKnownTags(ctx context.Context, collectionID string, tags map[string]bool, dateFilter *models.DateFilter, cursorDate time.Time, cursorID string, limit int) ([]models.Object, error) {
+// QueryObjectsKnownTags returns objects that already have all tags known and matching: a tag wanted true has a
+// score of at least threshold, a tag wanted false has one below it.
+func (d *DB) QueryObjectsKnownTags(ctx context.Context, collectionID string, tags map[string]bool, threshold float64, dateFilter *models.DateFilter, cursorDate time.Time, cursorID string, limit int) ([]models.Object, error) {
 	slog.Debug("QueryObjectsKnownTags", "collectionID", collectionID, "tagCount", len(tags), "limit", limit)
 	// Build a query that finds objects where for every tag in the request,
-	// there exists a row in object_tags with that value.
+	// there exists a row in object_tags with a matching score.
 	// This is done via aggregation to avoid joins that could produce wrong counts.
 	if len(tags) == 0 {
 		return d.queryObjectsByDate(ctx, collectionID, dateFilter, cursorDate, cursorID, limit)
@@ -595,18 +602,23 @@ func (d *DB) QueryObjectsKnownTags(ctx context.Context, collectionID string, tag
 	// We need objects where all requested tags are known and match.
 	// Strategy: use a lateral subquery or CTE. Let's use a CTE.
 	// Actually, simpler: select from objects where id IN (
-	//   SELECT object_id FROM object_tags WHERE collection_id=$1 AND (tag=$2 AND value=$3 OR ...)
+	//   SELECT object_id FROM object_tags WHERE collection_id=$1 AND (tag=$2 AND score>=$3 OR ...)
 	//   GROUP BY object_id HAVING COUNT(*) = N
 	// ) and then order by date desc, id asc.
 
 	tagConds := []string{}
 	tagIdx := 0
-	for tag, value := range tags {
+	args = append(args, threshold)
+	argIdx++
+	thresholdArg := argIdx
+	for tag, want := range tags {
 		argIdx++
-		cond := fmt.Sprintf("(tag = $%d AND value = $%d)", argIdx, argIdx+1)
-		tagConds = append(tagConds, cond)
-		args = append(args, tag, value)
-		argIdx++
+		op := ">="
+		if !want {
+			op = "<"
+		}
+		tagConds = append(tagConds, fmt.Sprintf("(tag = $%d AND score %s $%d)", argIdx, op, thresholdArg))
+		args = append(args, tag)
 		tagIdx++
 	}
 
@@ -744,11 +756,11 @@ func (d *DB) ScanCandidateObjects(ctx context.Context, collectionID string, date
 	return scanObjects(rows)
 }
 
-// GetKnownTagsForObjects returns all known tags for a set of object IDs.
-func (d *DB) GetKnownTagsForObjects(ctx context.Context, objectIDs []string) (map[string]map[string]bool, error) {
+// GetKnownTagsForObjects returns all known tags, with their scores, for a set of object IDs.
+func (d *DB) GetKnownTagsForObjects(ctx context.Context, objectIDs []string) (map[string]map[string]float64, error) {
 	slog.Debug("GetKnownTagsForObjects", "objectCount", len(objectIDs))
 	if len(objectIDs) == 0 {
-		return map[string]map[string]bool{}, nil
+		return map[string]map[string]float64{}, nil
 	}
 	// pgx.In doesn't work with string slices directly in v5 the same way.
 	// We'll construct IN clause manually.
@@ -758,24 +770,24 @@ func (d *DB) GetKnownTagsForObjects(ctx context.Context, objectIDs []string) (ma
 		args[i] = id
 		placeholders[i] = fmt.Sprintf("$%d", i+1)
 	}
-	query := fmt.Sprintf(`SELECT object_id, tag, value FROM object_tags WHERE object_id IN (%s)`, joinStrings(placeholders, ","))
+	query := fmt.Sprintf(`SELECT object_id, tag, score FROM object_tags WHERE object_id IN (%s)`, joinStrings(placeholders, ","))
 	rows, err := d.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("get known tags: %w", err)
 	}
 	defer rows.Close()
 
-	result := make(map[string]map[string]bool)
+	result := make(map[string]map[string]float64)
 	for rows.Next() {
 		var oid, tag string
-		var value bool
-		if err := rows.Scan(&oid, &tag, &value); err != nil {
+		var score float64
+		if err := rows.Scan(&oid, &tag, &score); err != nil {
 			return nil, fmt.Errorf("scan known tag: %w", err)
 		}
 		if result[oid] == nil {
-			result[oid] = make(map[string]bool)
+			result[oid] = make(map[string]float64)
 		}
-		result[oid][tag] = value
+		result[oid][tag] = score
 	}
 	return result, rows.Err()
 }

@@ -10,10 +10,10 @@ import (
 	"strings"
 )
 
-// The "decisions" evaluators ask a vendor one yes/no question per tag about the text and call the tag
-// true when the vendor's probability for "yes" reaches a threshold. Vendors differ in the wire format
+// The "decisions" evaluators ask a vendor one yes/no question per tag about the text and report the
+// vendor's probability for "yes" as the tag's confidence. Vendors differ in the wire format
 // ("dialect"): decisions/openai speaks OpenAI's Decisions API (POST /decisions), decisions/vercel the
-// Vercel AI Gateway's evaluate endpoint. Everything else (batching, threshold, instructions, the HTTP
+// Vercel AI Gateway's evaluate endpoint. Everything else (batching, instructions, the HTTP
 // settings of httpconfig.go) is shared.
 
 // question is one tag put to the vendor.
@@ -54,7 +54,6 @@ type Decisions struct {
 	label        string
 	cfg          HTTPConfig
 	dialect      decisionsDialect
-	threshold    float64
 	batchSize    int
 	instructions string
 	// imageInstructions is the question for an image.
@@ -65,7 +64,6 @@ type Decisions struct {
 // newDecisions reads the settings of a decisions evaluator from prefix: the HTTP settings of
 // httpconfig.go plus
 //
-//	<P>THRESHOLD     probability at or above which a tag is true (default 0.5, between 0 and 1)
 //	<P>BATCH_SIZE    questions per request (default 50); more tags are sent in several requests.
 //	                 0 sends them all in one request
 //	<P>INSTRUCTIONS  the question for each tag; must contain {tag}
@@ -73,10 +71,6 @@ type Decisions struct {
 func newDecisions(label, prefix string, defaults HTTPDefaults, dialect decisionsDialect, lookup LookupFunc) (*Decisions, error) {
 	cfg, err := LoadHTTPConfig(lookup, prefix, defaults)
 	var errs []error
-	if err != nil {
-		errs = append(errs, err)
-	}
-	threshold, err := parseFloatEnv(lookup, prefix+"THRESHOLD", 0.5, 0, 1)
 	if err != nil {
 		errs = append(errs, err)
 	}
@@ -102,21 +96,21 @@ func newDecisions(label, prefix string, defaults HTTPDefaults, dialect decisions
 		return nil, err
 	}
 	slog.Debug("decisions evaluator", "label", label, "base_url", cfg.BaseURL, "path", cfg.Path, "model", cfg.Model,
-		"threshold", threshold, "batch_size", batch, "timeout", cfg.Timeout)
+		"batch_size", batch, "timeout", cfg.Timeout)
 	return &Decisions{
-		label: label, cfg: cfg, dialect: dialect, threshold: threshold, batchSize: batch,
+		label: label, cfg: cfg, dialect: dialect, batchSize: batch,
 		instructions: instructions, imageInstructions: imageInstructions, client: &http.Client{Timeout: cfg.Timeout},
 	}, nil
 }
 
 // Evaluate asks one question per tag about the content: an image (by its stored media type) goes to the vendor as
-// an image when the vendor's dialect supports that, anything else is read as text. A tag the vendor does not answer
-// is false.
-func (e *Decisions) Evaluate(ctx context.Context, content Content, tags []string) (map[string]bool, error) {
+// an image when the vendor's dialect supports that, anything else is read as text. The confidence of a tag is the
+// vendor's probability for "yes"; a tag the vendor does not answer, or declines to, is 0.
+func (e *Decisions) Evaluate(ctx context.Context, content Content, tags []string) (map[string]float64, error) {
 	slog.Debug("Decisions.Evaluate", "label", e.label, "tags_count", len(tags))
-	result := make(map[string]bool, len(tags))
+	result := make(map[string]float64, len(tags))
 	for _, tag := range tags {
-		result[tag] = false
+		result[tag] = 0
 	}
 	if len(tags) == 0 {
 		return result, nil
@@ -158,7 +152,9 @@ func (e *Decisions) Evaluate(ctx context.Context, content Content, tags []string
 		}
 		for _, q := range qs {
 			p, answered := probs[q.name]
-			result[q.tag] = answered && p >= e.threshold
+			if answered {
+				result[q.tag] = min(max(p, 0), 1)
+			}
 			slog.Debug("evaluating tag", "tag", q.tag, "answered", answered, "probability", p, "result", result[q.tag])
 		}
 	}

@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -83,7 +84,7 @@ func TestQueryObjectsKnownTags(t *testing.T) {
 
 	query := func(tags map[string]bool, filter *models.DateFilter, cd time.Time, cid string, limit int) []string {
 		t.Helper()
-		objs, err := d.QueryObjectsKnownTags(ctx, coll, tags, filter, cd, cid, limit)
+		objs, err := d.QueryObjectsKnownTags(ctx, coll, tags, 0.5, filter, cd, cid, limit)
 		if err != nil {
 			t.Fatalf("query %v: %v", tags, err)
 		}
@@ -106,7 +107,7 @@ func TestQueryObjectsKnownTags(t *testing.T) {
 	// Paging: limit 2 then continue from the cursor.
 	page1 := query(map[string]bool{"a": true}, nil, time.Time{}, "", 2)
 	check("page 1", page1, []string{ids[0], ids[1]})
-	objs, _ := d.QueryObjectsKnownTags(ctx, coll, map[string]bool{"a": true}, nil, time.Time{}, "", 2)
+	objs, _ := d.QueryObjectsKnownTags(ctx, coll, map[string]bool{"a": true}, 0.5, nil, time.Time{}, "", 2)
 	last := objs[len(objs)-1]
 	check("page 2", query(map[string]bool{"a": true}, nil, last.Date, last.ID, 2), []string{ids[2]})
 
@@ -120,3 +121,57 @@ func TestQueryObjectsKnownTags(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// A tag is true at or above the threshold and false below it; the stored scores are what the tagger reported.
+func TestQueryObjectsKnownTagsByThreshold(t *testing.T) {
+	d, _ := newTestDB(t)
+	ctx := context.Background()
+	coll := mustCollection(t, d, "jobs")
+	ids, _ := seedDated(t, d, coll, 4)
+	scores := []float64{0.95, 0.7, 0.5, 0.1}
+	for i, sc := range scores {
+		if err := d.FillTags(ctx, coll, ids[i], map[string]float64{"a": sc}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := func(want bool, threshold float64) []string {
+		objs, err := d.QueryObjectsKnownTags(ctx, coll, map[string]bool{"a": want}, threshold, nil, time.Time{}, "", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := []string{}
+		for _, o := range objs {
+			out = append(out, o.ID)
+		}
+		return out
+	}
+	same := func(name string, got, want []string) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Fatalf("%s: got %d objects, want %d", name, len(got), len(want))
+		}
+		in := map[string]bool{}
+		for _, id := range got {
+			in[id] = true
+		}
+		for _, id := range want {
+			if !in[id] {
+				t.Fatalf("%s: %s missing", name, id)
+			}
+		}
+	}
+	same("true at 0.5", got(true, 0.5), ids[0:3])
+	same("false at 0.5", got(false, 0.5), ids[3:4])
+	same("true at 0.8", got(true, 0.8), ids[0:1])
+	same("false at 0.8", got(false, 0.8), ids[1:4])
+
+	back, err := d.GetTagsForObject(ctx, ids[1])
+	if err != nil || back["a"] != 0.7 {
+		t.Fatalf("stored score = %v, %v", back, err)
+	}
+	for _, bad := range []float64{-0.1, 1.5} {
+		if err := d.FillTags(ctx, coll, ids[0], map[string]float64{"b": bad}); !errors.Is(err, db.ErrInvalidScore) {
+			t.Errorf("score %v: err = %v, want ErrInvalidScore", bad, err)
+		}
+	}
+}

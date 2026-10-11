@@ -217,7 +217,7 @@ Response `204 No Content` — cascades to all objects and tags, and deletes S3 p
 
 **Collection Tags**
 
-Tags are sparse: an object only has a value for a tag once the tag was evaluated for it (lazily, by a query or a tags request). This endpoint shows the collection's total object count and every tag registered in it, with how many objects the tag is true, false, or not yet evaluated for.
+Tags are sparse: an object only has a score for a tag once the tag was evaluated for it (lazily, by a query or a tags request). This endpoint shows the collection's total object count and every tag registered in it, with how many objects the tag is true for (a score of at least 0.5), false for (below 0.5), or not yet evaluated for.
 
 ```bash
 curl -H "Authorization: Bearer $KEY" \
@@ -238,7 +238,7 @@ Response `200 OK`:
 ```
 
 - `total_objects` — objects currently in the collection (expired objects are excluded even before the retention sweep removes them). It counts the whole collection, not just the tags returned.
-- `true_count` / `false_count` — objects the tag is known true / false for; the remaining `total_objects - true_count - false_count` objects have not been evaluated for the tag yet.
+- `true_count` / `false_count` — objects the tag is known for with a score of at least / below `0.5`; the remaining `total_objects - true_count - false_count` objects have not been evaluated for the tag yet.
 - A tag stays registered once seen, even if every object carrying it is later deleted (its counts drop to `0`).
 - Tags are ordered by name (byte order). Query parameters: `prefix` (literal prefix filter, max 128 bytes), `limit` (default `100`, max `1000`, else `400 invalid_limit`), `cursor` (the `next` value of the previous page; absent on the last page).
 - Errors: `404 not_found` for an unknown collection, `400 invalid_collection_name`, `invalid_limit`, `invalid_prefix`, `invalid_cursor`.
@@ -300,13 +300,13 @@ Both answer `200 OK` with the object. Values must be strings (`400 invalid_json`
 
 **Forcing tags**
 
-Tags are normally evaluated, but you can also set them by hand: with `tags` on an upload, or later with `PATCH …/tags`, where a boolean sets (or overwrites) a tag and `null` deletes it. A forced value is stored like an evaluated one, so queries use it and the tagging engine never replaces it; a deleted tag is unknown again and the next query evaluates it. The tagging engine is not called, so this works whatever the collection's tagger. At most `TAGONA_MAX_TAGS_PER_QUERY` tags per request, each of 1-128 bytes (`400 invalid_tags`). `tags` on an upload is ignored when the bytes already exist (the existing object is returned as it is).
+Tags are normally evaluated, but you can also set them by hand: with `tags` on an upload, or later with `PATCH …/tags`, where a boolean sets (or overwrites) a tag, as a score of 1 for `true` and 0 for `false`, and `null` deletes it. A forced value is stored like an evaluated one, so queries use it and the tagging engine never replaces it; a deleted tag is unknown again and the next query evaluates it. The tagging engine is not called, so this works whatever the collection's tagger. At most `TAGONA_MAX_TAGS_PER_QUERY` tags per request, each of 1-128 bytes (`400 invalid_tags`). `tags` on an upload is ignored when the bytes already exist (the existing object is returned as it is).
 
 ```bash
 curl -X PATCH http://localhost:8080/v1/collections/jobs/objects/$ID/tags \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
   -d '{"golang":true,"remote":false,"old-tag":null}'
-# {"id":"…","tags":{"golang":true,"remote":false}}   <- every tag the object has now
+# {"id":"…","tags":{"golang":1,"remote":0}}   <- the score of every tag the object has now
 ```
 
 **Query by Tags**
@@ -316,6 +316,7 @@ curl -X POST http://localhost:8080/v1/collections/jobs/objects/query \
   -H "Content-Type: application/json" \
   -d '{
     "tags": {"golang": true, "qa": false},
+    "threshold": 0.5,
     "date": {"gte": "2026-01-01T00:00:00Z", "lt": "2027-01-01T00:00:00Z"},
     "limit": 5,
     "cursor": "...",
@@ -333,10 +334,10 @@ curl -X POST http://localhost:8080/v1/collections/jobs/objects/query \
 }
 ```
 
-- Tags are ANDed: all provided tags must match exactly.
+- Tags are ANDed: all provided tags must match. A tag asked for as `true` needs a score of at least `threshold` and a tag asked for as `false` one below it. `threshold` (default `0.5`, between `0` and `1`, else `400 invalid_threshold`) is applied to the stored scores, so using another one evaluates nothing again. Each returned object has `tags` with the score of every requested tag.
 - Missing tags are evaluated on-demand via the tagging engine.
 - Ordering: `date DESC`, then `id ASC`.
-- Pagination: the answer holds at most `limit` objects (default and maximum are configured on the server: 5 and 100) and carries `next` when more match. Send the same query with `cursor` set to it for the next page, and repeat until an answer has no `next`; `tags`, `date` and `evaluate` must stay the same. The cursor marks a position in the order (`date`, then `id`), so objects uploaded or deleted between pages do not shift it.
+- Pagination: the answer holds at most `limit` objects (default and maximum are configured on the server: 5 and 100) and carries `next` when more match. Send the same query with `cursor` set to it for the next page, and repeat until an answer has no `next`; `tags`, `threshold`, `date` and `evaluate` must stay the same. The cursor marks a position in the order (`date`, then `id`), so objects uploaded or deleted between pages do not shift it.
 - Evaluating needs the tagger that the collection is tagged with: another one answers `409 tagger_version_mismatch`.
 - `timeout_ms`: query timeout in milliseconds. Defaults to `30000` (30s). Must be between `1000` (1s) and `300000` (5m); otherwise a `400 invalid_timeout` error is returned. If reached and `best_effort` is `false`, a `query_timeout` error is returned.
 - `best_effort`: when `true` and the query times out, the server returns whatever objects were found up to that point instead of failing. A pagination `next` cursor is included.
@@ -350,13 +351,13 @@ curl "http://localhost:8080/v1/collections/jobs/objects/{id}/tags?tags=golang,qa
 
 If any requested tag is missing, the storage service invokes the tagging engine before responding (`409 tagger_version_mismatch` when the engine does not serve the collection's tagger version). Without `tags`, only the tags already known for the object are returned.
 
-Query parameter `evaluate` (default `true`): with `evaluate=false` the tagging engine is not called. Requested tags that are known come back as `true`/`false`; requested tags that have not been evaluated yet come back as `null`:
+Query parameter `evaluate` (default `true`): with `evaluate=false` the tagging engine is not called. Requested tags that are known come back as scores from `0` to `1`; requested tags that have not been evaluated yet come back as `null`:
 
 ```bash
 curl "http://localhost:8080/v1/collections/jobs/objects/{id}/tags?tags=golang,java&evaluate=false"
 ```
 ```json
-{"id": "…", "tags": {"golang": true, "java": null}}
+{"id": "…", "tags": {"golang": 0.97, "java": null}}
 ```
 
 Any value other than a boolean (`true`/`false`/`1`/`0`) is rejected with `400 invalid_evaluate`.

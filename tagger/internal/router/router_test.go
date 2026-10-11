@@ -32,7 +32,7 @@ func newStub(t *testing.T, name string, versions ...string) *stubTagger {
 			s.tagBodies <- string(b)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(s.tagStatus)
-			json.NewEncoder(w).Encode(map[string]any{"tags": map[string]bool{name: true}})
+			json.NewEncoder(w).Encode(map[string]any{"tags": map[string]float64{name: 1}})
 		default:
 			http.NotFound(w, r)
 		}

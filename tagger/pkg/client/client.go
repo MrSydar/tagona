@@ -59,7 +59,7 @@ type errorResponse struct {
 
 // tagResponse is the response body for /tag.
 type tagResponse struct {
-	Tags map[string]bool `json:"tags"`
+	Tags map[string]float64 `json:"tags"`
 }
 
 // Versions fetches the versions the tagging engine serves.
@@ -88,7 +88,7 @@ func (c *Client) Versions(ctx context.Context) ([]string, error) {
 }
 
 // Tag requests tag evaluation for an object with retries and exponential backoff.
-func (c *Client) Tag(ctx context.Context, collection, objectID, taggerVersion string, tags []string) (map[string]bool, error) {
+func (c *Client) Tag(ctx context.Context, collection, objectID, taggerVersion string, tags []string) (map[string]float64, error) {
 	slog.Debug("tagger client Tag", "collection", collection, "object_id", objectID, "tagger_version", taggerVersion, "tags_count", len(tags))
 	payload := tagRequest{
 		Collection:    collection,

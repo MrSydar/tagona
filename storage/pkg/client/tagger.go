@@ -12,9 +12,10 @@ type Tagger interface {
 	// "<implementation>:<model>", for example "grep" or "decisions/openai:gpt-6-luna". A tagger that
 	// switches between several serves one per tagger.
 	Versions(ctx context.Context) ([]string, error)
-	// Tag evaluates tags for an object. taggerVersion is the version the object's collection is tagged
+	// Tag evaluates tags for an object and returns the engine's confidence, from 0 to 1, that each applies.
+	// taggerVersion is the version the object's collection is tagged
 	// with: the engine refuses with a *VersionMismatchError when it does not serve it.
-	Tag(ctx context.Context, collection, objectID, taggerVersion string, tags []string) (map[string]bool, error)
+	Tag(ctx context.Context, collection, objectID, taggerVersion string, tags []string) (map[string]float64, error)
 }
 
 // VersionMismatchError is returned by Tag when the engine does not serve the version that was asked for.

@@ -13,7 +13,7 @@ type slowTagger struct {
 }
 
 func (s *slowTagger) Versions(context.Context) ([]string, error) { return []string{"grep"}, nil }
-func (s *slowTagger) Tag(ctx context.Context, _, _, _ string, _ []string) (map[string]bool, error) {
+func (s *slowTagger) Tag(ctx context.Context, _, _, _ string, _ []string) (map[string]float64, error) {
 	now := s.inflight.Add(1)
 	defer s.inflight.Add(-1)
 	for {
@@ -27,7 +27,7 @@ func (s *slowTagger) Tag(ctx context.Context, _, _, _ string, _ []string) (map[s
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	return map[string]bool{"a": true}, nil
+	return map[string]float64{"a": 1}, nil
 }
 
 func TestLimitedTaggerKeepsTheCallsInFlightUnderTheLimit(t *testing.T) {

@@ -210,18 +210,6 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
-func parseFloatEnv(lookup LookupFunc, name string, def, min, max float64) (float64, error) {
-	v, _ := lookup(name)
-	if v == "" {
-		return def, nil
-	}
-	f, err := strconv.ParseFloat(v, 64)
-	if err != nil || f < min || f > max {
-		return 0, fmt.Errorf("%s: %q is not a number between %g and %g", name, v, min, max)
-	}
-	return f, nil
-}
-
 func parseIntEnv(lookup LookupFunc, name string, def, min int) (int, error) {
 	v, _ := lookup(name)
 	if v == "" {

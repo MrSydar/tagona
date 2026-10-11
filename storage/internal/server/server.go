@@ -503,7 +503,7 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Forced tags go in before the payload, so a failure below removes them with the object (the tags cascade).
-	if err := s.db.UpsertTags(r.Context(), coll.ID, objectID, forcedTags); err != nil {
+	if err := s.db.UpsertTags(r.Context(), coll.ID, objectID, models.Forced(forcedTags)); err != nil {
 		slog.Error("store forced tags failed", "error", err)
 		s.db.Pool().Exec(r.Context(), `DELETE FROM objects WHERE id = $1`, objectID)
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to store tags")
@@ -713,7 +713,7 @@ func (s *Server) getObjectTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Values are pointers so a requested-but-unevaluated tag can be null.
-	result := map[string]*bool{}
+	result := map[string]*float64{}
 	if len(requestedTags) > 0 {
 		for _, tag := range requestedTags {
 			if v, has := knownTags[tag]; has {
@@ -773,6 +773,10 @@ func (s *Server) queryObjects(w http.ResponseWriter, r *http.Request) {
 
 	if req.Tags == nil {
 		req.Tags = map[string]bool{}
+	}
+	if t := req.Threshold; t != nil && !(*t >= 0 && *t <= 1) {
+		writeError(w, http.StatusBadRequest, "invalid_threshold", "threshold must be a number from 0 to 1")
+		return
 	}
 
 	if err := validate.ValidateTags(req.Tags, s.cfg.MaxTagsPerQuery); err != nil {
@@ -929,8 +933,8 @@ func parseTagsParam(raw string, maxCount int) (map[string]bool, error) {
 
 const maxMetadataBodyBytes = 16 << 10
 
-// changeObjectTags (PATCH) forces tags of an object: a boolean sets the tag, null deletes it (it is then unknown, and
-// a later query evaluates it). The tagging engine is not involved. Answers with all the tags the object has now.
+// changeObjectTags (PATCH) forces tags of an object: a boolean sets the tag (to a score of 1 or 0), null deletes it
+// (it is then unknown, and a later query evaluates it). The tagging engine is not involved. Answers with all the tags the object has now.
 func (s *Server) changeObjectTags(w http.ResponseWriter, r *http.Request) {
 	obj, ok := s.objectOfRequest(w, r)
 	if !ok {
@@ -957,7 +961,7 @@ func (s *Server) changeObjectTags(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_tags", err.Error())
 		return
 	}
-	if err := s.db.ChangeTags(r.Context(), obj.CollectionID, obj.ID, set, remove); err != nil {
+	if err := s.db.ChangeTags(r.Context(), obj.CollectionID, obj.ID, models.Forced(set), remove); err != nil {
 		if errors.Is(err, db.ErrObjectNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "object not found")
 			return

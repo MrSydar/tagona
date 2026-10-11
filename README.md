@@ -63,11 +63,11 @@ Now ask for tags nobody ever defined. Tagona evaluates them while the query runs
 ```bash
 curl -s -X POST "$API/v1/collections/jobs/objects/query" -H "$AUTH" \
   -H 'Content-Type: application/json' -d '{"tags":{"Go":true,"Remote":true},"limit":5}'
-# {"objects":[{"id":"fe6dc2b7-…","size_bytes":50,"tags":{"Go":true,"Remote":true},…},
-#             {"id":"e6c22367-…","size_bytes":52,"tags":{"Go":true,"Remote":true},…}]}   <- 2 of 3 match
+# {"objects":[{"id":"fe6dc2b7-…","size_bytes":50,"tags":{"Go":0.97,"Remote":0.88},…},
+#             {"id":"e6c22367-…","size_bytes":52,"tags":{"Go":0.93,"Remote":0.91},…}]}   <- 2 of 3 match
 ```
 
-The answers are kept. Every object now has a known value for both tags, so asking again costs nothing:
+A tag has a **score** from 0 to 1, the evaluator's confidence that it applies, and the answers are kept as reported. `true` asks for a score of at least the `threshold` (default `0.5`), `false` for one below it. The scores are stored, so asking with another `threshold` costs nothing either. Every object now has a known score for both tags, so asking again costs nothing:
 
 ```bash
 curl -s "$API/v1/collections/jobs/tags" -H "$AUTH"
@@ -142,7 +142,8 @@ curl -s -H "$AUTH" "$API/v1/collections/jobs/tags"                              
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `tags` | none | Tag → required value, all ANDed. Omit to list objects without tag filtering. |
+| `tags` | none | Tag → required value, all ANDed: `true` needs a score of at least `threshold`, `false` one below it. Omit to list objects without tag filtering. Each returned object carries the scores of these tags. |
+| `threshold` | `0.5` | The score a tag needs to count as true, from `0` to `1`. Applied to the stored scores, so changing it evaluates nothing again. |
 | `limit` / `cursor` | server default / none | Page size, and the `next` cursor from the previous page. |
 | `date` | none | Range filter on the object date (`gt`, `gte`, `lt`, `lte`, `eq`, RFC 3339). |
 | `evaluate` | `true` | `false` answers from known tags only and never calls the tagger. The same flag exists on the object tags endpoint (`?evaluate=false`), where unevaluated tags come back as `null`. |
@@ -240,9 +241,9 @@ Every service is configured with environment variables. In Docker Compose they a
 | `TAGGER_EVALUATOR_IMPL` | `grep` | `grep`, `false`, `completions/openai`, `decisions/openai`, `decisions/vercel` or `router`. |
 | `TAGGER_ROUTER_URLS` | — | With `TAGGER_EVALUATOR_IMPL=router`: base URLs of tagger services (comma separated) the tagger routes to, so that one deployment supports several taggers; see [`tagger/README.md`](tagger/README.md#router-several-taggers-in-one-deployment). `TAGGER_ROUTER_CACHE_TTL` (default `5s`) sets how long it remembers what they serve. |
 | `TAGGER_VERSION` | the evaluator's own | The version the tagger reports, `<implementation>[:<model>]`, which collections are tagged with. Set it to replace the default. |
-| `TAGGER_<KIND>_<DIALECT>_*` | per evaluator | Settings of the LLM-backed evaluators, named after the evaluator (`TAGGER_COMPLETIONS_OPENAI_*`, `TAGGER_DECISIONS_OPENAI_*`, `TAGGER_DECISIONS_VERCEL_*`): `API_KEY`, `BASE_URL`, `PATH`, `MODEL`, `TIMEOUT`, `AUTH_HEADER`, `AUTH_SCHEME`, `HEADERS`, `QUERY`, `PARAMS`, and for the decisions evaluators `THRESHOLD`, `BATCH_SIZE`, `INSTRUCTIONS`. See [`tagger/README.md`](tagger/README.md#llm-backed-evaluators). |
+| `TAGGER_<KIND>_<DIALECT>_*` | per evaluator | Settings of the LLM-backed evaluators, named after the evaluator (`TAGGER_COMPLETIONS_OPENAI_*`, `TAGGER_DECISIONS_OPENAI_*`, `TAGGER_DECISIONS_VERCEL_*`): `API_KEY`, `BASE_URL`, `PATH`, `MODEL`, `TIMEOUT`, `AUTH_HEADER`, `AUTH_SCHEME`, `HEADERS`, `QUERY`, `PARAMS`, and for the decisions evaluators `BATCH_SIZE`, `INSTRUCTIONS`. See [`tagger/README.md`](tagger/README.md#llm-backed-evaluators). |
 
-Evaluators: `grep` is a case-sensitive substring match on text and needs no network. `false` marks every tag `false` (for testing). `completions/openai` asks a chat LLM about all tags at once; `decisions/openai` and `decisions/vercel` ask one yes/no question per tag and compare the returned probability with a threshold; `decisions/openai` and `completions/openai` send objects with an `image/...` `content_type` as images (base64, untouched).
+Evaluators: `grep` is a case-sensitive substring match on text and needs no network. `false` marks every tag `false` (for testing). Each evaluator reports a confidence from 0 to 1 per tag, which is stored as it is: `grep` and `false` answer 1 or 0, `completions/openai` asks a chat LLM for a confidence for all tags at once, and `decisions/openai` and `decisions/vercel` ask one yes/no question per tag and report the returned probability; `decisions/openai` and `completions/openai` send objects with an `image/...` `content_type` as images (base64, untouched).
 
 </details>
 
@@ -352,7 +353,7 @@ The loop keeps up to `TAGONA_QUERY_CONCURRENCY` evaluations in flight at once an
 
 - **`api` is a thin gateway.** It owns no data. It authenticates, limits, and forwards an allowlist of routes to `storage` without rewriting paths, and it serves the OpenAPI contract and docs for the API it fronts.
 - **`storage` owns all state** and is the only service that talks to Postgres and S3. Collection statistics (`object_count`, per-tag counters) are maintained by database triggers, so they always match the data, including after cascading deletes.
-- **`tagger` is stateless.** It has no database; it reads object bytes from `storage`, runs the evaluator, and returns booleans.
+- **`tagger` is stateless.** It has no database; it reads object bytes from `storage`, runs the evaluator, and returns a confidence per tag.
 - **Startup order matters:** Postgres and Garage, then tagger, then storage, then api. Compose enforces this with health checks.
 - **Uploads are content-addressed.** The SHA-256 of the bytes identifies an object within its collection; uploading the same bytes again returns the existing object.
 

@@ -15,13 +15,15 @@ func NewGrepEvaluator() *GrepEvaluator {
 	return &GrepEvaluator{}
 }
 
-// Evaluate returns true for a tag if the content contains the tag as a substring.
-func (e *GrepEvaluator) Evaluate(ctx context.Context, content Content, tags []string) (map[string]bool, error) {
+// Evaluate returns 1 for a tag if the content contains the tag as a substring and 0 otherwise.
+func (e *GrepEvaluator) Evaluate(ctx context.Context, content Content, tags []string) (map[string]float64, error) {
 	slog.Debug("GrepEvaluator.Evaluate", "tags_count", len(tags))
-	result := make(map[string]bool, len(tags))
+	result := make(map[string]float64, len(tags))
 	contentStr := string(content.Data)
 	for _, tag := range tags {
-		result[tag] = strings.Contains(contentStr, tag)
+		if strings.Contains(contentStr, tag) {
+			result[tag] = 1
+		}
 		slog.Debug("evaluating tag", "tag", tag, "result", result[tag])
 	}
 	return result, nil
