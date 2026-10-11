@@ -21,6 +21,7 @@ func (e *GrepEvaluator) Evaluate(ctx context.Context, content Content, tags []st
 	result := make(map[string]float64, len(tags))
 	contentStr := string(content.Data)
 	for _, tag := range tags {
+		result[tag] = 0 // answered, so that it is stored: a tag missing from the answer would stay unknown
 		if strings.Contains(contentStr, tag) {
 			result[tag] = 1
 		}

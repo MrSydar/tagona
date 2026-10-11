@@ -50,7 +50,7 @@ func TestGatewayRefusesUnexpectedInput(t *testing.T) {
 	// None of that left a mark, and valid requests with normalized values still work.
 	status, body := do(t, http.MethodGet, "/v1/collections/"+coll+"/objects/"+obj.ID+"/tags?tags=golang&evaluate=1", "", asKey(creds.Key))
 	require.Equal(t, http.StatusOK, status, string(body))
-	assert.Contains(t, string(body), `"golang":true`)
+	assert.Contains(t, string(body), `"golang":1`)
 	status, body = do(t, http.MethodPost, "/v1/collections/"+coll+"/objects/query", `{"tags":{"golang":true},"limit":5}`, asKey(creds.Key))
 	require.Equal(t, http.StatusOK, status, string(body))
 	assert.Contains(t, string(body), obj.ID)

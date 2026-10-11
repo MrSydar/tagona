@@ -473,7 +473,7 @@ func TestForcedTags(t *testing.T) {
 	require.Equal(t, http.StatusOK, status, string(body))
 	status, body = do(t, http.MethodGet, objects+"/"+obj.ID+"/tags?tags=world", "", asKey(key))
 	require.Equal(t, http.StatusOK, status, string(body))
-	assert.JSONEq(t, `{"id":"`+obj.ID+`","tags":{"world":true}}`, string(body))
+	assert.JSONEq(t, `{"id":"`+obj.ID+`","tags":{"world":1}}`, string(body))
 
 	// refused
 	for name, c := range map[string]struct{ method, target, body, code string }{
