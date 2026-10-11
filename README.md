@@ -72,8 +72,8 @@ A tag has a **score** from 0 to 1, the evaluator's confidence that it applies, a
 ```bash
 curl -s "$API/v1/collections/jobs/tags" -H "$AUTH"
 # {"collection":"jobs","total_objects":3,"tags":[
-#   {"tag":"Go",    "true_count":2,"false_count":1},
-#   {"tag":"Remote","true_count":2,"false_count":1}]}
+#   {"tag":"Go",    "evaluated":3,"p10":0.04,"p50":0.93,"p90":0.97,"histogram":[…]},
+#   {"tag":"Remote","evaluated":3,"p10":0.05,"p50":0.88,"p90":0.91,"histogram":[…]}]}
 ```
 
 New objects start out *unknown*. Add one more posting and ask for known answers only (`evaluate: false` never calls the tagger):
@@ -82,7 +82,7 @@ New objects start out *unknown*. Add one more posting and ask for known answers 
 curl -s -X POST "$API/v1/collections/jobs/objects" -H "$AUTH" -d 'Go platform engineer. Remote.'
 
 curl -s "$API/v1/collections/jobs/tags" -H "$AUTH"
-# … {"tag":"Go","true_count":2,"false_count":1} …   <- the new object is not evaluated yet, so it is in neither count
+# … {"tag":"Go","evaluated":3,…} …   <- the new object is not evaluated yet, so it is in no count
 
 curl -s -X POST "$API/v1/collections/jobs/objects/query" -H "$AUTH" \
   -H 'Content-Type: application/json' -d '{"tags":{"Go":true,"Remote":true},"evaluate":false}'
@@ -133,7 +133,7 @@ Look at one object's tags, or at the whole collection:
 
 ```bash
 curl -s -H "$AUTH" "$API/v1/collections/jobs/objects/{id}/tags?tags=golang,qa"   # evaluates tags that are not known yet
-curl -s -H "$AUTH" "$API/v1/collections/jobs/tags"                               # object count + every tag with true/false/unknown counts
+curl -s -H "$AUTH" "$API/v1/collections/jobs/tags"                               # object count + every tag with its evaluated count, score percentiles and histogram
 ```
 
 **Explore the API.** The gateway serves its own reference at **<http://localhost:8080/v1/docs>** (Swagger UI): click **Authorize**, paste your API key, and try any endpoint. The OpenAPI 3 contract is at `/v1/openapi.json` and `/v1/openapi.yaml`, ready for client generators. These three URLs need no API key. The UI loads Swagger UI from a CDN, so the browser needs internet access to render it; the JSON and YAML do not.

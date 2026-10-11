@@ -453,20 +453,15 @@ func TestForcedTags(t *testing.T) {
 	status, body = do(t, http.MethodGet, "/v1/collections/"+coll+"/tags", "", asKey(key))
 	require.Equal(t, http.StatusOK, status, string(body))
 	var stats struct {
-		Tags []struct {
-			Tag        string `json:"tag"`
-			TrueCount  int    `json:"true_count"`
-			FalseCount int    `json:"false_count"`
-		} `json:"tags"`
+		Tags []tagStat `json:"tags"`
 	}
 	require.NoError(t, json.Unmarshal(body, &stats))
-	got := map[string][2]int{}
-	for _, s := range stats.Tags {
-		got[s.Tag] = [2]int{s.TrueCount, s.FalseCount}
-	}
-	assert.Equal(t, [2]int{0, 1}, got["forced-yes"])
-	assert.Equal(t, [2]int{1, 0}, got["hello"])
-	assert.Equal(t, [2]int{0, 0}, got["forced-no"], "a deleted tag stays registered")
+	got := tagsByName(stats.Tags)
+	assert.Equal(t, [2]int64{1, 0}, got["forced-yes"].exact(), "forced false is a score of 0")
+	assert.Equal(t, [2]int64{0, 1}, got["hello"].exact(), "forced true is a score of 1")
+	assert.Contains(t, got, "forced-no", "a deleted tag stays registered")
+	assert.EqualValues(t, 0, got["forced-no"].Evaluated)
+	assert.Nil(t, got["forced-no"].P50, "no percentiles without scores")
 
 	// a deleted tag is unknown, so asking for it evaluates it (grep: "world" is in the text)
 	status, body = do(t, http.MethodPatch, objects+"/"+obj.ID+"/tags", `{"world":null}`, asKey(key))

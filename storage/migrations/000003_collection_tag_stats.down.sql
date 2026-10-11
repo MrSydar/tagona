@@ -8,5 +8,7 @@ DROP FUNCTION IF EXISTS tagona_objects_inserted();
 DROP FUNCTION IF EXISTS tagona_object_tags_deleted();
 DROP FUNCTION IF EXISTS tagona_object_tags_updated();
 DROP FUNCTION IF EXISTS tagona_object_tags_inserted();
+DROP TABLE IF EXISTS collection_tag_buckets;
 DROP TABLE IF EXISTS collection_tags;
+DROP FUNCTION IF EXISTS tagona_score_bucket(DOUBLE PRECISION);
 ALTER TABLE collections DROP COLUMN IF EXISTS object_count;

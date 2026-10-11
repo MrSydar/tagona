@@ -324,9 +324,20 @@ func extractIDs(objs []objMeta) []string {
 }
 
 type tagStat struct {
-	Tag        string `json:"tag"`
-	TrueCount  int64  `json:"true_count"`
-	FalseCount int64  `json:"false_count"`
+	Tag       string   `json:"tag"`
+	Evaluated int64    `json:"evaluated"`
+	P10       *float64 `json:"p10"`
+	P50       *float64 `json:"p50"`
+	P90       *float64 `json:"p90"`
+	Histogram []int64  `json:"histogram"`
+}
+
+// exact is the objects the tag has exactly 0 and exactly 1 for: all that grep and forced tags give.
+func (s tagStat) exact() [2]int64 {
+	if len(s.Histogram) != 22 {
+		return [2]int64{-1, -1}
+	}
+	return [2]int64{s.Histogram[0], s.Histogram[21]}
 }
 
 type collectionTagsResp struct {
@@ -421,23 +432,33 @@ func TestCollectionTags(t *testing.T) {
 	assert.Equal(t, "golang", got.Tags[0].Tag, "tags are ordered by name")
 	assert.Equal(t, "java", got.Tags[1].Tag)
 	byName := tagsByName(got.Tags)
-	assert.Equal(t, tagStat{Tag: "golang", TrueCount: 2, FalseCount: 1}, byName["golang"])
-	assert.Equal(t, tagStat{Tag: "java", TrueCount: 1, FalseCount: 2}, byName["java"])
+	// grep answers 1 or 0, which are the buckets at the two ends of the histogram
+	require.Len(t, byName["golang"].Histogram, 22)
+	assert.EqualValues(t, 3, byName["golang"].Evaluated)
+	assert.Equal(t, [2]int64{1, 2}, byName["golang"].exact())
+	require.NotNil(t, byName["golang"].P50)
+	assert.Equal(t, 0.0, *byName["golang"].P10)
+	assert.Equal(t, 1.0, *byName["golang"].P50)
+	assert.Equal(t, 1.0, *byName["golang"].P90)
+	assert.Equal(t, [2]int64{2, 1}, byName["java"].exact())
+	assert.Equal(t, 0.0, *byName["java"].P50)
 
 	// A new object has not been evaluated for the known tags yet.
 	uploadObject(t, creds.Key, coll, []byte("a golang and kotlin job"))
 	got = collectionTags(t, creds.Key, coll, "")
 	assert.EqualValues(t, 4, got.TotalObjects)
 	byName = tagsByName(got.Tags)
-	assert.Equal(t, tagStat{Tag: "golang", TrueCount: 2, FalseCount: 1}, byName["golang"])
-	assert.Equal(t, tagStat{Tag: "java", TrueCount: 1, FalseCount: 2}, byName["java"])
+	assert.EqualValues(t, 3, byName["golang"].Evaluated, "the new object is in no count")
+	assert.Equal(t, [2]int64{1, 2}, byName["golang"].exact())
+	assert.Equal(t, [2]int64{2, 1}, byName["java"].exact())
 
 	// Deleting an object updates the counters.
 	deleteObject(t, creds.Key, coll, obj1.ID)
 	got = collectionTags(t, creds.Key, coll, "")
 	assert.EqualValues(t, 3, got.TotalObjects)
 	byName = tagsByName(got.Tags)
-	assert.Equal(t, tagStat{Tag: "golang", TrueCount: 1, FalseCount: 1}, byName["golang"])
+	assert.EqualValues(t, 2, byName["golang"].Evaluated)
+	assert.Equal(t, [2]int64{1, 1}, byName["golang"].exact())
 
 	// Prefix filter and keyset pagination.
 	got = collectionTags(t, creds.Key, coll, "prefix=j")
