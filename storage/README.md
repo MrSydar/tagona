@@ -37,7 +37,7 @@ This API is internal and has no version prefix: the api gateway maps each public
 | `PUT` | `/collections/{collection}/objects/{id}/metadata` | Replace the metadata |
 | `PATCH` | `/collections/{collection}/objects/{id}/metadata` | Change some metadata (`null` removes a key) |
 | `GET` | `/collections/{collection}/objects/{id}/data` | Redirect (`307`) to a short-lived signed URL of the object store |
-| `GET` | `/collections/{collection}/objects/{id}/content` | Stream the payload (internal: the tagger reads objects this way; the api does not route it) |
+| `GET` | `/collections/{collection}/objects/{id}/content` | Stream the payload, with the stored `content_type` as its `Content-Type` (internal: the tagger reads objects this way; the api does not route it) |
 | `GET` | `/collections/{collection}/objects/{id}/tags` | Get tags |
 | `PATCH` | `/collections/{collection}/objects/{id}/tags` | Force tags (`true`/`false` sets, `null` deletes); uploads take them as `?tags=` |
 | `POST` | `/collections/{collection}/objects/query` | Query by tags |

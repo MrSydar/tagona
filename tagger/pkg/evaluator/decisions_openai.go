@@ -39,6 +39,26 @@ func (openAIDecisionsDialect) request(model, input string, qs []question) map[st
 	return map[string]any{"model": model, "input": input, "questions": questions}
 }
 
+// imageRequest puts the image in as an input_image with a base64 data URL, as the Decisions API documents. The
+// detail setting is left to the API's default.
+func (openAIDecisionsDialect) imageRequest(model, mediaType, imageBase64 string, qs []question) map[string]any {
+	questions := make([]openAIPredicate, len(qs))
+	for i, q := range qs {
+		questions[i] = openAIPredicate{Type: "predicate", Name: q.name, Instructions: q.instructions}
+	}
+	return map[string]any{
+		"model": model,
+		"input": []map[string]any{{
+			"role": "user",
+			"content": []map[string]string{
+				{"type": "input_text", "text": "The image to evaluate."},
+				{"type": "input_image", "image_url": "data:" + mediaType + ";base64," + imageBase64},
+			},
+		}},
+		"questions": questions,
+	}
+}
+
 func (openAIDecisionsDialect) probabilities(body []byte) (map[string]float64, error) {
 	var resp struct {
 		Answers []struct {

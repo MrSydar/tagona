@@ -2,6 +2,7 @@ package evaluator
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -113,7 +114,7 @@ func (s *decisionsStub) vercel(t *testing.T, extra map[string]string) *Decisions
 
 func TestDecisionsOpenAIRequestShape(t *testing.T) {
 	s := newOpenAIStub(t, map[string]float64{"golang": 0.92, "java": 0.1})
-	got, err := s.openai(t, nil).Evaluate(context.Background(), []byte("a golang job"), []string{"golang", "java"})
+	got, err := s.openai(t, nil).Evaluate(context.Background(), Text("a golang job"), []string{"golang", "java"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +148,7 @@ func TestDecisionsOpenAIThresholdRefusalAndMissingAnswers(t *testing.T) {
 	tags := []string{"high", "edge", "low", "refused", "unanswered"}
 
 	s := newOpenAIStub(t, probs)
-	got, err := s.openai(t, nil).Evaluate(context.Background(), []byte("x"), tags)
+	got, err := s.openai(t, nil).Evaluate(context.Background(), Text("x"), tags)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,11 +159,11 @@ func TestDecisionsOpenAIThresholdRefusalAndMissingAnswers(t *testing.T) {
 		}
 	}
 
-	got, err = s.openai(t, map[string]string{"THRESHOLD": "0.95"}).Evaluate(context.Background(), []byte("x"), tags)
+	got, err = s.openai(t, map[string]string{"THRESHOLD": "0.95"}).Evaluate(context.Background(), Text("x"), tags)
 	if err != nil || got["high"] {
 		t.Fatalf("with threshold 0.95, high = %v, %v", got["high"], err)
 	}
-	got, _ = s.openai(t, map[string]string{"THRESHOLD": "0"}).Evaluate(context.Background(), []byte("x"), tags)
+	got, _ = s.openai(t, map[string]string{"THRESHOLD": "0"}).Evaluate(context.Background(), Text("x"), tags)
 	if !got["low"] || got["unanswered"] {
 		t.Fatalf("with threshold 0, an answered tag is true and an unanswered one is still false: %v", got)
 	}
@@ -173,7 +174,7 @@ func TestDecisionsBatching(t *testing.T) {
 	probs := map[string]float64{"a": 1, "b": 1, "c": 1, "d": 1, "e": 1}
 
 	s := newOpenAIStub(t, probs)
-	got, err := s.openai(t, map[string]string{"BATCH_SIZE": "2"}).Evaluate(context.Background(), []byte("x"), tags)
+	got, err := s.openai(t, map[string]string{"BATCH_SIZE": "2"}).Evaluate(context.Background(), Text("x"), tags)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,18 +191,18 @@ func TestDecisionsBatching(t *testing.T) {
 	}
 
 	s = newOpenAIStub(t, probs)
-	if _, err := s.openai(t, map[string]string{"BATCH_SIZE": "0"}).Evaluate(context.Background(), []byte("x"), tags); err != nil || len(s.reqs) != 1 {
+	if _, err := s.openai(t, map[string]string{"BATCH_SIZE": "0"}).Evaluate(context.Background(), Text("x"), tags); err != nil || len(s.reqs) != 1 {
 		t.Fatalf("batch size 0 must send everything at once: %d requests, %v", len(s.reqs), err)
 	}
 	s = newOpenAIStub(t, probs)
-	if _, err := s.openai(t, nil).Evaluate(context.Background(), []byte("x"), tags); err != nil || len(s.reqs) != 1 {
+	if _, err := s.openai(t, nil).Evaluate(context.Background(), Text("x"), tags); err != nil || len(s.reqs) != 1 {
 		t.Fatalf("the default batch holds 50: %d requests, %v", len(s.reqs), err)
 	}
 
 	// A failing batch fails the evaluation: a partial answer is not a verdict.
 	s = newOpenAIStub(t, probs)
 	s.status = http.StatusBadGateway
-	if _, err := s.openai(t, map[string]string{"BATCH_SIZE": "2"}).Evaluate(context.Background(), []byte("x"), tags); err == nil {
+	if _, err := s.openai(t, map[string]string{"BATCH_SIZE": "2"}).Evaluate(context.Background(), Text("x"), tags); err == nil {
 		t.Fatal("expected an error")
 	}
 }
@@ -212,7 +213,7 @@ func TestDecisionsCustomInstructionsAndVendorSettings(t *testing.T) {
 		"INSTRUCTIONS": `Does this text concern "{tag}"? Be strict.`, "PATH": "/v2/decide", "MODEL": "luna-2",
 		"PARAMS": `{"store":false}`,
 	})
-	if _, err := ev.Evaluate(context.Background(), []byte("x"), []string{"golang"}); err != nil {
+	if _, err := ev.Evaluate(context.Background(), Text("x"), []string{"golang"}); err != nil {
 		t.Fatal(err)
 	}
 	q := s.reqs[0]["questions"].([]any)[0].(map[string]any)
@@ -248,7 +249,7 @@ func TestDecisionsEdgeCases(t *testing.T) {
 	s := newOpenAIStub(t, map[string]float64{"a": 1})
 	ev := s.openai(t, nil)
 
-	got, err := ev.Evaluate(context.Background(), []byte("x"), nil)
+	got, err := ev.Evaluate(context.Background(), Text("x"), nil)
 	if err != nil || len(got) != 0 || len(s.reqs) != 0 {
 		t.Fatalf("no tags: %v, %v, requests %d", got, err, len(s.reqs))
 	}
@@ -258,12 +259,12 @@ func TestDecisionsEdgeCases(t *testing.T) {
 
 	for name, raw := range map[string]string{"not json": `nope`, "answers wrong type": `{"answers":"x"}`} {
 		s.raw = raw
-		if _, err := ev.Evaluate(context.Background(), []byte("x"), []string{"a"}); err == nil {
+		if _, err := ev.Evaluate(context.Background(), Text("x"), []string{"a"}); err == nil {
 			t.Errorf("%s: expected an error", name)
 		}
 	}
 	s.raw = `{"answers":[{"type":"predicate","name":"q0"}]}` // no probability: unanswered, not zero
-	got, err = ev.Evaluate(context.Background(), []byte("x"), []string{"a"})
+	got, err = ev.Evaluate(context.Background(), Text("x"), []string{"a"})
 	if err != nil || got["a"] {
 		t.Fatalf("an answer without a probability is no answer: %v, %v", got, err)
 	}
@@ -271,7 +272,7 @@ func TestDecisionsEdgeCases(t *testing.T) {
 
 func TestDecisionsVercelRequestShapeAndAnswers(t *testing.T) {
 	s := newVercelStub(t, map[string]float64{"golang": 0.92, "java": 0.2, "rust": 0.5})
-	got, err := s.vercel(t, nil).Evaluate(context.Background(), []byte("a golang job"), []string{"golang", "java", "rust", "go lang & more"})
+	got, err := s.vercel(t, nil).Evaluate(context.Background(), Text("a golang job"), []string{"golang", "java", "rust", "go lang & more"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,16 +296,152 @@ func TestDecisionsVercelRequestShapeAndAnswers(t *testing.T) {
 func TestDecisionsVercelSettingsAndErrors(t *testing.T) {
 	s := newVercelStub(t, map[string]float64{"a": 0.6})
 	got, err := s.vercel(t, map[string]string{"THRESHOLD": "0.7", "MODEL": "m2", "PATH": "/v2/evaluate"}).
-		Evaluate(context.Background(), []byte("x"), []string{"a"})
+		Evaluate(context.Background(), Text("x"), []string{"a"})
 	if err != nil || got["a"] || s.reqs[0]["model"] != "m2" || s.paths[0] != "/v2/evaluate" {
 		t.Fatalf("got %v, %v, %v to %s", got, err, s.reqs[0]["model"], s.paths[0])
 	}
 	s.status = http.StatusUnauthorized
-	if _, err := s.vercel(t, nil).Evaluate(context.Background(), []byte("x"), []string{"a"}); err == nil {
+	if _, err := s.vercel(t, nil).Evaluate(context.Background(), Text("x"), []string{"a"}); err == nil {
 		t.Fatal("expected an error")
 	}
 	s.status, s.raw = 200, `{"answers":`
-	if _, err := s.vercel(t, nil).Evaluate(context.Background(), []byte("x"), []string{"a"}); err == nil {
+	if _, err := s.vercel(t, nil).Evaluate(context.Background(), Text("x"), []string{"a"}); err == nil {
 		t.Fatal("expected an error for a malformed answer")
+	}
+}
+
+func TestContentIsImage(t *testing.T) {
+	for typ, want := range map[string]bool{
+		"image/png": true, "image/jpeg": true, "image/webp": true, "image/gif": true,
+		"IMAGE/PNG": true, "image/png; charset=binary": true,
+		"image/tiff": true, // any image type: which formats the vendor takes is up to the uploader
+		"text/plain": false, "application/pdf": false, "application/octet-stream": false,
+		"": false, "image": false, "not a type": false,
+	} {
+		if got := (Content{Type: typ}).IsImage(); got != want {
+			t.Errorf("IsImage(%q) = %v, want %v", typ, got, want)
+		}
+	}
+	if got := (Content{Type: "IMAGE/PNG; a=b"}).MediaType(); got != "image/png" {
+		t.Errorf("MediaType = %q", got)
+	}
+}
+
+// An image goes to the Decisions API as an input_image with a base64 data URL of the stored bytes, untouched.
+func TestDecisionsOpenAISendsAnImageAsIs(t *testing.T) {
+	s := newOpenAIStub(t, map[string]float64{"cat": 0.9, "dog": 0.1})
+	bytes := []byte{0x89, 'P', 'N', 'G', 0x00, 0xff, 0xfe, 0x80} // not valid UTF-8
+	got, err := s.openai(t, nil).Evaluate(context.Background(), Content{Data: bytes, Type: "image/png"}, []string{"cat", "dog"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got["cat"] || got["dog"] {
+		t.Fatalf("got %v", got)
+	}
+	req := s.reqs[0]
+	input := req["input"].([]any)
+	if len(input) != 1 {
+		t.Fatalf("input = %v", input)
+	}
+	msg := input[0].(map[string]any)
+	if msg["role"] != "user" {
+		t.Errorf("role = %v", msg["role"])
+	}
+	parts := msg["content"].([]any)
+	if len(parts) != 2 || parts[0].(map[string]any)["type"] != "input_text" {
+		t.Fatalf("content = %v", parts)
+	}
+	img := parts[1].(map[string]any)
+	want := "data:image/png;base64," + base64.StdEncoding.EncodeToString(bytes)
+	if img["type"] != "input_image" || img["image_url"] != want {
+		t.Errorf("image part = %v, want url %s", img, want)
+	}
+	if _, has := img["detail"]; has {
+		t.Errorf("detail is left to the API: %v", img)
+	}
+	// the questions are about the image
+	for _, q := range req["questions"].([]any) {
+		ins := q.(map[string]any)["instructions"].(string)
+		if !strings.Contains(ins, "Analyze the image") {
+			t.Errorf("instructions = %q", ins)
+		}
+	}
+}
+
+func TestDecisionsOpenAIImageIsNotFilteredByFormat(t *testing.T) {
+	s := newOpenAIStub(t, map[string]float64{"a": 1})
+	for _, typ := range []string{"image/tiff", "image/svg+xml", "IMAGE/JPEG; q=1"} {
+		s.reqs = nil
+		if _, err := s.openai(t, nil).Evaluate(context.Background(), Content{Data: []byte("x"), Type: typ}, []string{"a"}); err != nil {
+			t.Fatalf("%s: %v", typ, err)
+		}
+		parts := s.reqs[0]["input"].([]any)[0].(map[string]any)["content"].([]any)
+		url := parts[1].(map[string]any)["image_url"].(string)
+		wantType := strings.ToLower(strings.SplitN(typ, ";", 2)[0])
+		if !strings.HasPrefix(url, "data:"+wantType+";base64,") {
+			t.Errorf("%s: url = %s", typ, url)
+		}
+	}
+}
+
+func TestDecisionsOpenAINonImagesStayText(t *testing.T) {
+	s := newOpenAIStub(t, map[string]float64{"a": 1})
+	for _, typ := range []string{"", "text/plain", "application/pdf", "application/octet-stream"} {
+		s.reqs = nil
+		if _, err := s.openai(t, nil).Evaluate(context.Background(), Content{Data: []byte("hello"), Type: typ}, []string{"a"}); err != nil {
+			t.Fatal(err)
+		}
+		if s.reqs[0]["input"] != "hello" {
+			t.Errorf("%q: input = %v, want the text", typ, s.reqs[0]["input"])
+		}
+		ins := s.reqs[0]["questions"].([]any)[0].(map[string]any)["instructions"].(string)
+		if !strings.Contains(ins, "Analyze the text") {
+			t.Errorf("%q: instructions = %q", typ, ins)
+		}
+	}
+}
+
+func TestDecisionsOpenAIImageBatches(t *testing.T) {
+	s := newOpenAIStub(t, map[string]float64{"a": 1, "b": 1, "c": 0})
+	got, err := s.openai(t, map[string]string{"BATCH_SIZE": "2"}).Evaluate(context.Background(), Content{Data: []byte{1, 2, 3}, Type: "image/webp"}, []string{"a", "b", "c"})
+	if err != nil || !got["a"] || !got["b"] || got["c"] || len(s.reqs) != 2 {
+		t.Fatalf("got %v, %d requests, %v", got, len(s.reqs), err)
+	}
+	for _, r := range s.reqs {
+		if _, ok := r["input"].([]any); !ok {
+			t.Errorf("a batch is not an image request: %v", r["input"])
+		}
+	}
+}
+
+func TestDecisionsImageInstructionsSetting(t *testing.T) {
+	s := newOpenAIStub(t, map[string]float64{"a": 1})
+	ev := s.openai(t, map[string]string{"IMAGE_INSTRUCTIONS": `Does the picture show "{tag}"?`})
+	if _, err := ev.Evaluate(context.Background(), Content{Data: []byte{1}, Type: "image/png"}, []string{"a"}); err != nil {
+		t.Fatal(err)
+	}
+	if ins := s.reqs[0]["questions"].([]any)[0].(map[string]any)["instructions"]; ins != `Does the picture show "a"?` {
+		t.Errorf("instructions = %v", ins)
+	}
+	// text still uses INSTRUCTIONS
+	if _, err := ev.Evaluate(context.Background(), Content{Data: []byte("t")}, []string{"a"}); err != nil {
+		t.Fatal(err)
+	}
+	if ins := s.reqs[1]["questions"].([]any)[0].(map[string]any)["instructions"].(string); !strings.Contains(ins, "Analyze the text") {
+		t.Errorf("text instructions = %q", ins)
+	}
+	if _, err := NewDecisionsOpenAI(settings(map[string]string{"TAGGER_DECISIONS_OPENAI_API_KEY": "k", "TAGGER_DECISIONS_OPENAI_IMAGE_INSTRUCTIONS": "no placeholder"})); err == nil {
+		t.Error("IMAGE_INSTRUCTIONS without {tag}: no error")
+	}
+}
+
+// The Vercel dialect has no image support here: an image is read as text, as before.
+func TestDecisionsVercelReadsAnImageAsText(t *testing.T) {
+	s := newVercelStub(t, map[string]float64{"a": 1})
+	if _, err := s.vercel(t, nil).Evaluate(context.Background(), Content{Data: []byte("pixels"), Type: "image/png"}, []string{"a"}); err != nil {
+		t.Fatal(err)
+	}
+	if s.reqs[0]["state"] != "pixels" {
+		t.Errorf("state = %v", s.reqs[0]["state"])
 	}
 }

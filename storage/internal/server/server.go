@@ -610,7 +610,9 @@ func (s *Server) getObjectContent(w http.ResponseWriter, r *http.Request) {
 	}
 	defer reader.Close()
 
-	w.Header().Set("Content-Type", "application/octet-stream")
+	// The type the uploader stored, when it is a usable media type: the tagger decides from it how to read the object
+	// (an image is shown to a vision model, not read as text). This route is for services inside the deployment only.
+	w.Header().Set("Content-Type", contentRouteType(obj.Metadata))
 	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	io.Copy(w, reader)
 }

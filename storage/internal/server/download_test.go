@@ -53,3 +53,21 @@ func TestDownloadHeaders(t *testing.T) {
 		})
 	}
 }
+
+func TestContentRouteType(t *testing.T) {
+	for name, tc := range map[string]struct {
+		meta map[string]string
+		want string
+	}{
+		"image":       {map[string]string{"content_type": "image/png"}, "image/png"},
+		"with params": {map[string]string{"content_type": "text/plain; charset=utf-8"}, "text/plain; charset=utf-8"},
+		"none":        {map[string]string{"name": "a.png"}, "application/octet-stream"},
+		"not a type":  {map[string]string{"content_type": "nope nope"}, "application/octet-stream"},
+		"control":     {map[string]string{"content_type": "image/png\r\nX: y"}, "application/octet-stream"},
+		"no metadata": {nil, "application/octet-stream"},
+	} {
+		if got := contentRouteType(tc.meta); got != tc.want {
+			t.Errorf("%s: %q, want %q", name, got, tc.want)
+		}
+	}
+}

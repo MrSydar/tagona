@@ -388,36 +388,38 @@ func (c *Client) GetObjectMetadata(ctx context.Context, collection, id string) (
 // GetObjectData downloads object payload by collection and ID. Through the api this follows the redirect
 // to the object store, which the caller must be able to reach; a service inside uses GetObjectContent.
 func (c *Client) GetObjectData(ctx context.Context, collection, id string) ([]byte, error) {
-	return c.download(ctx, collection, id, "data")
+	data, _, err := c.download(ctx, collection, id, "data")
+	return data, err
 }
 
-// GetObjectContent downloads the payload from storage itself, which streams it. Only storage has this route
-// (the api does not), for services inside the deployment such as the tagger.
-func (c *Client) GetObjectContent(ctx context.Context, collection, id string) ([]byte, error) {
+// GetObjectContent downloads the payload from storage itself, which streams it, together with the media type the
+// uploader stored for it (`content_type` metadata; "application/octet-stream" when there is none). Only storage has
+// this route (the api does not), for services inside the deployment such as the tagger.
+func (c *Client) GetObjectContent(ctx context.Context, collection, id string) (data []byte, contentType string, err error) {
 	return c.download(ctx, collection, id, "content")
 }
 
-func (c *Client) download(ctx context.Context, collection, id, route string) ([]byte, error) {
+func (c *Client) download(ctx context.Context, collection, id, route string) ([]byte, string, error) {
 	slog.Debug("download", "collection", collection, "id", id, "route", route)
 	url := fmt.Sprintf("%s%s/collections/%s/objects/%s/%s", c.baseURL, c.prefix, collection, id, route)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	c.setAuth(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch data: %w", err)
+		return nil, "", fmt.Errorf("fetch data: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, httpError("fetch data", resp)
+		return nil, "", httpError("fetch data", resp)
 	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read data: %w", err)
+		return nil, "", fmt.Errorf("read data: %w", err)
 	}
-	return data, nil
+	return data, resp.Header.Get("Content-Type"), nil
 }
 
 // GetObjectTags fetches tags for an object.

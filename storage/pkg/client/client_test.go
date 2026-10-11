@@ -153,3 +153,19 @@ func TestListTaggers(t *testing.T) {
 		t.Fatalf("paths = %v", paths)
 	}
 }
+
+// GetObjectContent returns the media type storage answers with, next to the bytes.
+func TestGetObjectContentReturnsTheContentType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/collections/photos/objects/1/content" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "image/webp")
+		w.Write([]byte("bytes"))
+	}))
+	defer srv.Close()
+	data, typ, err := NewInternal(srv.URL).GetObjectContent(context.Background(), "photos", "1")
+	if err != nil || string(data) != "bytes" || typ != "image/webp" {
+		t.Fatalf("%q %q %v", data, typ, err)
+	}
+}

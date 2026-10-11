@@ -16,10 +16,10 @@ func NewGrepEvaluator() *GrepEvaluator {
 }
 
 // Evaluate returns true for a tag if the content contains the tag as a substring.
-func (e *GrepEvaluator) Evaluate(ctx context.Context, content []byte, tags []string) (map[string]bool, error) {
+func (e *GrepEvaluator) Evaluate(ctx context.Context, content Content, tags []string) (map[string]bool, error) {
 	slog.Debug("GrepEvaluator.Evaluate", "tags_count", len(tags))
 	result := make(map[string]bool, len(tags))
-	contentStr := string(content)
+	contentStr := string(content.Data)
 	for _, tag := range tags {
 		result[tag] = strings.Contains(contentStr, tag)
 		slog.Debug("evaluating tag", "tag", tag, "result", result[tag])
