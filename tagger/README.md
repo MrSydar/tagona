@@ -76,7 +76,7 @@ The evaluator is selected via `TAGGER_EVALUATOR_IMPL`:
 |-----------|-----------------|-------|
 | `grep`    | `grep`          | Tag is `true` if the payload (read as UTF-8 text) contains the tag string as a substring. Case-sensitive. |
 | `false`   | `false`         | All tags evaluate to `false`. |
-| `completions/openai` | `completions/openai:<model>` | An LLM classifies the payload against the requested tags through a chat completions API in the OpenAI dialect; missing tags default to `false`. |
+| `completions/openai` | `completions/openai:<model>` | An LLM classifies the payload against the requested tags through a chat completions API in the OpenAI dialect; missing tags default to `false`. Images are sent as images (see below). |
 | `decisions/openai` | `decisions/openai:<model>` | One yes/no question per tag through OpenAI's [Decisions API](https://developers.openai.com/api/docs/guides/decisions) (`POST /decisions`). A tag is `true` when the returned probability is at least the threshold. **Images** are sent as images (see below). |
 | `decisions/vercel` | `decisions/vercel:<model>` | The same idea through the Vercel AI Gateway's evaluate endpoint (`POST /evaluate`), which has a different wire format. |
 
@@ -143,7 +143,7 @@ Specific to the decisions evaluators:
  "questions": [{"type": "predicate", "name": "q0", "instructions": "Analyze the image and determine whether the tag \"cat\" applies. ..."}]}
 ```
 
-The image is not touched: it is not resized, converted or checked, and an image type the vendor does not accept (OpenAI takes PNG, JPEG, WebP and non-animated GIF, see its [image guide](https://developers.openai.com/api/docs/guides/images-vision?api-mode=responses)) is not filtered out either. The vendor's refusal comes back as an `evaluation_error`; sending supported types and sensible dimensions is up to the uploader. An object without a `content_type`, or with a non-image one, is read as text as before. `grep`, `false`, `completions/openai` and `decisions/vercel` do not look at images: they read the bytes as text.
+The image is not touched: it is not resized, converted or checked, and an image type the vendor does not accept (OpenAI takes PNG, JPEG, WebP and non-animated GIF, see its [image guide](https://developers.openai.com/api/docs/guides/images-vision?api-mode=responses)) is not filtered out either. The vendor's refusal comes back as an `evaluation_error`; sending supported types and sensible dimensions is up to the uploader. An object without a `content_type`, or with a non-image one, is read as text as before. `completions/openai` does the same through the chat completions API: the user message has a `text` part (the prompt, without the text section) and an `image_url` part with the same base64 data URL (`{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}`, detail left to the API), so the model must be able to see images (`gpt-4o-mini`, the default, can). `grep`, `false` and `decisions/vercel` do not look at images: they read the bytes as text.
 
 **A compatible vendor under another URL.** Point the evaluator at it and adjust only what differs:
 

@@ -2,6 +2,7 @@ package evaluator
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -49,7 +50,8 @@ func newCompletionsOpenAI(cfg HTTPConfig, systemPrompt string) *CompletionsOpenA
 	return &CompletionsOpenAI{cfg: cfg, systemPrompt: systemPrompt, client: &http.Client{Timeout: cfg.Timeout}}
 }
 
-// Evaluate evaluates tags for the given content using an LLM, which reads it as text.
+// Evaluate evaluates tags for the given content using an LLM, which reads it as text, or looks at it when it is an
+// image (by its stored media type).
 func (e *CompletionsOpenAI) Evaluate(ctx context.Context, content Content, tags []string) (map[string]bool, error) {
 	slog.Debug("CompletionsOpenAI.Evaluate", "tags_count", len(tags))
 	result := make(map[string]bool, len(tags))
@@ -62,9 +64,9 @@ func (e *CompletionsOpenAI) Evaluate(ctx context.Context, content Content, tags 
 	// remove it with TAGGER_COMPLETIONS_OPENAI_PARAMS='{"temperature":null}'.
 	respBody, err := e.cfg.post(ctx, e.client, map[string]any{
 		"model": e.cfg.Model,
-		"messages": []map[string]string{
+		"messages": []map[string]any{
 			{"role": "system", "content": e.systemPrompt},
-			{"role": "user", "content": buildPrompt(string(content.Data), tags)},
+			{"role": "user", "content": userContent(content, tags)},
 		},
 		"temperature": 0,
 	})
@@ -74,8 +76,35 @@ func (e *CompletionsOpenAI) Evaluate(ctx context.Context, content Content, tags 
 	return parseTagResponse(respBody, tags)
 }
 
-func buildPrompt(text string, tags []string) string {
-	slog.Debug("buildPrompt called", "tags_count", len(tags))
+// userContent is the content of the user message: the prompt for text, or for an image a text part with the prompt
+// and an image_url part with the base64 data URL of the stored bytes, as the chat completions API takes images. The
+// image is not processed in any way.
+func userContent(content Content, tags []string) any {
+	if !content.IsImage() {
+		return buildPrompt(string(content.Data), tags)
+	}
+	return []map[string]any{
+		{"type": "text", "text": buildImagePrompt(tags)},
+		{"type": "image_url", "image_url": map[string]string{
+			"url": "data:" + content.MediaType() + ";base64," + base64.StdEncoding.EncodeToString(content.Data),
+		}},
+	}
+}
+
+func buildImagePrompt(tags []string) string {
+	return fmt.Sprintf(
+		`Analyze the attached image and determine which tags apply. Respond ONLY with a JSON object where each key is a tag and the value is true or false.
+
+Example response format:
+{"tag1": true, "tag2": false}
+
+Tags: %s`,
+		tagList(tags),
+	)
+}
+
+// tagList is the tags as a JSON-like list for a prompt: ["a", "b"].
+func tagList(tags []string) string {
 	t := make([]byte, 0, len(tags)*16)
 	t = append(t, '[')
 	for i, tag := range tags {
@@ -87,6 +116,11 @@ func buildPrompt(text string, tags []string) string {
 		t = append(t, '"')
 	}
 	t = append(t, ']')
+	return string(t)
+}
+
+func buildPrompt(text string, tags []string) string {
+	slog.Debug("buildPrompt called", "tags_count", len(tags))
 	return fmt.Sprintf(
 		`Analyze the following text and determine which tags apply. Respond ONLY with a JSON object where each key is a tag and the value is true or false.
 
@@ -100,7 +134,7 @@ Text:
 
 Tags: %s`,
 		text,
-		string(t),
+		tagList(tags),
 	)
 }
 

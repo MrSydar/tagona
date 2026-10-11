@@ -43,7 +43,7 @@ Tagona stores collections of objects and lets you query them by **yes/no tags yo
 - **Operable by default.** API keys, TTL retention, content-hash de-duplication, Prometheus metrics and a Grafana dashboard.
 - **Boring, self-hosted stack.** Go services, Postgres and any S3-compatible object store, started with one `docker compose up`.
 
-> Objects are plain bytes; the bundled evaluators read them as text, except that `decisions/openai` shows an object whose `content_type` metadata is `image/...` to the model as an image. A collection records the version of the tagger that tags it (`tagger_version`, for example `grep` or `decisions/openai:gpt-6-luna`), and tags are only evaluated by that tagger.
+> Objects are plain bytes; the bundled evaluators read them as text, except that `decisions/openai` and `completions/openai` show an object whose `content_type` metadata is `image/...` to the model as an image. A collection records the version of the tagger that tags it (`tagger_version`, for example `grep` or `decisions/openai:gpt-6-luna`), and tags are only evaluated by that tagger.
 
 ## Demo
 
@@ -242,7 +242,7 @@ Every service is configured with environment variables. In Docker Compose they a
 | `TAGGER_VERSION` | the evaluator's own | The version the tagger reports, `<implementation>[:<model>]`, which collections are tagged with. Set it to replace the default. |
 | `TAGGER_<KIND>_<DIALECT>_*` | per evaluator | Settings of the LLM-backed evaluators, named after the evaluator (`TAGGER_COMPLETIONS_OPENAI_*`, `TAGGER_DECISIONS_OPENAI_*`, `TAGGER_DECISIONS_VERCEL_*`): `API_KEY`, `BASE_URL`, `PATH`, `MODEL`, `TIMEOUT`, `AUTH_HEADER`, `AUTH_SCHEME`, `HEADERS`, `QUERY`, `PARAMS`, and for the decisions evaluators `THRESHOLD`, `BATCH_SIZE`, `INSTRUCTIONS`. See [`tagger/README.md`](tagger/README.md#llm-backed-evaluators). |
 
-Evaluators: `grep` is a case-sensitive substring match on text and needs no network. `false` marks every tag `false` (for testing). `completions/openai` asks a chat LLM about all tags at once; `decisions/openai` and `decisions/vercel` ask one yes/no question per tag and compare the returned probability with a threshold; `decisions/openai` sends objects with an `image/...` `content_type` as images (base64, untouched).
+Evaluators: `grep` is a case-sensitive substring match on text and needs no network. `false` marks every tag `false` (for testing). `completions/openai` asks a chat LLM about all tags at once; `decisions/openai` and `decisions/vercel` ask one yes/no question per tag and compare the returned probability with a threshold; `decisions/openai` and `completions/openai` send objects with an `image/...` `content_type` as images (base64, untouched).
 
 </details>
 
