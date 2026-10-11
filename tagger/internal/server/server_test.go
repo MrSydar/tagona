@@ -1,12 +1,14 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	storageclient "mrsydar/tagona/storage/pkg/client"
 	"mrsydar/tagona/tagger/pkg/evaluator"
 )
 
@@ -70,5 +72,36 @@ func TestTagRefusesAnotherVersion(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil ||
 		e.Error.Code != "tagger_version_mismatch" || e.Error.Details.Expected != "decisions/openai:m" || len(e.Error.Details.Running) != 1 || e.Error.Details.Running[0] != "grep" {
 		t.Fatalf("%s (%v)", rec.Body, err)
+	}
+}
+
+// recorder is an evaluator that keeps what it was given.
+type recorder struct{ got evaluator.Content }
+
+func (r *recorder) Evaluate(_ context.Context, c evaluator.Content, tags []string) (map[string]bool, error) {
+	r.got = c
+	return map[string]bool{tags[0]: true}, nil
+}
+func (r *recorder) Version() string { return "rec" }
+
+// The tagger hands the evaluator the object's bytes and the media type storage stored for it.
+func TestTagPassesTheContentTypeToTheEvaluator(t *testing.T) {
+	for _, typ := range []string{"image/png", "application/octet-stream"} {
+		storage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", typ)
+			w.Write([]byte{0x89, 'P', 'N', 'G'})
+		}))
+		rec := &recorder{}
+		h := NewServer(storageclient.NewInternal(storage.URL), rec, "rec", "rec").Router()
+		out := httptest.NewRecorder()
+		h.ServeHTTP(out, httptest.NewRequest(http.MethodPost, "/tag",
+			strings.NewReader(`{"collection":"photos","object_id":"1","tagger_version":"rec","tags":["cat"]}`)))
+		storage.Close()
+		if out.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", typ, out.Code, out.Body)
+		}
+		if rec.got.Type != typ || string(rec.got.Data) != "\x89PNG" {
+			t.Errorf("%s: evaluator got %q %q", typ, rec.got.Type, rec.got.Data)
+		}
 	}
 }

@@ -50,7 +50,7 @@ func newCompletionsOpenAI(cfg HTTPConfig, systemPrompt string) *CompletionsOpenA
 }
 
 // Evaluate evaluates tags for the given content using an LLM, which reads it as text.
-func (e *CompletionsOpenAI) Evaluate(ctx context.Context, content []byte, tags []string) (map[string]bool, error) {
+func (e *CompletionsOpenAI) Evaluate(ctx context.Context, content Content, tags []string) (map[string]bool, error) {
 	slog.Debug("CompletionsOpenAI.Evaluate", "tags_count", len(tags))
 	result := make(map[string]bool, len(tags))
 	if len(tags) == 0 {
@@ -64,7 +64,7 @@ func (e *CompletionsOpenAI) Evaluate(ctx context.Context, content []byte, tags [
 		"model": e.cfg.Model,
 		"messages": []map[string]string{
 			{"role": "system", "content": e.systemPrompt},
-			{"role": "user", "content": buildPrompt(string(content), tags)},
+			{"role": "user", "content": buildPrompt(string(content.Data), tags)},
 		},
 		"temperature": 0,
 	})

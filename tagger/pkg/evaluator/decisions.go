@@ -2,6 +2,7 @@ package evaluator
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,6 +23,13 @@ type question struct {
 	instructions string
 }
 
+// imageDialect is implemented by the dialects whose vendor can look at an image. The image goes in as it is: its
+// base64 is built from the stored bytes, with the stored media type, and nothing else is done to it.
+type imageDialect interface {
+	// imageRequest builds the body of one request about the image.
+	imageRequest(model, mediaType, imageBase64 string, qs []question) map[string]any
+}
+
 // decisionsDialect is a vendor wire format.
 type decisionsDialect interface {
 	// questionName returns the name for the i-th question of a request, given its tag.
@@ -37,6 +45,10 @@ type decisionsDialect interface {
 // INSTRUCTIONS setting replaces it; {tag} stands for the tag.
 const DefaultDecisionsInstructions = `Analyze the text and determine whether the tag "{tag}" applies. Answer true if the text matches the tag and false otherwise.`
 
+// DefaultDecisionsImageInstructions is the question put for each tag about an image, unless the evaluator's
+// IMAGE_INSTRUCTIONS setting replaces it; {tag} stands for the tag.
+const DefaultDecisionsImageInstructions = `Analyze the image and determine whether the tag "{tag}" applies. Answer true if the image matches the tag and false otherwise.`
+
 // Decisions is a "decisions/..." evaluator.
 type Decisions struct {
 	label        string
@@ -45,7 +57,9 @@ type Decisions struct {
 	threshold    float64
 	batchSize    int
 	instructions string
-	client       *http.Client
+	// imageInstructions is the question for an image.
+	imageInstructions string
+	client            *http.Client
 }
 
 // newDecisions reads the settings of a decisions evaluator from prefix: the HTTP settings of
@@ -55,6 +69,7 @@ type Decisions struct {
 //	<P>BATCH_SIZE    questions per request (default 50); more tags are sent in several requests.
 //	                 0 sends them all in one request
 //	<P>INSTRUCTIONS  the question for each tag; must contain {tag}
+//	<P>IMAGE_INSTRUCTIONS  the question for each tag when the object is an image; must contain {tag}
 func newDecisions(label, prefix string, defaults HTTPDefaults, dialect decisionsDialect, lookup LookupFunc) (*Decisions, error) {
 	cfg, err := LoadHTTPConfig(lookup, prefix, defaults)
 	var errs []error
@@ -76,6 +91,13 @@ func newDecisions(label, prefix string, defaults HTTPDefaults, dialect decisions
 	if !strings.Contains(instructions, "{tag}") {
 		errs = append(errs, fmt.Errorf("%sINSTRUCTIONS must contain {tag}", prefix))
 	}
+	imageInstructions := DefaultDecisionsImageInstructions
+	if v, _ := lookup(prefix + "IMAGE_INSTRUCTIONS"); v != "" {
+		imageInstructions = v
+	}
+	if !strings.Contains(imageInstructions, "{tag}") {
+		errs = append(errs, fmt.Errorf("%sIMAGE_INSTRUCTIONS must contain {tag}", prefix))
+	}
 	if err := errors.Join(errs...); err != nil {
 		return nil, err
 	}
@@ -83,13 +105,14 @@ func newDecisions(label, prefix string, defaults HTTPDefaults, dialect decisions
 		"threshold", threshold, "batch_size", batch, "timeout", cfg.Timeout)
 	return &Decisions{
 		label: label, cfg: cfg, dialect: dialect, threshold: threshold, batchSize: batch,
-		instructions: instructions, client: &http.Client{Timeout: cfg.Timeout},
+		instructions: instructions, imageInstructions: imageInstructions, client: &http.Client{Timeout: cfg.Timeout},
 	}, nil
 }
 
-// Evaluate asks one question per tag about the content, read as text. A tag the vendor does not answer is
-// false.
-func (e *Decisions) Evaluate(ctx context.Context, content []byte, tags []string) (map[string]bool, error) {
+// Evaluate asks one question per tag about the content: an image (by its stored media type) goes to the vendor as
+// an image when the vendor's dialect supports that, anything else is read as text. A tag the vendor does not answer
+// is false.
+func (e *Decisions) Evaluate(ctx context.Context, content Content, tags []string) (map[string]bool, error) {
 	slog.Debug("Decisions.Evaluate", "label", e.label, "tags_count", len(tags))
 	result := make(map[string]bool, len(tags))
 	for _, tag := range tags {
@@ -97,6 +120,18 @@ func (e *Decisions) Evaluate(ctx context.Context, content []byte, tags []string)
 	}
 	if len(tags) == 0 {
 		return result, nil
+	}
+
+	// An image is sent as a base64 data URL, as it is stored; text is the bytes read as UTF-8.
+	instructions, build := e.instructions, func(qs []question) map[string]any {
+		return e.dialect.request(e.cfg.Model, string(content.Data), qs)
+	}
+	if img, ok := e.dialect.(imageDialect); ok && content.IsImage() {
+		encoded := base64.StdEncoding.EncodeToString(content.Data)
+		instructions = e.imageInstructions
+		build = func(qs []question) map[string]any {
+			return img.imageRequest(e.cfg.Model, content.MediaType(), encoded, qs)
+		}
 	}
 
 	size := e.batchSize
@@ -110,10 +145,10 @@ func (e *Decisions) Evaluate(ctx context.Context, content []byte, tags []string)
 			qs[i] = question{
 				name:         e.dialect.questionName(i, tag),
 				tag:          tag,
-				instructions: strings.ReplaceAll(e.instructions, "{tag}", tag),
+				instructions: strings.ReplaceAll(instructions, "{tag}", tag),
 			}
 		}
-		body, err := e.cfg.post(ctx, e.client, e.dialect.request(e.cfg.Model, string(content), qs))
+		body, err := e.cfg.post(ctx, e.client, build(qs))
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", e.label, err)
 		}

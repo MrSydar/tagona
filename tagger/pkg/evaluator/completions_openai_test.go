@@ -46,7 +46,7 @@ func (s *completionsStub) evaluator(t *testing.T, extra map[string]string) *Comp
 
 func TestCompletionsOpenAIRequestAndAnswer(t *testing.T) {
 	s := newCompletionsStub(t)
-	got, err := s.evaluator(t, nil).Evaluate(context.Background(), []byte("a golang job"), []string{"golang", "java", "rust"})
+	got, err := s.evaluator(t, nil).Evaluate(context.Background(), Text("a golang job"), []string{"golang", "java", "rust"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestCompletionsOpenAIConfigurableForOtherVendors(t *testing.T) {
 		"QUERY": "api-version=2024-10-21", "HEADERS": `{"X-Tenant":"t1"}`,
 		"PARAMS": `{"temperature":null,"max_completion_tokens":64,"reasoning_effort":"low"}`, "SYSTEM_PROMPT": "Answer in JSON.",
 	})
-	if _, err := ev.Evaluate(context.Background(), []byte("x"), []string{"golang"}); err != nil {
+	if _, err := ev.Evaluate(context.Background(), Text("x"), []string{"golang"}); err != nil {
 		t.Fatal(err)
 	}
 	if s.req.URL.Path != "/openai/deployments/d1/chat/completions" || s.req.URL.Query().Get("api-version") != "2024-10-21" {
@@ -107,7 +107,7 @@ func TestCompletionsOpenAIParsesMessyAnswers(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s := newCompletionsStub(t)
 			s.content = tt.content
-			got, err := s.evaluator(t, nil).Evaluate(context.Background(), []byte("x"), []string{"golang"})
+			got, err := s.evaluator(t, nil).Evaluate(context.Background(), Text("x"), []string{"golang"})
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err = %v", err)
 			}
@@ -122,12 +122,12 @@ func TestCompletionsOpenAIEdgeCases(t *testing.T) {
 	s := newCompletionsStub(t)
 	ev := s.evaluator(t, nil)
 
-	got, err := ev.Evaluate(context.Background(), []byte("x"), nil)
+	got, err := ev.Evaluate(context.Background(), Text("x"), nil)
 	if err != nil || len(got) != 0 || s.req != nil {
 		t.Fatalf("no tags: %v, %v, vendor called: %v", got, err, s.req != nil)
 	}
 	s.status = http.StatusInternalServerError
-	if _, err := ev.Evaluate(context.Background(), []byte("x"), []string{"a"}); err == nil {
+	if _, err := ev.Evaluate(context.Background(), Text("x"), []string{"a"}); err == nil {
 		t.Fatal("a vendor error must be an error")
 	}
 	if v := ev.Version(); v != "completions/openai:"+ev.cfg.Model || ev.cfg.Model == "" {

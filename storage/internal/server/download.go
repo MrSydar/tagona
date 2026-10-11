@@ -34,6 +34,15 @@ func downloadHeaders(metadata map[string]string) (contentType, disposition strin
 	return contentType, disposition
 }
 
+// contentRouteType is the Content-Type of the internal content route: the object's stored type when it is a usable
+// media type, else opaque bytes.
+func contentRouteType(metadata map[string]string) string {
+	if t, _ := downloadHeaders(metadata); t != "" {
+		return t
+	}
+	return "application/octet-stream"
+}
+
 func isControl(r rune) bool { return r < 0x20 || r == 0x7f }
 
 // fileName makes a stored name usable as a file name: no control characters, no directories, no leading or trailing
