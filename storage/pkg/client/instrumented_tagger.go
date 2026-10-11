@@ -26,7 +26,7 @@ func (t *InstrumentedTagger) Versions(ctx context.Context) ([]string, error) {
 }
 
 // Tag requests tag evaluation for an object.
-func (t *InstrumentedTagger) Tag(ctx context.Context, collection, objectID, taggerVersion string, tags []string) (map[string]bool, error) {
+func (t *InstrumentedTagger) Tag(ctx context.Context, collection, objectID, taggerVersion string, tags []string) (map[string]float64, error) {
 	start := time.Now()
 	result, err := t.inner.Tag(ctx, collection, objectID, taggerVersion, tags)
 	metrics.RecordTaggerLatency("tag", start)

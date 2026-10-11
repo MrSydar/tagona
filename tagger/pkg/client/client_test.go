@@ -21,7 +21,7 @@ func TestClientUsesUnprefixedPaths(t *testing.T) {
 		case "/version":
 			json.NewEncoder(w).Encode(map[string]any{"version": []string{"grep", "false"}})
 		case "/tag":
-			json.NewEncoder(w).Encode(map[string]any{"tags": map[string]bool{"golang": true}})
+			json.NewEncoder(w).Encode(map[string]any{"tags": map[string]float64{"golang": 0.9}})
 		default:
 			http.NotFound(w, r)
 		}
@@ -34,7 +34,7 @@ func TestClientUsesUnprefixedPaths(t *testing.T) {
 		t.Fatalf("Versions = %q, %v", versions, err)
 	}
 	tags, err := c.Tag(context.Background(), "jobs", "id-1", "grep", []string{"golang"})
-	if err != nil || !tags["golang"] {
+	if err != nil || tags["golang"] != 0.9 {
 		t.Fatalf("Tag = %v, %v", tags, err)
 	}
 	if len(seen) != 2 || seen[0] != "GET /version" || seen[1] != "POST /tag" {
@@ -57,7 +57,7 @@ func TestClientReportsAVersionMismatch(t *testing.T) {
 			}})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]any{"tags": map[string]bool{"a": true}})
+		json.NewEncoder(w).Encode(map[string]any{"tags": map[string]float64{"a": 0.9}})
 	}))
 	defer srv.Close()
 	c := New(srv.URL, time.Second)
@@ -70,7 +70,7 @@ func TestClientReportsAVersionMismatch(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("a mismatch was retried: %d calls", calls)
 	}
-	if tags, err := c.Tag(context.Background(), "jobs", "id-1", "grep", []string{"a"}); err != nil || !tags["a"] {
+	if tags, err := c.Tag(context.Background(), "jobs", "id-1", "grep", []string{"a"}); err != nil || tags["a"] != 0.9 {
 		t.Fatalf("a matching version: %v, %v", tags, err)
 	}
 }

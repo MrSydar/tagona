@@ -368,6 +368,7 @@ func (d *dateFilter) toUTC() {
 
 type queryBody struct {
 	Tags       map[string]bool `json:"tags,omitempty"`
+	Threshold  *float64        `json:"threshold,omitempty"`
 	Date       *dateFilter     `json:"date,omitempty"`
 	Limit      *int            `json:"limit,omitempty"`
 	Cursor     string          `json:"cursor,omitempty"`
@@ -387,6 +388,9 @@ func (g *gateway) queryObjects(w http.ResponseWriter, r *http.Request) {
 	}
 	if e == nil && req.Cursor != "" && !cursorRe.MatchString(req.Cursor) {
 		e = badRequest("invalid_cursor", "cursor is not valid")
+	}
+	if e == nil && req.Threshold != nil && !(*req.Threshold >= 0 && *req.Threshold <= 1) {
+		e = badRequest("invalid_threshold", "threshold must be a number from 0 to 1")
 	}
 	if e != nil {
 		reject(w, e)

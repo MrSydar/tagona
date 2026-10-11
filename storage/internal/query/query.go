@@ -41,6 +41,7 @@ func (r *Runner) Query(ctx context.Context, collection *models.Collection, req m
 	}
 
 	targetLimit := req.Limit + 1
+	threshold := req.EffectiveThreshold()
 
 	// evaluate=false: answer from tags that are already known, without calling
 	// the tagging engine.
@@ -114,7 +115,7 @@ func (r *Runner) Query(ctx context.Context, collection *models.Collection, req m
 
 		items := make([]*candidate, len(objects))
 		for i, obj := range objects {
-			items[i] = plan(obj, knownTags[obj.ID], req.Tags)
+			items[i] = plan(obj, knownTags[obj.ID], req.Tags, threshold)
 		}
 
 		next, inflight := 0, 0 // the first item not started, and the started ones that are not taken yet
@@ -164,7 +165,7 @@ func (r *Runner) Query(ctx context.Context, collection *models.Collection, req m
 					return nil, it.err
 				}
 				if it.known == nil {
-					it.known = map[string]bool{}
+					it.known = map[string]float64{}
 				}
 				for k, v := range it.tags {
 					it.known[k] = v
@@ -173,10 +174,10 @@ func (r *Runner) Query(ctx context.Context, collection *models.Collection, req m
 
 			scanCursorDate = it.obj.Date
 			scanCursorID = it.obj.ID
-			if it.skip || !matchesAll(it.known, req.Tags) {
+			if it.skip || !matchesAll(it.known, req.Tags, threshold) {
 				continue
 			}
-			it.obj.Tags = req.Tags
+			it.obj.Tags = scoresOf(it.known, req.Tags)
 			results = append(results, it.obj)
 		}
 	}
@@ -187,24 +188,24 @@ func (r *Runner) Query(ctx context.Context, collection *models.Collection, req m
 // candidate is an object of the scan and what is known about it for the query.
 type candidate struct {
 	obj     models.Object
-	known   map[string]bool
+	known   map[string]float64
 	skip    bool     // a known tag contradicts the query: it cannot match
 	missing []string // tags to evaluate; nil when there is nothing to ask the tagger
 	// Set when an evaluation was started: done is closed when it has finished, tags and err are its outcome.
 	done chan struct{}
-	tags map[string]bool
+	tags map[string]float64
 	err  error
 }
 
 // plan decides what a query needs to do for an object, from the tags already known for it.
-func plan(obj models.Object, known map[string]bool, wanted map[string]bool) *candidate {
+func plan(obj models.Object, known map[string]float64, wanted map[string]bool, threshold float64) *candidate {
 	c := &candidate{obj: obj, known: known}
 	for tag, want := range wanted {
-		have, ok := known[tag]
+		score, ok := known[tag]
 		switch {
 		case !ok:
 			c.missing = append(c.missing, tag)
-		case have != want:
+		case !models.Matches(score, want, threshold):
 			c.skip = true
 		}
 	}
@@ -214,14 +215,23 @@ func plan(obj models.Object, known map[string]bool, wanted map[string]bool) *can
 	return c
 }
 
-// matchesAll reports whether every wanted tag is known with the value wanted.
-func matchesAll(known, wanted map[string]bool) bool {
+// matchesAll reports whether every wanted tag is known with a score that satisfies the value wanted.
+func matchesAll(known map[string]float64, wanted map[string]bool, threshold float64) bool {
 	for tag, want := range wanted {
-		if have, ok := known[tag]; !ok || have != want {
+		if score, ok := known[tag]; !ok || !models.Matches(score, want, threshold) {
 			return false
 		}
 	}
 	return true
+}
+
+// scoresOf is the scores of the wanted tags, for the object's answer.
+func scoresOf(known map[string]float64, wanted map[string]bool) map[string]float64 {
+	out := make(map[string]float64, len(wanted))
+	for tag := range wanted {
+		out[tag] = known[tag]
+	}
+	return out
 }
 
 // evaluate asks the tagger for the missing tags of one object and stores the answer, so that it is kept even
@@ -245,16 +255,24 @@ func (r *Runner) evaluate(ctx context.Context, collection *models.Collection, c 
 // here: the lookup is a single indexed query, so there is no partial result.
 func (r *Runner) queryKnown(ctx context.Context, collection *models.Collection, req models.TagsQueryRequest, cursorDate time.Time, cursorID string, targetLimit int) (*models.TagsQueryResponse, error) {
 	slog.Debug("queryKnown", "collection", collection.Name, "tags", len(req.Tags))
-	objs, err := r.db.QueryObjectsKnownTags(ctx, collection.ID, req.Tags, req.Date, cursorDate, cursorID, targetLimit)
+	objs, err := r.db.QueryObjectsKnownTags(ctx, collection.ID, req.Tags, req.EffectiveThreshold(), req.Date, cursorDate, cursorID, targetLimit)
 	if err != nil {
 		return nil, fmt.Errorf("query known tags: %w", err)
 	}
 	if objs == nil {
 		objs = []models.Object{} // encode as [] like the evaluating path, not null
 	}
-	if len(req.Tags) > 0 {
+	if len(req.Tags) > 0 && len(objs) > 0 {
+		ids := make([]string, len(objs))
 		for i := range objs {
-			objs[i].Tags = req.Tags
+			ids[i] = objs[i].ID
+		}
+		known, err := r.db.GetKnownTagsForObjects(ctx, ids)
+		if err != nil {
+			return nil, fmt.Errorf("get scores: %w", err)
+		}
+		for i := range objs {
+			objs[i].Tags = scoresOf(known[objs[i].ID], req.Tags)
 		}
 	}
 	return buildResponse(objs, req.Limit)

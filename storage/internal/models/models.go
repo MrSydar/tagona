@@ -27,20 +27,40 @@ type Object struct {
 	PayloadKey   string     `json:"payload_key,omitempty"`
 	// Metadata is what the uploader attached to the object: string keys and string values. Never null.
 	Metadata map[string]string `json:"metadata"`
-	Tags     map[string]bool   `json:"tags,omitempty"`
+	// Tags are the scores (0 to 1) of the tags a query asked about, or of all the tags the object has.
+	Tags map[string]float64 `json:"tags,omitempty"`
 }
 
-// TagResult represents a tag evaluation result.
-type TagResult struct {
-	Tag   string `json:"tag"`
-	Value bool   `json:"value"`
+// DefaultThreshold is the score at or above which a tag counts as true when a query names no threshold.
+const DefaultThreshold = 0.5
+
+// Matches reports whether a tag's score satisfies a wanted value at a threshold: true wants a score of at least
+// threshold, false wants one below it.
+func Matches(score float64, want bool, threshold float64) bool {
+	if want {
+		return score >= threshold
+	}
+	return score < threshold
+}
+
+// Forced is the scores a tag set by hand is stored with: 1 for true and 0 for false.
+func Forced(tags map[string]bool) map[string]float64 {
+	out := make(map[string]float64, len(tags))
+	for tag, v := range tags {
+		if v {
+			out[tag] = 1
+		} else {
+			out[tag] = 0
+		}
+	}
+	return out
 }
 
 // TagStat describes one tag registered in a collection. Tags are sparse: an
-// object has a value for a tag only once the tag was evaluated for it.
+// object has a score for a tag only once the tag was evaluated for it.
 type TagStat struct {
 	Tag string `json:"tag"`
-	// TrueCount and FalseCount are the objects the tag is known true/false for.
+	// TrueCount and FalseCount are the objects the tag is known for with a score of at least 0.5 and below it.
 	TrueCount   int64     `json:"true_count"`
 	FalseCount  int64     `json:"false_count"`
 	FirstSeenAt time.Time `json:"first_seen_at"`
@@ -89,16 +109,27 @@ type ObjectUploadResponse struct {
 
 // TagsQueryRequest is the request for querying objects by tags.
 type TagsQueryRequest struct {
-	Tags       map[string]bool `json:"tags,omitempty"`
-	Date       *DateFilter     `json:"date,omitempty"`
-	Limit      int             `json:"limit"`
-	Cursor     string          `json:"cursor,omitempty"`
-	TimeoutMs  int             `json:"timeout_ms,omitempty"`
-	BestEffort bool            `json:"best_effort,omitempty"`
+	// Tags are the tags to match: true wants a score of at least Threshold, false one below it.
+	Tags map[string]bool `json:"tags,omitempty"`
+	// Threshold is the score a tag needs to count as true; DefaultThreshold when omitted.
+	Threshold  *float64    `json:"threshold,omitempty"`
+	Date       *DateFilter `json:"date,omitempty"`
+	Limit      int         `json:"limit"`
+	Cursor     string      `json:"cursor,omitempty"`
+	TimeoutMs  int         `json:"timeout_ms,omitempty"`
+	BestEffort bool        `json:"best_effort,omitempty"`
 	// Evaluate controls whether missing tags are evaluated by the tagging
 	// engine. It defaults to true when omitted; when false the query is answered
 	// from already-known tags only and the tagger is never called.
 	Evaluate *bool `json:"evaluate,omitempty"`
+}
+
+// EffectiveThreshold is the threshold of the query: the requested one, or the default.
+func (r TagsQueryRequest) EffectiveThreshold() float64 {
+	if r.Threshold == nil {
+		return DefaultThreshold
+	}
+	return *r.Threshold
 }
 
 // ShouldEvaluate reports whether missing tags may be evaluated (the default).
@@ -130,5 +161,5 @@ type TaggingRequest struct {
 
 // TaggingResponse is the response from the tagging engine.
 type TaggingResponse struct {
-	Tags map[string]bool `json:"tags"`
+	Tags map[string]float64 `json:"tags"`
 }

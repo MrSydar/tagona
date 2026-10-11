@@ -1,7 +1,8 @@
 -- Per-collection statistics maintained by triggers:
 --   collections.object_count  number of objects in the collection
 --   collection_tags           registry of tags seen in a collection, with the
---                             number of objects each tag is known true/false for
+--                             number of objects each tag is known true (score of
+--                             at least 0.5) and false (below 0.5) for
 --
 -- Migrations are re-run on every startup, so everything here is idempotent. The
 -- one-off backfill runs only when the schema is first created, under a lock
@@ -33,8 +34,8 @@ BEGIN
 
         INSERT INTO collection_tags (collection_id, tag, true_count, false_count, first_seen_at)
         SELECT collection_id, tag,
-               count(*) FILTER (WHERE value),
-               count(*) FILTER (WHERE NOT value),
+               count(*) FILTER (WHERE score >= 0.5),
+               count(*) FILTER (WHERE score < 0.5),
                min(updated_at)
         FROM object_tags
         GROUP BY collection_id, tag;
@@ -52,8 +53,8 @@ LANGUAGE plpgsql AS $$
 BEGIN
     INSERT INTO collection_tags (collection_id, tag, true_count, false_count)
     SELECT collection_id, tag,
-           count(*) FILTER (WHERE value),
-           count(*) FILTER (WHERE NOT value)
+           count(*) FILTER (WHERE score >= 0.5),
+           count(*) FILTER (WHERE score < 0.5)
     FROM new_rows
     GROUP BY collection_id, tag
     ORDER BY collection_id, tag
@@ -78,9 +79,9 @@ BEGIN
     FROM (
         SELECT collection_id, tag, sum(t) AS t, sum(f) AS f
         FROM (
-            SELECT collection_id, tag, -(value::int) AS t, -((NOT value)::int) AS f FROM old_rows
+            SELECT collection_id, tag, -((score >= 0.5)::int) AS t, -((score < 0.5)::int) AS f FROM old_rows
             UNION ALL
-            SELECT collection_id, tag, value::int, (NOT value)::int FROM new_rows
+            SELECT collection_id, tag, (score >= 0.5)::int, (score < 0.5)::int FROM new_rows
         ) x
         GROUP BY collection_id, tag
     ) d
@@ -102,8 +103,8 @@ BEGIN
         false_count = ct.false_count - d.f
     FROM (
         SELECT collection_id, tag,
-               count(*) FILTER (WHERE value) AS t,
-               count(*) FILTER (WHERE NOT value) AS f
+               count(*) FILTER (WHERE score >= 0.5) AS t,
+               count(*) FILTER (WHERE score < 0.5) AS f
         FROM old_rows
         GROUP BY collection_id, tag
     ) d

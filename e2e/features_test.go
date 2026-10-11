@@ -410,23 +410,23 @@ func TestForcedTags(t *testing.T) {
 	require.Equal(t, http.StatusCreated, status, string(body))
 	objects := "/v1/collections/" + coll + "/objects"
 
-	tagsOf := func(id string) map[string]*bool {
+	tagsOf := func(id string) map[string]*float64 {
 		status, body := do(t, http.MethodGet, objects+"/"+id+"/tags", "", asKey(key))
 		require.Equal(t, http.StatusOK, status, string(body))
 		var out struct {
-			Tags map[string]*bool `json:"tags"`
+			Tags map[string]*float64 `json:"tags"`
 		}
 		require.NoError(t, json.Unmarshal(body, &out))
 		return out.Tags
 	}
-	yes, no := true, false
+	yes, no := 1.0, 0.0 // a forced true is stored as a score of 1, a forced false as 0
 
 	// forced on upload: stored, and visible without any evaluation
 	status, body = do(t, http.MethodPost, objects+"?tags="+url.QueryEscape(`{"forced-yes":true,"forced-no":false}`), "hello world", asKey(key))
 	require.Equal(t, http.StatusCreated, status, string(body))
 	var obj objMeta
 	require.NoError(t, json.Unmarshal(body, &obj))
-	assert.Equal(t, map[string]*bool{"forced-yes": &yes, "forced-no": &no}, tagsOf(obj.ID))
+	assert.Equal(t, map[string]*float64{"forced-yes": &yes, "forced-no": &no}, tagsOf(obj.ID))
 
 	// a query uses a forced value instead of evaluating: grep would say "forced-yes" is not in the text
 	status, body = do(t, http.MethodPost, objects+"/query", `{"tags":{"forced-yes":true,"forced-no":false}}`, asKey(key))
@@ -442,12 +442,12 @@ func TestForcedTags(t *testing.T) {
 	status, body = do(t, http.MethodPatch, objects+"/"+obj.ID+"/tags", `{"forced-yes":false,"hello":true,"forced-no":null}`, asKey(key))
 	require.Equal(t, http.StatusOK, status, string(body))
 	var patched struct {
-		ID   string           `json:"id"`
-		Tags map[string]*bool `json:"tags"`
+		ID   string              `json:"id"`
+		Tags map[string]*float64 `json:"tags"`
 	}
 	require.NoError(t, json.Unmarshal(body, &patched))
 	assert.Equal(t, obj.ID, patched.ID)
-	assert.Equal(t, map[string]*bool{"forced-yes": &no, "hello": &yes}, patched.Tags)
+	assert.Equal(t, map[string]*float64{"forced-yes": &no, "hello": &yes}, patched.Tags)
 
 	// the collection's counters follow
 	status, body = do(t, http.MethodGet, "/v1/collections/"+coll+"/tags", "", asKey(key))

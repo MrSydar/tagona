@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -52,9 +53,9 @@ func newCompletionsOpenAI(cfg HTTPConfig, systemPrompt string) *CompletionsOpenA
 
 // Evaluate evaluates tags for the given content using an LLM, which reads it as text, or looks at it when it is an
 // image (by its stored media type).
-func (e *CompletionsOpenAI) Evaluate(ctx context.Context, content Content, tags []string) (map[string]bool, error) {
+func (e *CompletionsOpenAI) Evaluate(ctx context.Context, content Content, tags []string) (map[string]float64, error) {
 	slog.Debug("CompletionsOpenAI.Evaluate", "tags_count", len(tags))
-	result := make(map[string]bool, len(tags))
+	result := make(map[string]float64, len(tags))
 	if len(tags) == 0 {
 		slog.Debug("no tags provided, returning empty result")
 		return result, nil
@@ -93,10 +94,10 @@ func userContent(content Content, tags []string) any {
 
 func buildImagePrompt(tags []string) string {
 	return fmt.Sprintf(
-		`Analyze the attached image and determine which tags apply. Respond ONLY with a JSON object where each key is a tag and the value is true or false.
+		`Analyze the attached image and determine which tags apply. Respond ONLY with a JSON object where each key is a tag and the value is your confidence that the tag applies, a number from 0 (certainly not) to 1 (certainly).
 
 Example response format:
-{"tag1": true, "tag2": false}
+{"tag1": 0.95, "tag2": 0.05}
 
 Tags: %s`,
 		tagList(tags),
@@ -122,10 +123,10 @@ func tagList(tags []string) string {
 func buildPrompt(text string, tags []string) string {
 	slog.Debug("buildPrompt called", "tags_count", len(tags))
 	return fmt.Sprintf(
-		`Analyze the following text and determine which tags apply. Respond ONLY with a JSON object where each key is a tag and the value is true or false.
+		`Analyze the following text and determine which tags apply. Respond ONLY with a JSON object where each key is a tag and the value is your confidence that the tag applies, a number from 0 (certainly not) to 1 (certainly).
 
 Example response format:
-{"tag1": true, "tag2": false}
+{"tag1": 0.95, "tag2": 0.05}
 
 Text:
 ---
@@ -138,11 +139,11 @@ Tags: %s`,
 	)
 }
 
-func parseTagResponse(respBody []byte, expectedTags []string) (map[string]bool, error) {
+func parseTagResponse(respBody []byte, expectedTags []string) (map[string]float64, error) {
 	slog.Debug("parseTagResponse called", "expected_tags_count", len(expectedTags))
-	result := make(map[string]bool, len(expectedTags))
+	result := make(map[string]float64, len(expectedTags))
 	for _, tag := range expectedTags {
-		result[tag] = false
+		result[tag] = 0
 	}
 
 	var apiResp struct {
@@ -166,7 +167,7 @@ func parseTagResponse(respBody []byte, expectedTags []string) (map[string]bool, 
 	return parseContent(content, expectedTags, result)
 }
 
-func parseContent(content string, expectedTags []string, result map[string]bool) (map[string]bool, error) {
+func parseContent(content string, expectedTags []string, result map[string]float64) (map[string]float64, error) {
 	var parsed map[string]any
 
 	// Try to parse the content directly as JSON.
@@ -199,17 +200,31 @@ populate:
 	for _, tag := range expectedTags {
 		if v, ok := parsed[tag]; ok {
 			switch val := v.(type) {
-			case bool:
-				result[tag] = val
+			case bool: // a model that answers yes or no is fully confident
+				if val {
+					result[tag] = 1
+				}
 			case string:
-				result[tag] = val == "true"
+				if val == "true" {
+					result[tag] = 1
+				} else if f, err := strconv.ParseFloat(val, 64); err == nil {
+					result[tag] = clamp01(f)
+				}
 			case float64:
-				result[tag] = val != 0
+				result[tag] = clamp01(val)
 			}
 		}
 	}
 
 	return result, nil
+}
+
+// clamp01 limits a confidence to the range 0 to 1; NaN is 0.
+func clamp01(f float64) float64 {
+	if f != f {
+		return 0
+	}
+	return min(max(f, 0), 1)
 }
 
 // Version is "completions/openai:<model>".

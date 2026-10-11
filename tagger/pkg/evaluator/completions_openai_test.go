@@ -52,8 +52,8 @@ func TestCompletionsOpenAIRequestAndAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got["golang"] || got["java"] || got["rust"] {
-		t.Fatalf("answer = %v (a tag the model leaves out is false)", got)
+	if got["golang"] != 1 || got["java"] != 0 || got["rust"] != 0 {
+		t.Fatalf("answer = %v (a tag the model leaves out is 0)", got)
 	}
 	if s.req.URL.Path != "/chat/completions" || s.req.Header.Get("Authorization") != "Bearer sk-test" {
 		t.Errorf("request = %s, auth %q", s.req.URL.Path, s.req.Header.Get("Authorization"))
@@ -94,16 +94,21 @@ func TestCompletionsOpenAIConfigurableForOtherVendors(t *testing.T) {
 func TestCompletionsOpenAIParsesMessyAnswers(t *testing.T) {
 	tests := map[string]struct {
 		content string
-		want    bool
+		want    float64
 		wantErr bool
 	}{
-		"plain":          {`{"golang": true}`, true, false},
-		"code fence":     {"```json\n{\"golang\": true}\n```", true, false},
-		"reasoning":      {"<think>{\"golang\": false}</think>{\"golang\": true}", true, false},
-		"string value":   {`{"golang": "true"}`, true, false},
-		"number value":   {`{"golang": 1}`, true, false},
-		"not json":       {`I think so`, false, true},
-		"unrelated tags": {`{"python": true}`, false, false},
+		"plain":          {`{"golang": true}`, 1, false},
+		"false":          {`{"golang": false}`, 0, false},
+		"code fence":     {"```json\n{\"golang\": true}\n```", 1, false},
+		"reasoning":      {"<think>{\"golang\": false}</think>{\"golang\": true}", 1, false},
+		"string value":   {`{"golang": "true"}`, 1, false},
+		"number string":  {`{"golang": "0.7"}`, 0.7, false},
+		"number value":   {`{"golang": 1}`, 1, false},
+		"confidence":     {`{"golang": 0.85}`, 0.85, false},
+		"above one":      {`{"golang": 7}`, 1, false},
+		"negative":       {`{"golang": -0.5}`, 0, false},
+		"not json":       {`I think so`, 0, true},
+		"unrelated tags": {`{"python": true}`, 0, false},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -142,7 +147,7 @@ func TestCompletionsOpenAISendsAnImageAsIs(t *testing.T) {
 	s := newCompletionsStub(t)
 	bytes := []byte{0x89, 'P', 'N', 'G', 0x00, 0xff, 0xfe}
 	got, err := s.evaluator(t, nil).Evaluate(context.Background(), Content{Data: bytes, Type: "image/png"}, []string{"golang", "java"})
-	if err != nil || !got["golang"] || got["java"] {
+	if err != nil || got["golang"] != 1 || got["java"] != 0 {
 		t.Fatalf("got %v, %v", got, err)
 	}
 	msgs := s.body["messages"].([]any)

@@ -78,7 +78,7 @@ type fakeVersions struct {
 }
 
 func (f fakeVersions) Versions(context.Context) ([]string, error) { return f.versions, f.err }
-func (f fakeVersions) Tag(context.Context, string, string, string, []string) (map[string]bool, error) {
+func (f fakeVersions) Tag(context.Context, string, string, string, []string) (map[string]float64, error) {
 	return nil, errors.New("not used")
 }
 

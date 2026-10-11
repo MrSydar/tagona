@@ -118,7 +118,7 @@ func TestDecisionsOpenAIRequestShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got["golang"] || got["java"] {
+	if got["golang"] != 0.92 || got["java"] != 0.1 {
 		t.Fatalf("answer = %v", got)
 	}
 	if len(s.reqs) != 1 || s.paths[0] != "/decisions" {
@@ -143,7 +143,7 @@ func TestDecisionsOpenAIRequestShape(t *testing.T) {
 	}
 }
 
-func TestDecisionsOpenAIThresholdRefusalAndMissingAnswers(t *testing.T) {
+func TestDecisionsOpenAIReportsProbabilityRefusalAndMissingAnswers(t *testing.T) {
 	probs := map[string]float64{"high": 0.9, "edge": 0.5, "low": 0.49, "refused": -1}
 	tags := []string{"high", "edge", "low", "refused", "unanswered"}
 
@@ -152,20 +152,12 @@ func TestDecisionsOpenAIThresholdRefusalAndMissingAnswers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{"high": true, "edge": true, "low": false, "refused": false, "unanswered": false}
+	// the vendor's probability is the confidence as it is; a refusal or no answer is 0
+	want := map[string]float64{"high": 0.9, "edge": 0.5, "low": 0.49, "refused": 0, "unanswered": 0}
 	for tag, w := range want {
 		if got[tag] != w {
 			t.Errorf("%s = %v, want %v", tag, got[tag], w)
 		}
-	}
-
-	got, err = s.openai(t, map[string]string{"THRESHOLD": "0.95"}).Evaluate(context.Background(), Text("x"), tags)
-	if err != nil || got["high"] {
-		t.Fatalf("with threshold 0.95, high = %v, %v", got["high"], err)
-	}
-	got, _ = s.openai(t, map[string]string{"THRESHOLD": "0"}).Evaluate(context.Background(), Text("x"), tags)
-	if !got["low"] || got["unanswered"] {
-		t.Fatalf("with threshold 0, an answered tag is true and an unanswered one is still false: %v", got)
 	}
 }
 
@@ -182,7 +174,7 @@ func TestDecisionsBatching(t *testing.T) {
 		t.Fatalf("5 tags in batches of 2 took %d requests, want 3", len(s.reqs))
 	}
 	for _, tag := range tags {
-		if !got[tag] {
+		if got[tag] != 1 {
 			t.Errorf("%s lost across batches: %v", tag, got)
 		}
 	}
@@ -225,13 +217,10 @@ func TestDecisionsCustomInstructionsAndVendorSettings(t *testing.T) {
 
 func TestDecisionsRejectBadSettings(t *testing.T) {
 	for name, kv := range map[string]map[string]string{
-		"threshold above 1":     {"THRESHOLD": "1.5"},
-		"threshold negative":    {"THRESHOLD": "-0.1"},
-		"threshold not numeric": {"THRESHOLD": "high"},
-		"negative batch size":   {"BATCH_SIZE": "-1"},
-		"batch size not a int":  {"BATCH_SIZE": "many"},
-		"instructions no tag":   {"INSTRUCTIONS": "Is it good?"},
-		"bad base url":          {"BASE_URL": "nope"},
+		"negative batch size":  {"BATCH_SIZE": "-1"},
+		"batch size not a int": {"BATCH_SIZE": "many"},
+		"instructions no tag":  {"INSTRUCTIONS": "Is it good?"},
+		"bad base url":         {"BASE_URL": "nope"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			full := map[string]string{}
@@ -265,7 +254,7 @@ func TestDecisionsEdgeCases(t *testing.T) {
 	}
 	s.raw = `{"answers":[{"type":"predicate","name":"q0"}]}` // no probability: unanswered, not zero
 	got, err = ev.Evaluate(context.Background(), Text("x"), []string{"a"})
-	if err != nil || got["a"] {
+	if err != nil || got["a"] != 0 {
 		t.Fatalf("an answer without a probability is no answer: %v, %v", got, err)
 	}
 }
@@ -276,7 +265,7 @@ func TestDecisionsVercelRequestShapeAndAnswers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got["golang"] || got["java"] || !got["rust"] || got["go lang & more"] {
+	if got["golang"] != 0.92 || got["java"] != 0.2 || got["rust"] != 0.5 || got["go lang & more"] != 0 {
 		t.Fatalf("answer = %v", got)
 	}
 	if s.paths[0] != "/evaluate" {
@@ -295,9 +284,9 @@ func TestDecisionsVercelRequestShapeAndAnswers(t *testing.T) {
 
 func TestDecisionsVercelSettingsAndErrors(t *testing.T) {
 	s := newVercelStub(t, map[string]float64{"a": 0.6})
-	got, err := s.vercel(t, map[string]string{"THRESHOLD": "0.7", "MODEL": "m2", "PATH": "/v2/evaluate"}).
+	got, err := s.vercel(t, map[string]string{"MODEL": "m2", "PATH": "/v2/evaluate"}).
 		Evaluate(context.Background(), Text("x"), []string{"a"})
-	if err != nil || got["a"] || s.reqs[0]["model"] != "m2" || s.paths[0] != "/v2/evaluate" {
+	if err != nil || got["a"] != 0.6 || s.reqs[0]["model"] != "m2" || s.paths[0] != "/v2/evaluate" {
 		t.Fatalf("got %v, %v, %v to %s", got, err, s.reqs[0]["model"], s.paths[0])
 	}
 	s.status = http.StatusUnauthorized
@@ -335,7 +324,7 @@ func TestDecisionsOpenAISendsAnImageAsIs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got["cat"] || got["dog"] {
+	if got["cat"] != 0.9 || got["dog"] != 0.1 {
 		t.Fatalf("got %v", got)
 	}
 	req := s.reqs[0]
@@ -404,7 +393,7 @@ func TestDecisionsOpenAINonImagesStayText(t *testing.T) {
 func TestDecisionsOpenAIImageBatches(t *testing.T) {
 	s := newOpenAIStub(t, map[string]float64{"a": 1, "b": 1, "c": 0})
 	got, err := s.openai(t, map[string]string{"BATCH_SIZE": "2"}).Evaluate(context.Background(), Content{Data: []byte{1, 2, 3}, Type: "image/webp"}, []string{"a", "b", "c"})
-	if err != nil || !got["a"] || !got["b"] || got["c"] || len(s.reqs) != 2 {
+	if err != nil || got["a"] != 1 || got["b"] != 1 || got["c"] != 0 || len(s.reqs) != 2 {
 		t.Fatalf("got %v, %d requests, %v", got, len(s.reqs), err)
 	}
 	for _, r := range s.reqs {

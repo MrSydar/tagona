@@ -25,7 +25,7 @@ func (t *LimitedTagger) Versions(ctx context.Context) ([]string, error) {
 }
 
 // Tag requests tag evaluation for an object once a slot is free.
-func (t *LimitedTagger) Tag(ctx context.Context, collection, objectID, taggerVersion string, tags []string) (map[string]bool, error) {
+func (t *LimitedTagger) Tag(ctx context.Context, collection, objectID, taggerVersion string, tags []string) (map[string]float64, error) {
 	select {
 	case t.slots <- struct{}{}:
 	case <-ctx.Done():

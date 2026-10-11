@@ -31,6 +31,7 @@ func envOrDefault(key, fallback string) string {
 
 type tagQueryReq struct {
 	Tags       map[string]bool `json:"tags,omitempty"`
+	Threshold  *float64        `json:"threshold,omitempty"`
 	Limit      int             `json:"limit"`
 	Cursor     string          `json:"cursor,omitempty"`
 	TimeoutMs  int             `json:"timeout_ms,omitempty"`
@@ -50,6 +51,8 @@ type objMeta struct {
 	SizeBytes   int64             `json:"size_bytes"`
 	ContentHash string            `json:"content_hash"`
 	Metadata    map[string]string `json:"metadata"`
+	// Tags are the scores of the tags a query asked for.
+	Tags map[string]float64 `json:"tags,omitempty"`
 }
 
 type apiErrorResp struct {
@@ -466,8 +469,8 @@ func TestCollectionTags(t *testing.T) {
 func boolPtr(b bool) *bool { return &b }
 
 type objectTagsResp struct {
-	ID   string           `json:"id"`
-	Tags map[string]*bool `json:"tags"`
+	ID   string              `json:"id"`
+	Tags map[string]*float64 `json:"tags"`
 }
 
 func getObjectTags(t *testing.T, apiKey, collection, id, rawQuery string) (int, []byte) {
@@ -483,7 +486,7 @@ func getObjectTags(t *testing.T, apiKey, collection, id, rawQuery string) (int, 
 	return resp.StatusCode, b
 }
 
-func objectTags(t *testing.T, apiKey, collection, id, rawQuery string) map[string]*bool {
+func objectTags(t *testing.T, apiKey, collection, id, rawQuery string) map[string]*float64 {
 	t.Helper()
 	status, b := getObjectTags(t, apiKey, collection, id, rawQuery)
 	require.Equal(t, http.StatusOK, status, "object tags failed: %s", string(b))
@@ -546,19 +549,32 @@ func TestEvaluateFalse(t *testing.T) {
 	result = queryObjects(t, creds.Key, coll, tagQueryReq{Tags: map[string]bool{"golang": true, "java": true}, Limit: 10, Evaluate: noEval})
 	assert.Empty(t, result.Objects)
 
-	// Known values come back as true/false, unknown ones as null.
+	// Known values come back as scores (grep knows only 1 and 0), unknown ones as null.
 	tags = objectTags(t, creds.Key, coll, goObj.ID, "tags=golang,java&evaluate=false")
 	require.NotNil(t, tags["golang"])
-	assert.True(t, *tags["golang"])
+	assert.Equal(t, 1.0, *tags["golang"])
 	assert.Contains(t, tags, "java")
 	assert.Nil(t, tags["java"])
 	// Explicit evaluate=true (and the default) evaluate the missing tag.
 	tags = objectTags(t, creds.Key, coll, goObj.ID, "tags=golang,java&evaluate=true")
 	require.NotNil(t, tags["java"])
-	assert.False(t, *tags["java"])
+	assert.Equal(t, 0.0, *tags["java"])
+
+	// The query answers with the scores of the tags it asked for; a threshold is applied to the stored scores.
+	result = queryObjects(t, creds.Key, coll, tagQueryReq{Tags: map[string]bool{"golang": true}, Limit: 10, Evaluate: noEval})
+	require.Len(t, result.Objects, 1)
+	assert.Equal(t, map[string]float64{"golang": 1}, result.Objects[0].Tags)
+	one := 1.0
+	result = queryObjects(t, creds.Key, coll, tagQueryReq{Tags: map[string]bool{"golang": true}, Threshold: &one, Limit: 10, Evaluate: noEval})
+	assert.Len(t, result.Objects, 1, "a score of 1 reaches a threshold of 1")
+	result = queryObjects(t, creds.Key, coll, tagQueryReq{Tags: map[string]bool{"golang": false}, Threshold: &one, Limit: 10, Evaluate: noEval})
+	assert.Len(t, result.Objects, 1, "a score of 0 is below a threshold of 1")
+	status, body := do(t, http.MethodPost, "/v1/collections/"+coll+"/objects/query", `{"tags":{"golang":true},"threshold":1.5}`, asKey(creds.Key))
+	require.Equal(t, http.StatusBadRequest, status)
+	assert.Equal(t, "invalid_threshold", errorCode(t, body))
 
 	// Invalid values are rejected.
-	status, body := getObjectTags(t, creds.Key, coll, goObj.ID, "evaluate=maybe")
+	status, body = getObjectTags(t, creds.Key, coll, goObj.ID, "evaluate=maybe")
 	require.Equal(t, http.StatusBadRequest, status)
 	assert.Equal(t, "invalid_evaluate", errorCode(t, body))
 }

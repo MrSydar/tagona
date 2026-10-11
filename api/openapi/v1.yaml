@@ -1,9 +1,9 @@
 openapi: 3.0.3
 info:
   title: Tagona API
-  version: 1.8.0
+  version: 1.9.0
   description: |
-    Storage for collections of objects with sparse boolean tags that are evaluated on demand.
+    Storage for collections of objects with sparse tags, each with a confidence score, that are evaluated on demand.
 
     **Contract version.** This document describes the `/v1` API. `info.version` is the
     semantic version of this contract: additions bump the minor version. While Tagona is a draft, a
@@ -21,14 +21,21 @@ info:
     from the API immediately and are removed from storage by a background sweeper. The exact rules
     are described under *Upload an object*.
 
-    **Tags are sparse.** An object only has a value for a tag after the tag was evaluated for it
+    **Tags are sparse.** An object only has a score for a tag after the tag was evaluated for it
     (by a query or a tags request). A tag that was not evaluated is *unknown*. Both tag-aware
     endpoints accept `evaluate=false` to answer from known tags only, without calling the
     tagging engine.
 
+    **Scores and thresholds.** The tagging engine reports how confident it is that a tag applies, a number
+    from 0 (certainly not) to 1 (certainly), and Tagona stores it as it was reported. An engine that only
+    knows yes or no (such as `grep`) reports 1 or 0. A query decides what counts as true: it names a
+    `threshold` (default 0.5), and a tag asked for as `true` needs a score of at least the threshold while
+    a tag asked for as `false` needs one below it. The threshold is applied to the stored scores, so asking
+    again with another threshold evaluates nothing new.
+
     **Forced tags.** A tag does not have to be evaluated: it can be set by hand, on upload (`tags`) or on an
-    existing object (*Change some tags of an object*). A forced value is stored like an evaluated one, so the
-    tagging engine never replaces it; deleting it makes the tag unknown again.
+    existing object (*Change some tags of an object*). `true` is stored as a score of 1 and `false` as 0, like
+    an evaluated one, so the tagging engine never replaces it; deleting it makes the tag unknown again.
 
     **Strict requests.** The gateway checks every request against what its endpoint accepts and refuses
     anything else with `400` before it reaches an internal service: a query parameter the endpoint does not
@@ -209,7 +216,8 @@ paths:
       summary: Object count and registered tags of a collection
       description: |
         Returns the number of objects in the collection and every tag registered in it, with how
-        many objects the tag is known true for, known false for, and not yet evaluated for.
+        many objects the tag is known true for (a score of at least 0.5), known false for (below 0.5), and not
+        yet evaluated for.
         Tags are ordered by name (byte order). A tag stays registered once seen, even if all objects
         carrying it are later deleted. Expired objects are excluded even before they are removed.
         Tags are listed at most `limit` per page (default 100, at most 1000); when more follow, the answer
@@ -337,9 +345,10 @@ paths:
       operationId: queryObjects
       summary: Query objects by tags
       description: |
-        Returns objects ordered by `date` (newest first), then `id`. Tag filters are ANDed. Tags that
-        are not known for a candidate object are evaluated by the tagging engine and stored, unless
-        `evaluate` is `false`.
+        Returns objects ordered by `date` (newest first), then `id`. Tag filters are ANDed: a tag asked for as
+        `true` needs a score of at least `threshold` (default 0.5), a tag asked for as `false` one below it.
+        Tags that are not known for a candidate object are evaluated by the tagging engine and stored, unless
+        `evaluate` is `false`. Each returned object carries the scores of the requested tags in `tags`.
 
         With `evaluate: false` the tagging engine is never called and the query is answered from
         known tags only: an object is returned only if every requested tag is known for it and
@@ -353,7 +362,7 @@ paths:
         **Page size and cursor.** The answer holds at most `limit` objects (default `TAGONA_DEFAULT_LIMIT`, 5; at most
         `TAGONA_MAX_LIMIT`, 100). When more objects match, it carries `next`: send the same query again
         with `cursor` set to it to get the following page, and repeat until an answer has no `next`. Keep
-        `tags`, `date` and `evaluate` the same on every page. The cursor marks a position in the order
+        `tags`, `threshold`, `date` and `evaluate` the same on every page. The cursor marks a position in the order
         (`date`, then `id`), so objects uploaded or deleted between pages do not shift it. With
         `best_effort`, a query that times out also answers with a `next` to continue from.
       requestBody:
@@ -391,11 +400,11 @@ paths:
                     content_hash: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
                     created_at: "2026-06-07T12:00:01Z"
                     metadata: { name: senior-go-engineer.txt }
-                    tags: { golang: true, qa: false }
+                    tags: { golang: 0.97, qa: 0.04 }
                 next: MTc4MTMwNjMwMDAwMHwzYWIxYjZlMC1hMTc5LTQyNGItOTgyNS0yZDI4MTdjNzYxYWU
         "400":
           description: >-
-            `invalid_json`, `invalid_parameter`, `invalid_limit`, `invalid_cursor`, `invalid_tags`,
+            `invalid_json`, `invalid_parameter`, `invalid_limit`, `invalid_cursor`, `invalid_tags`, `invalid_threshold`,
             `invalid_date_filter`, `invalid_timeout` or `invalid_collection_name`.
           content:
             application/json:
@@ -568,10 +577,10 @@ paths:
               examples:
                 evaluated:
                   summary: evaluate=true (default)
-                  value: { id: 3ab1b6e0-a179-424b-9825-2d2817c761ae, tags: { golang: true, qa: false } }
+                  value: { id: 3ab1b6e0-a179-424b-9825-2d2817c761ae, tags: { golang: 0.97, qa: 0.04 } }
                 notEvaluated:
                   summary: evaluate=false, "java" never evaluated
-                  value: { id: 3ab1b6e0-a179-424b-9825-2d2817c761ae, tags: { golang: true, java: null } }
+                  value: { id: 3ab1b6e0-a179-424b-9825-2d2817c761ae, tags: { golang: 0.97, java: null } }
         "400":
           description: "`invalid_tags`, `invalid_tag`, `invalid_evaluate`, `invalid_parameter`, `unexpected_body` or `invalid_collection_name`."
           content:
@@ -590,7 +599,8 @@ paths:
       operationId: changeObjectTags
       summary: Change some tags of an object
       description: >-
-        Forces tags: a boolean sets the tag (adding it or overwriting its value) and `null` deletes it, so that it is
+        Forces tags: a boolean sets the tag (adding it or overwriting its score, with 1 for `true` and 0 for
+        `false`) and `null` deletes it, so that it is
         unknown again and a later query evaluates it; all other tags stay. The tagging engine is not called. A forced
         value is never replaced by an evaluation. At most as many tags as a query may hold, each of 1-128 bytes.
         Answers with every tag the object has now.
@@ -881,8 +891,8 @@ components:
         payload_key: { type: string, description: Internal object-store key; informational only. }
         tags:
           type: object
-          description: In query results, the tag filter the object satisfied.
-          additionalProperties: { type: boolean }
+          description: In query results, the score (0 to 1) of each tag the query asked for.
+          additionalProperties: { type: number, minimum: 0, maximum: 1 }
 
     ObjectUploadResponse:
       type: object
@@ -910,8 +920,18 @@ components:
       properties:
         tags:
           type: object
-          description: Tag name to required value. All must match. Omit for no tag filtering.
+          description: >-
+            Tag name to required value. All must match: `true` needs a score of at least `threshold`, `false` one
+            below it. Omit for no tag filtering.
           additionalProperties: { type: boolean }
+        threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.5
+          description: >-
+            The score a tag needs to count as true. Applied to the stored scores, so it can differ between
+            queries without evaluating anything again. `400 invalid_threshold` outside 0 to 1.
         date: { $ref: "#/components/schemas/DateFilter" }
         limit:
           type: integer
@@ -923,7 +943,7 @@ components:
           type: string
           description: >-
             The `next` value of the previous page; leave it out for the first page. Send it with the same
-            `tags`, `date` and `evaluate` as the request that returned it.
+            `tags`, `threshold`, `date` and `evaluate` as the request that returned it.
         timeout_ms:
           type: integer
           minimum: 1000
@@ -962,9 +982,13 @@ components:
         id: { type: string, format: uuid }
         tags:
           type: object
-          description: Tag name to value. A value is `null` only when `evaluate=false` and the tag was never evaluated.
+          description: >-
+            Tag name to score, from 0 to 1. A value is `null` only when `evaluate=false` and the tag was never
+            evaluated.
           additionalProperties:
-            type: boolean
+            type: number
+            minimum: 0
+            maximum: 1
             nullable: true
 
     TagStat:
@@ -972,8 +996,8 @@ components:
       required: [tag, true_count, false_count, first_seen_at]
       properties:
         tag: { type: string }
-        true_count: { type: integer, format: int64, description: Objects the tag is known true for. }
-        false_count: { type: integer, format: int64, description: Objects the tag is known false for. }
+        true_count: { type: integer, format: int64, description: Objects the tag is known for with a score of at least 0.5. }
+        false_count: { type: integer, format: int64, description: Objects the tag is known for with a score below 0.5. }
         first_seen_at: { type: string, format: date-time }
 
     CollectionTags:

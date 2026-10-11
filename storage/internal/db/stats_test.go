@@ -14,6 +14,7 @@ import (
 
 	"mrsydar/tagona/storage/internal/db"
 	"mrsydar/tagona/storage/internal/dbtest"
+	"mrsydar/tagona/storage/internal/models"
 )
 
 // These tests exercise the trigger-maintained collection statistics against a
@@ -52,7 +53,7 @@ func mustObject(t *testing.T, d *db.DB, collID, hash string, expiresAt *time.Tim
 
 func mustTag(t *testing.T, d *db.DB, collID, objID string, tags map[string]bool) {
 	t.Helper()
-	if err := d.UpsertTags(context.Background(), collID, objID, tags); err != nil {
+	if err := d.UpsertTags(context.Background(), collID, objID, models.Forced(tags)); err != nil {
 		t.Fatalf("upsert tags: %v", err)
 	}
 }
@@ -104,7 +105,7 @@ func assertConsistent(t *testing.T, pool *pgxpool.Pool, collID string) {
 
 	truth := map[string]counts{}
 	rows, err := pool.Query(ctx,
-		`SELECT tag, count(*) FILTER (WHERE value), count(*) FILTER (WHERE NOT value)
+		`SELECT tag, count(*) FILTER (WHERE score >= 0.5), count(*) FILTER (WHERE score < 0.5)
 		 FROM object_tags WHERE collection_id = $1 GROUP BY tag`, collID)
 	if err != nil {
 		t.Fatalf("recompute: %v", err)
@@ -252,11 +253,11 @@ func TestCollectionStatsBackfillAndIdempotentMigration(t *testing.T) {
 	// table, so the regular UpsertTags path cannot be used yet.
 	for _, row := range []struct {
 		obj, tag string
-		value    bool
-	}{{o1, "golang", true}, {o1, "qa", false}, {o2, "golang", false}} {
+		score    float64
+	}{{o1, "golang", 0.9}, {o1, "qa", 0.1}, {o2, "golang", 0.4}} {
 		if _, err := pool.Exec(context.Background(),
-			`INSERT INTO object_tags (object_id, collection_id, tag, value) VALUES ($1, $2, $3, $4)`,
-			row.obj, coll, row.tag, row.value); err != nil {
+			`INSERT INTO object_tags (object_id, collection_id, tag, score) VALUES ($1, $2, $3, $4)`,
+			row.obj, coll, row.tag, row.score); err != nil {
 			t.Fatalf("seed tag: %v", err)
 		}
 	}
@@ -304,7 +305,7 @@ func TestCollectionStatsConcurrentWriters(t *testing.T) {
 				}
 				// Another worker may have deleted the object meanwhile; that is a
 				// legitimate foreign key failure, not a counter problem.
-				if err := d.UpsertTags(ctx, coll, id, tags); err != nil && !isFKViolation(err) {
+				if err := d.UpsertTags(ctx, coll, id, models.Forced(tags)); err != nil && !isFKViolation(err) {
 					errs <- fmt.Errorf("upsert: %w", err)
 					return
 				}
@@ -397,11 +398,11 @@ func TestForcedTagsKeepCountersAndBeatEvaluation(t *testing.T) {
 	// add, flip and delete in one change
 	mustTag(t, d, coll, o1, map[string]bool{"golang": true, "qa": true})
 	mustTag(t, d, coll, o2, map[string]bool{"golang": true})
-	if err := d.ChangeTags(ctx, coll, o1, map[string]bool{"golang": false, "remote": true}, []string{"qa", "never-there"}); err != nil {
+	if err := d.ChangeTags(ctx, coll, o1, models.Forced(map[string]bool{"golang": false, "remote": true}), []string{"qa", "never-there"}); err != nil {
 		t.Fatalf("change tags: %v", err)
 	}
 	known, _ := d.GetTagsForObject(ctx, o1)
-	if len(known) != 2 || known["golang"] || !known["remote"] {
+	if len(known) != 2 || known["golang"] != 0 || known["remote"] != 1 {
 		t.Errorf("tags of o1 = %v", known)
 	}
 	assertStats(t, d, coll, 2, map[string]counts{
@@ -413,27 +414,27 @@ func TestForcedTagsKeepCountersAndBeatEvaluation(t *testing.T) {
 	assertConsistent(t, pool, coll)
 
 	// a tag both set and removed is set
-	if err := d.ChangeTags(ctx, coll, o2, map[string]bool{"golang": false}, []string{"golang"}); err != nil {
+	if err := d.ChangeTags(ctx, coll, o2, models.Forced(map[string]bool{"golang": false}), []string{"golang"}); err != nil {
 		t.Fatalf("change tags: %v", err)
 	}
-	if known, _ := d.GetTagsForObject(ctx, o2); len(known) != 1 || known["golang"] {
+	if known, _ := d.GetTagsForObject(ctx, o2); len(known) != 1 || known["golang"] != 0 {
 		t.Errorf("tags of o2 = %v", known)
 	}
 	assertConsistent(t, pool, coll)
 
 	// an evaluator only fills what is unknown: it never overwrites a forced value
-	if err := d.FillTags(ctx, coll, o1, map[string]bool{"golang": true, "qa": true}); err != nil {
+	if err := d.FillTags(ctx, coll, o1, models.Forced(map[string]bool{"golang": true, "qa": true})); err != nil {
 		t.Fatalf("fill tags: %v", err)
 	}
 	known, _ = d.GetTagsForObject(ctx, o1)
-	if known["golang"] || !known["qa"] || !known["remote"] {
+	if known["golang"] != 0 || known["qa"] != 1 || known["remote"] != 1 {
 		t.Errorf("tags of o1 after evaluation = %v", known)
 	}
 	assertStats(t, d, coll, 2, map[string]counts{"golang": {0, 2}, "qa": {1, 0}, "remote": {1, 0}})
 	assertConsistent(t, pool, coll)
 
 	// an unknown object is reported as such
-	if err := d.ChangeTags(ctx, coll, "00000000-0000-0000-0000-000000000000", map[string]bool{"a": true}, nil); !errors.Is(err, db.ErrObjectNotFound) {
+	if err := d.ChangeTags(ctx, coll, "00000000-0000-0000-0000-000000000000", map[string]float64{"a": 1}, nil); !errors.Is(err, db.ErrObjectNotFound) {
 		t.Errorf("unknown object: err = %v", err)
 	}
 }

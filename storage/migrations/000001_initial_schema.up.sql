@@ -30,10 +30,12 @@ CREATE TABLE IF NOT EXISTS object_tags (
     object_id UUID NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
     collection_id UUID NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
     tag TEXT NOT NULL,
-    value BOOLEAN NOT NULL,
+    -- the evaluator's confidence that the tag applies, as it reported it: 0 (certainly not) to 1 (certainly).
+    -- A tag forced by hand is 1 or 0.
+    score DOUBLE PRECISION NOT NULL CHECK (score >= 0 AND score <= 1),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (object_id, tag)
 );
 
-CREATE INDEX IF NOT EXISTS idx_object_tags_query ON object_tags(collection_id, tag, value, object_id);
+CREATE INDEX IF NOT EXISTS idx_object_tags_query ON object_tags(collection_id, tag, score, object_id);
 CREATE INDEX IF NOT EXISTS idx_object_tags_object_tag ON object_tags(object_id, tag);

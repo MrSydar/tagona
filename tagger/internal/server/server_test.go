@@ -78,9 +78,9 @@ func TestTagRefusesAnotherVersion(t *testing.T) {
 // recorder is an evaluator that keeps what it was given.
 type recorder struct{ got evaluator.Content }
 
-func (r *recorder) Evaluate(_ context.Context, c evaluator.Content, tags []string) (map[string]bool, error) {
+func (r *recorder) Evaluate(_ context.Context, c evaluator.Content, tags []string) (map[string]float64, error) {
 	r.got = c
-	return map[string]bool{tags[0]: true}, nil
+	return map[string]float64{tags[0]: 1}, nil
 }
 func (r *recorder) Version() string { return "rec" }
 

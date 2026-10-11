@@ -2,7 +2,7 @@
 
 Go module: `mrsydar/tagona/tagger`
 
-A standalone HTTP service that evaluates boolean tags for objects stored in the Tagona storage service. It is a pure evaluator: it fetches an object's payload from the storage service via its public HTTP API, then runs the tagging logic. Objects are bytes: an evaluator decides what it makes of them (the bundled ones read them as UTF-8 text).
+A standalone HTTP service that evaluates tags (a confidence from 0 to 1 per tag) for objects stored in the Tagona storage service. It is a pure evaluator: it fetches an object's payload from the storage service via its public HTTP API, then runs the tagging logic. Objects are bytes: an evaluator decides what it makes of them (the bundled ones read them as UTF-8 text).
 
 ---
 
@@ -56,8 +56,10 @@ curl -X POST http://localhost:8081/tag \
 
 **Response `200 OK`**
 ```json
-{"tags": {"golang": true, "qa": false}}
+{"tags": {"golang": 0.97, "qa": 0.04}}
 ```
+
+Each value is the evaluator's confidence that the tag applies, from 0 (certainly not) to 1 (certainly). Evaluators that only know yes or no answer 1 or 0. Storage keeps the number as reported and applies a query's threshold to it.
 
 **Behavior**
 
@@ -77,7 +79,7 @@ The evaluator is selected via `TAGGER_EVALUATOR_IMPL`:
 | `grep`    | `grep`          | Tag is `true` if the payload (read as UTF-8 text) contains the tag string as a substring. Case-sensitive. |
 | `false`   | `false`         | All tags evaluate to `false`. |
 | `completions/openai` | `completions/openai:<model>` | An LLM classifies the payload against the requested tags through a chat completions API in the OpenAI dialect; missing tags default to `false`. Images are sent as images (see below). |
-| `decisions/openai` | `decisions/openai:<model>` | One yes/no question per tag through OpenAI's [Decisions API](https://developers.openai.com/api/docs/guides/decisions) (`POST /decisions`). A tag is `true` when the returned probability is at least the threshold. **Images** are sent as images (see below). |
+| `decisions/openai` | `decisions/openai:<model>` | One yes/no question per tag through OpenAI's [Decisions API](https://developers.openai.com/api/docs/guides/decisions) (`POST /decisions`). The returned probability is the tag's confidence. **Images** are sent as images (see below). |
 | `decisions/vercel` | `decisions/vercel:<model>` | The same idea through the Vercel AI Gateway's evaluate endpoint (`POST /evaluate`), which has a different wire format. |
 
 The part after the slash names the **API dialect**, not the vendor: any vendor that speaks it is used with its own base URL (and path, key header and extra parameters, below). The `completions/openai` evaluator replaces the former `openai`, and `decisions/vercel` the former `systemone` with its `vercel` backend.
@@ -126,12 +128,11 @@ Specific to the decisions evaluators:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `THRESHOLD` | `0.5` | A tag is `true` when the probability is at least this value (0 to 1). A tag the vendor does not answer, or refuses, is `false` |
 | `BATCH_SIZE` | `50` | Questions per request; more tags are sent in several requests, and one failing request fails the evaluation. `0` sends everything at once |
 | `INSTRUCTIONS` | *Analyze the text and determine whether the tag "{tag}" applies...* | The question put for each tag; `{tag}` is replaced by the tag |
 | `IMAGE_INSTRUCTIONS` | *Analyze the image and determine whether the tag "{tag}" applies...* | The question put for each tag when the object is an image (`decisions/openai`); must contain `{tag}` |
 
-**How the dialects differ.** `decisions/openai` sends `{"model","input","questions":[{"type":"predicate","name":"q0","instructions":"..."}]}` and reads `answers[]` (`predicate` answers carry `probability`; `refusal` answers count as false). Question names are positional (`q0`, `q1`, ...) so any tag text is safe. `decisions/vercel` sends `{"model","state","questions":{"<tag>":{"type":"boolean","instructions":"..."}}}` and reads `answers.<tag>.probability`. `completions/openai` reads the JSON object the model writes in `choices[0].message.content` and tolerates code fences and reasoning preambles.
+**How the dialects differ.** `decisions/openai` sends `{"model","input","questions":[{"type":"predicate","name":"q0","instructions":"..."}]}` and reads `answers[]` (`predicate` answers carry `probability`; `refusal` answers count as a confidence of 0). Question names are positional (`q0`, `q1`, ...) so any tag text is safe. `decisions/vercel` sends `{"model","state","questions":{"<tag>":{"type":"boolean","instructions":"..."}}}` and reads `answers.<tag>.probability`. `completions/openai` reads the JSON object the model writes in `choices[0].message.content` (a confidence from 0 to 1 per tag; `true` and `false` are read as 1 and 0) and tolerates code fences and reasoning preambles.
 
 **Images.** The tagger asks the storage service for an object's bytes together with its media type, which is the `content_type` metadata the uploader stored (the dashboard sets it from the file; through the API set it with `metadata={"content_type":"image/png"}`). When the type is `image/...`, `decisions/openai` does not read the bytes as text: it sends them as the Decisions API documents for images, an `input_image` with the base64 data URL `data:<content type>;base64,<bytes>` next to a short `input_text`, and asks the same questions with `IMAGE_INSTRUCTIONS`.
 

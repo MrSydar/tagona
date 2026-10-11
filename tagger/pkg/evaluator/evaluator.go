@@ -33,7 +33,9 @@ func (c Content) IsImage() bool { return strings.HasPrefix(c.MediaType(), "image
 // Evaluator evaluates tags against object content. Objects are bytes: an evaluator decides what it makes
 // of them (the text evaluators read them as UTF-8; the vision-capable ones look at images).
 type Evaluator interface {
-	Evaluate(ctx context.Context, content Content, tags []string) (map[string]bool, error)
+	// Evaluate returns, for each tag, the evaluator's confidence that the tag applies, from 0 (certainly not)
+	// to 1 (certainly). Evaluators that only know yes or no answer 1 or 0.
+	Evaluate(ctx context.Context, content Content, tags []string) (map[string]float64, error)
 	// Version identifies this evaluator and, when it has one, its model: "<implementation>" or
 	// "<implementation>:<model>", for example "grep" or "decisions/openai:gpt-6-luna". Different taggers
 	// may tag the same object differently, so a collection records the version it is tagged with.
